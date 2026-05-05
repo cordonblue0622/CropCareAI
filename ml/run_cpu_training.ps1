@@ -6,7 +6,7 @@ param(
     [int]$Epochs = 30,
     [int]$BatchSize = 32,
     [string]$PlantVillageZipPath = "",
-    [string]$LabelProfile = "cropcare_v2_base_parity",
+    [string]$LabelProfile = "cropcare_v2_subset_100",
     [switch]$Full,
     [switch]$SkipInstall
 )

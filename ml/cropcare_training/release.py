@@ -21,7 +21,7 @@ DEFAULT_BASE_LABELS_PATH = Path("assets/models/labels_with_eggplant.txt")
 @dataclass(frozen=True)
 class ReleaseConfig:
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    label_profile: str = "cropcare_v2_base_parity"
+    label_profile: str = "cropcare_v2_subset_100"
     max_per_label: int | None = None
     min_per_label: int = 80
     epochs: int = 30
@@ -201,7 +201,7 @@ def parse_args() -> argparse.Namespace:
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    run_parser.add_argument("--label-profile", default="cropcare_v2_base_parity")
+    run_parser.add_argument("--label-profile", default="cropcare_v2_subset_100")
     run_parser.add_argument("--max-per-label", type=int, default=None)
     run_parser.add_argument("--min-per-label", type=int, default=80)
     run_parser.add_argument("--epochs", type=int, default=30)

@@ -336,12 +336,15 @@ def test_release_steps_train_then_promote_then_build_android() -> None:
     assert "apk" in steps[-1].args
 
 
-def test_automation_default_uncaps_plantvillage_and_uses_base_parity_profile() -> None:
+def test_automation_default_uncaps_plantvillage_and_uses_subset_100_profile() -> None:
     from cropcare_training.automation import TrainingRunConfig, build_run_steps
 
     config = TrainingRunConfig()  # all defaults
 
-    assert config.label_profile == "cropcare_v2_base_parity"
+    # Multi-model architecture: v2 trains on subset_100 (no eggplant) and
+    # the legacy cropcare_efficientnet_with_eggplant.tflite stays shipped
+    # for eggplant scans. See [LocalClassifierService] in the Flutter app.
+    assert config.label_profile == "cropcare_v2_subset_100"
     assert config.max_per_label is None
     assert config.min_per_label == 80
     assert config.digigreen_max_per_label == 1500
@@ -407,7 +410,7 @@ def test_release_steps_include_comparison_then_promote() -> None:
     from cropcare_training.release import ReleaseConfig, build_release_steps
 
     config = ReleaseConfig(
-        label_profile="cropcare_v2_base_parity",
+        label_profile="cropcare_v2_subset_100",
         max_per_label=None,
         min_per_label=80,
         epochs=30,

@@ -23,7 +23,7 @@ class TrainingRunConfig:
     full: bool = False
     skip_install: bool = False
     plantvillage_zip_path: Path | None = None
-    label_profile: str = "cropcare_v2_base_parity"
+    label_profile: str = "cropcare_v2_subset_100"
     digigreen_max_per_label: int = 1500
 
 
@@ -105,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--plantvillage-zip-path", type=Path, default=None)
-    parser.add_argument("--label-profile", default="cropcare_v2_base_parity")
+    parser.add_argument("--label-profile", default="cropcare_v2_subset_100")
     parser.add_argument(
         "--full",
         action="store_true",

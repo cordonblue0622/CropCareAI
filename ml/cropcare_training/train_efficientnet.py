@@ -198,7 +198,7 @@ def train_and_export(
     unfreeze_top_n: int = 30,
     batch_size: int = 32,
     image_size: tuple[int, int] = (224, 224),
-    label_profile: str = "cropcare_v2_base_parity",
+    label_profile: str = "cropcare_v2_subset_100",
     labels: list[str] | None = None,
 ) -> None:
     try:
@@ -478,7 +478,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--unfreeze-top-n", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--label-profile", default="cropcare_v2_base_parity")
+    parser.add_argument("--label-profile", default="cropcare_v2_subset_100")
     return parser.parse_args()
 
 

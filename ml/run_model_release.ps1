@@ -1,6 +1,6 @@
 param(
     [string]$OutputDir = "ml/artifacts/cropcare_v2",
-    [string]$LabelProfile = "cropcare_v2_base_parity",
+    [string]$LabelProfile = "cropcare_v2_subset_100",
     [Nullable[int]]$MaxPerLabel = $null,
     [int]$DigigreenMaxPerLabel = 1500,
     [int]$MinPerLabel = 80,
