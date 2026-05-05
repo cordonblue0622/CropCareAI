@@ -80,3 +80,52 @@ def mixup_pair(
     mixed_images = lam_images * images_a + (1.0 - lam_images) * images_b
     mixed_labels = lam_labels * labels_a + (1.0 - lam_labels) * labels_b
     return mixed_images, mixed_labels
+
+
+def apply_eggplant_extra_aug(
+    images,
+    labels_one_hot,
+    *,
+    class_names,
+    seed: int = 1234,
+):
+    """Apply additional zoom + brightness jitter to eggplant rows only.
+
+    DigiGreen eggplant images are noisier than PlantVillage's lab tomato
+    photos, so we deliberately perturb them harder during training. Other
+    rows pass through untouched.
+    """
+    import tensorflow as tf
+
+    eggplant_indices = [
+        index
+        for index, name in enumerate(class_names)
+        if name.startswith("eggplant_")
+    ]
+    if not eggplant_indices:
+        return images
+
+    eggplant_mask_per_class = tf.constant(
+        [1.0 if name.startswith("eggplant_") else 0.0 for name in class_names],
+        dtype=tf.float32,
+    )
+    is_eggplant = tf.reduce_max(
+        labels_one_hot * eggplant_mask_per_class,
+        axis=1,
+        keepdims=True,
+    )
+    is_eggplant_image = tf.reshape(is_eggplant, (-1, 1, 1, 1))
+
+    extra = tf.keras.Sequential(
+        [
+            tf.keras.layers.RandomZoom(
+                height_factor=0.25,
+                width_factor=0.25,
+                seed=seed,
+            ),
+            tf.keras.layers.RandomBrightness(factor=0.25, seed=seed),
+        ],
+        name="cropcare_eggplant_extra_aug",
+    )
+    perturbed = extra(images, training=True)
+    return is_eggplant_image * perturbed + (1.0 - is_eggplant_image) * images

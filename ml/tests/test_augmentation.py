@@ -92,3 +92,37 @@ def test_mixup_pair_disabled_when_alpha_zero() -> None:
 
     np.testing.assert_array_equal(mixed_images.numpy(), images_a.numpy())
     np.testing.assert_array_equal(mixed_labels.numpy(), labels_a.numpy())
+
+
+def test_eggplant_conditional_augmentation_only_perturbs_eggplant_rows() -> None:
+    from cropcare_training.augmentation import apply_eggplant_extra_aug
+
+    # 4 samples: 0 = eggplant_healthy, 1 = tomato_healthy, 2 = eggplant_leaf_spot, 3 = pepper_healthy
+    label_names = [
+        "eggplant_healthy",
+        "tomato_healthy",
+        "eggplant_leaf_spot",
+        "pepper_healthy",
+    ]
+    images = tf.constant(
+        np.tile(
+            np.linspace(0, 255, 64, dtype=np.float32).reshape(1, 8, 8, 1),
+            (4, 1, 1, 3),
+        ),
+        dtype=tf.float32,
+    )
+    labels_one_hot = tf.eye(len(label_names), dtype=tf.float32)
+
+    out_images = apply_eggplant_extra_aug(
+        images,
+        labels_one_hot,
+        class_names=label_names,
+        seed=42,
+    ).numpy()
+
+    # Tomato (idx 1) and pepper (idx 3) rows must be untouched.
+    np.testing.assert_array_equal(out_images[1], images.numpy()[1])
+    np.testing.assert_array_equal(out_images[3], images.numpy()[3])
+    # Both eggplant rows must differ from input.
+    assert not np.array_equal(out_images[0], images.numpy()[0])
+    assert not np.array_equal(out_images[2], images.numpy()[2])
