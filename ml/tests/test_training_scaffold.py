@@ -370,6 +370,42 @@ def test_plantvillage_zip_downloader_reuses_cached_archive(tmp_path) -> None:
     assert resolved.read_bytes() == b"cached"
 
 
+def test_class_weights_inverse_frequency_normalises_to_mean_one() -> None:
+    from cropcare_training.train_efficientnet import compute_class_weights
+
+    counts = {
+        "tomato_healthy": 4000,
+        "tomato_early_blight": 1000,
+        "eggplant_healthy": 200,
+    }
+
+    weights = compute_class_weights(
+        class_names=["tomato_healthy", "tomato_early_blight", "eggplant_healthy"],
+        per_class_counts=counts,
+    )
+
+    # Keys are integer class indices.
+    assert set(weights.keys()) == {0, 1, 2}
+    # Inverse-frequency: lowest count -> highest weight.
+    assert weights[2] > weights[1] > weights[0]
+    # Mean weight is normalised to 1.0 so loss scale stays comparable.
+    mean_weight = sum(weights.values()) / len(weights)
+    assert abs(mean_weight - 1.0) < 1e-6
+
+
+def test_class_weights_skip_zero_counts_safely() -> None:
+    from cropcare_training.train_efficientnet import compute_class_weights
+
+    weights = compute_class_weights(
+        class_names=["a", "b"],
+        per_class_counts={"a": 10, "b": 0},
+    )
+
+    # Class with zero count receives weight 1.0 (neutral) and a warning,
+    # not a divide-by-zero crash.
+    assert weights[1] == 1.0
+
+
 def test_build_model_emits_efficientnet_b0_with_augmentation_then_head() -> None:
     pytest = __import__("pytest")
     tf = pytest.importorskip("tensorflow")

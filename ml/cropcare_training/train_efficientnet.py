@@ -13,6 +13,43 @@ DEFAULT_DATA_DIR = Path("ml/artifacts/cropcare_v2/images_by_split")
 DEFAULT_OUTPUT_DIR = Path("ml/artifacts/cropcare_v2")
 
 
+def compute_class_weights(
+    *,
+    class_names: list[str],
+    per_class_counts: dict[str, int],
+) -> dict[int, float]:
+    """Return Keras-style ``class_weight`` dict using inverse frequency.
+
+    Weights are normalised so their mean is 1.0; that keeps the
+    cross-entropy loss on roughly the same scale as the unweighted
+    case, which simplifies LR tuning. Classes with zero observed
+    samples receive weight 1.0 (neutral).
+    """
+    raw: dict[int, float] = {}
+    for index, name in enumerate(class_names):
+        count = per_class_counts.get(name, 0)
+        raw[index] = (1.0 / count) if count > 0 else 1.0
+
+    non_neutral_values = [
+        value
+        for index, value in raw.items()
+        if per_class_counts.get(class_names[index], 0) > 0
+    ]
+    if not non_neutral_values:
+        return {index: 1.0 for index in raw}
+    mean_weight = sum(non_neutral_values) / len(non_neutral_values)
+    if mean_weight == 0.0:
+        return raw
+    return {
+        index: (
+            weight / mean_weight
+            if per_class_counts.get(class_names[index], 0) > 0
+            else 1.0
+        )
+        for index, weight in raw.items()
+    }
+
+
 def build_model(
     *,
     num_classes: int,
