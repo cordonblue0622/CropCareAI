@@ -1,0 +1,882 @@
+import 'dart:typed_data';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:provider/provider.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:uuid/uuid.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/constants/app_constants.dart';
+import '../../../core/constants/app_enums.dart';
+import '../../../data/models/crop_model.dart';
+import '../../../data/models/diagnosis_model.dart';
+import '../../../data/models/disease_knowledge_model.dart';
+import '../../../data/remote/ai_backend_service.dart';
+import '../../../data/remote/supabase_service.dart';
+import '../../../services/local_classifier_service.dart';
+import '../auth/providers/auth_provider.dart';
+import '../crops/providers/crops_provider.dart';
+import '../home/home_screen.dart';
+import '../chat/screens/chat_screen.dart';
+
+class ScanResultScreen extends StatefulWidget {
+  final XFile imageFile;
+  final String? cropId;
+  final Uint8List? imageBytes;
+  final String? initialQuery;
+  final bool openChatOnComplete;
+  final bool isFromVideo;
+
+  const ScanResultScreen({
+    super.key,
+    required this.imageFile,
+    this.cropId,
+    this.imageBytes,
+    this.initialQuery,
+    this.openChatOnComplete = false,
+    this.isFromVideo = false,
+  });
+
+  @override
+  State<ScanResultScreen> createState() => _ScanResultScreenState();
+}
+
+class _ScanResultScreenState extends State<ScanResultScreen> {
+  bool _analyzing = true;
+  DiseaseKnowledgeModel? _match;
+  AiBackendDetectResponse? _detection;
+  String? _analysisMessage;
+  bool _saving = false;
+  bool _tracked = false;
+  bool _redirectingToChat = false;
+  Uint8List? _resolvedImageBytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _analyze();
+  }
+
+  Future<void> _analyze() async {
+    final cropsProvider = context.read<CropsProvider>();
+    final aiBackend = context.read<AiBackendService>();
+    final localClassifier = context.read<LocalClassifierService>();
+    try {
+      if (cropsProvider.diseaseKnowledge.isEmpty) {
+        await cropsProvider.fetchDiseaseKnowledge();
+      }
+
+      final selectedCrop = _resolveSelectedCrop(cropsProvider);
+      final imageBytes = widget.imageBytes ?? await widget.imageFile.readAsBytes();
+      _resolvedImageBytes = imageBytes;
+
+      AiBackendDetectResponse detection;
+      try {
+        detection = await localClassifier.classifyImage(
+          imageBytes: imageBytes,
+          filename: widget.imageFile.name,
+          cropType: selectedCrop?.cropType.value,
+        );
+      } catch (_) {
+        detection = await aiBackend.detectImage(
+          imageBytes: imageBytes,
+          filename: widget.imageFile.name,
+          cropType: selectedCrop?.cropType.value,
+        );
+      }
+
+      final rejectionMessage = _rejectionMessageForDetection(
+        detection: detection,
+        selectedCrop: selectedCrop,
+      );
+      final match = _resolveDiseaseMatch(
+        detection: detection,
+        cropsProvider: cropsProvider,
+        selectedCrop: selectedCrop,
+        rejectionMessage: rejectionMessage,
+      );
+      final infoMessage = rejectionMessage ??
+          (match == null
+            ? 'We could not confidently identify a supported crop disease from this photo. Upload a clearer close-up of the affected leaf and try again.'
+            : 'Analyzed using ${detection.model.name} ${detection.model.version} via the CropCare AI backend.');
+      final analysisMessage = infoMessage;
+      final diagnosis = match != null && _shouldAttachDiagnosisToChat(detection)
+          ? _matchToDiagnosis(
+              match,
+              detection: detection,
+              analysisMessage: analysisMessage,
+            )
+          : null;
+
+      // Store detection data directly — avoids an unnecessary rebuild when
+      // we are about to navigate away to chat (prevents the result-screen
+      // flash / glitch the user sees before the conversation opens).
+      _detection = detection;
+      _match = match;
+      _analysisMessage = analysisMessage;
+
+      if (!mounted) return;
+
+      if (widget.openChatOnComplete) {
+        // Navigate to chat without first showing the result screen.
+        await _openChat(diagnosis: diagnosis);
+        return;
+      }
+
+      setState(() => _analyzing = false);
+    } catch (error) {
+      if (!mounted) return;
+      // If we're supposed to go straight to chat, still do that even on error.
+      // The backend being down should not block the user from reaching the AI chat.
+      if (widget.openChatOnComplete) {
+        _analysisMessage =
+            'The crop scanner could not reach the AI backend. Please analyze the image directly and tell me what crop disease or condition you can see, and what I should do.';
+        await _openChat(diagnosis: null);
+        return;
+      }
+      setState(() {
+        _analysisMessage =
+            'AI backend unavailable right now. You can still ask the assistant for general guidance.';
+        _analyzing = false;
+      });
+    }
+  }
+
+  Future<void> _openChat({DiagnosisModel? diagnosis}) async {
+    if (!widget.openChatOnComplete || _redirectingToChat || !mounted) {
+      return;
+    }
+
+    final normalizedInitialQuery = widget.initialQuery?.trim();
+    String? initialQuery;
+
+    if (normalizedInitialQuery != null && normalizedInitialQuery.isNotEmpty) {
+      initialQuery = normalizedInitialQuery;
+    } else if (diagnosis == null) {
+      // Build a query that tells GPT what the model found so it can supplement
+      final topPred = _detection?.primaryDetection;
+      if (topPred != null) {
+        final pct = (topPred.confidence * 100).toStringAsFixed(1);
+        final labelName = topPred.label
+            .replaceAll('_', ' ')
+            .split(' ')
+            .map((w) => w.isNotEmpty
+                ? '${w[0].toUpperCase()}${w.substring(1)}'
+                : w)
+            .join(' ');
+        if (widget.isFromVideo) {
+          initialQuery =
+              'I recorded a short video of my crop. This frame was extracted for analysis — '
+              'the scanner\'s closest match was "$labelName" at $pct% confidence. '
+              'Please analyze the attached image directly: what crop and condition do '
+              'you observe, and what should the farmer do?';
+        } else {
+          initialQuery =
+              'The crop scanner wasn\'t confident enough to make a definite diagnosis — '
+              'the closest match was "$labelName" at $pct% confidence. '
+              'Please analyze the attached photo directly: what crop and condition do '
+              'you observe, and what should the farmer do?';
+        }
+      } else {
+        if (widget.isFromVideo) {
+          initialQuery =
+              'I recorded a short video of my crop and this frame was extracted for analysis. '
+              'The scanner could not identify a disease. Please analyze the image directly '
+              'and tell me what crop and condition you observe, and what the farmer should do.';
+        } else {
+          initialQuery =
+              'The crop scanner could not identify a disease from this photo. '
+              'Please analyze the image directly and tell me what crop and condition '
+              'you observe, and what the farmer should do.';
+        }
+      }
+    }
+    // else: diagnosis != null with no custom query — ChatScreen builds its own prompt
+
+    setState(() => _redirectingToChat = true);
+
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          startFreshSession: true,
+          initialQuery: initialQuery,
+          initialDiagnosis: diagnosis,
+          initialImageBytes: _resolvedImageBytes ?? widget.imageBytes,
+          initialIsVideoFrame: widget.isFromVideo,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _trackDiagnosis() async {
+    final user = context.read<AuthProvider>().currentUser;
+    if (user == null || _match == null) return;
+    final cropId = widget.cropId ??
+        (context.read<CropsProvider>().activeCrops.isNotEmpty
+            ? context.read<CropsProvider>().activeCrops.first.id
+            : null);
+    if (cropId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No crop selected to link diagnosis.')));
+      return;
+    }
+
+    setState(() => _saving = true);
+    try {
+      final now = DateTime.now();
+      final diagnosis = DiagnosisModel(
+        id: const Uuid().v4(),
+        cropId: cropId,
+        userId: user.id,
+        diagnosisMode: DiagnosisMode.online,
+        labelKey: _primaryDetection?.labelKey ?? _match?.labelKey,
+        diseaseName: _match!.diseaseName,
+        confidenceScore: _primaryDetection?.confidence,
+        severity: Severity.moderate,
+        resultLabel: _primaryDetection?.label,
+        summary: _match!.description ?? _analysisMessage,
+        detectedRegionsJson: _detection?.toDetectedRegionsJson(),
+        modelName: _detection?.model.name,
+        modelVersion: _detection?.model.version,
+        diagnosedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      );
+      await context.read<SupabaseService>().upsertDiagnosis(diagnosis.toMap());
+      if (mounted) setState(() => _tracked = true);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Failed to save: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.backgroundCream,
+      bottomNavigationBar: const AppPushedScreenBottomNav(currentIndex: 2),
+      body: SafeArea(
+        child: Column(children: [
+          // Header
+          Container(
+            color: AppColors.primaryDark,
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Row(children: [
+              GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: const Icon(Icons.arrow_back, color: Colors.white),
+              ),
+              const SizedBox(width: 12),
+              const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('CropCare AI',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 17)),
+                  Text('Diagnostic Result',
+                      style: TextStyle(color: Colors.white60, fontSize: 12)),
+                ],
+              ),
+            ]),
+          ),
+
+          if (_analyzing)
+            const Expanded(
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(color: AppColors.primary),
+                    SizedBox(height: 16),
+                    Text('Analyzing image...',
+                        style:
+                            TextStyle(color: AppColors.textGray, fontSize: 15)),
+                    SizedBox(height: 6),
+                    Text('Consulting disease knowledge base',
+                        style: TextStyle(
+                            color: AppColors.textLightGray, fontSize: 13)),
+                  ],
+                ),
+              ),
+            )
+          else
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Captured image thumb
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(14),
+                      child: _XFileImageView(
+                        widget.imageFile,
+                        height: 180,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    if (_analysisMessage != null) ...[
+                      _analysisBanner(_analysisMessage!),
+                      const SizedBox(height: 16),
+                    ],
+
+                    if (_match == null)
+                      _noMatchCard()
+                    else
+                      _resultCard(_match!),
+
+                    const SizedBox(height: 20),
+
+                    // Action buttons — track only when there's a match
+                    if (_match != null) ...[
+                      if (_tracked)
+                        _successBanner()
+                      else
+                        ElevatedButton.icon(
+                          onPressed: _saving ? null : _trackDiagnosis,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size(double.infinity, 52),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14)),
+                          ),
+                          icon: _saving
+                              ? const SizedBox.square(
+                                  dimension: 16,
+                                  child: CircularProgressIndicator(
+                                      color: Colors.white, strokeWidth: 2))
+                              : const Icon(Icons.track_changes),
+                          label: Text(_saving ? 'Saving...' : 'Yes, track it',
+                              style: const TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.w700)),
+                        ),
+                      const SizedBox(height: 12),
+                    ],
+
+                    // Ask AI — always visible so GPT can analyze even unclear photos
+                    OutlinedButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ChatScreen(
+                            startFreshSession: true,
+                            initialDiagnosis: _match != null
+                                ? _matchToDiagnosis(_match!)
+                                : null,
+                            initialImageBytes: _resolvedImageBytes,
+                            initialQuery: _match == null
+                                ? 'I uploaded a crop photo but the scanner could not identify it. Please analyze the image and tell me what crop disease or condition you can see, and what I should do.'
+                                : null,
+                          ),
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: AppColors.primary),
+                        foregroundColor: AppColors.primary,
+                        minimumSize: const Size(double.infinity, 52),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                      ),
+                      icon: const Icon(Icons.chat_bubble_outline),
+                      label: Text(
+                        _match == null
+                            ? 'Ask AI to analyze this photo'
+                            : 'Ask AI for more info',
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w700)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _resultCard(DiseaseKnowledgeModel kb) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 8,
+              offset: const Offset(0, 2))
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.biotech, color: AppColors.primary, size: 20),
+          const SizedBox(width: 8),
+          const Text('DIAGNOSIS RESULT',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textGray,
+                  letterSpacing: 1)),
+          const Spacer(),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: Colors.orange.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.orange.withOpacity(0.3)),
+            ),
+            child: Text(_confidenceLabel,
+                style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.orange)),
+          ),
+        ]),
+        const SizedBox(height: 14),
+        Text(kb.diseaseName,
+            style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: AppColors.textDark)),
+        if (kb.scientificName != null)
+          Text(kb.scientificName!,
+              style: const TextStyle(
+                  color: AppColors.textGray,
+                  fontStyle: FontStyle.italic,
+                  fontSize: 14)),
+        if (kb.description != null) ...[
+          const SizedBox(height: 10),
+          Text(kb.description!,
+              style: const TextStyle(
+                  color: AppColors.textGray, fontSize: 13, height: 1.4)),
+        ],
+        if (kb.symptoms != null && kb.symptoms!.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          const Divider(),
+          const SizedBox(height: 10),
+          const Text('Symptoms Detected',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+          const SizedBox(height: 8),
+          ...kb.symptoms!.take(4).map((s) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.circle,
+                          size: 7, color: AppColors.primary),
+                      const SizedBox(width: 8),
+                      Expanded(
+                          child: Text(s,
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  color: AppColors.textGray,
+                                  height: 1.4))),
+                    ]),
+              )),
+        ],
+        if (kb.treatmentSteps != null && kb.treatmentSteps!.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          const Divider(),
+          const SizedBox(height: 10),
+          const Text('Recommended Treatment',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+          const SizedBox(height: 8),
+          ...kb.treatmentSteps!.take(3).toList().asMap().entries.map(
+                (e) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 22,
+                          height: 22,
+                          decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: AppColors.backgroundGreenLight),
+                          child: Center(
+                            child: Text('${e.key + 1}',
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    color: AppColors.primary,
+                                    fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                            child: Text(e.value,
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    color: AppColors.textGray,
+                                    height: 1.4))),
+                      ]),
+                ),
+              ),
+        ],
+        if (kb.estimatedRecoveryDays != null) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.backgroundGreenLight,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.schedule, size: 16, color: AppColors.primary),
+              const SizedBox(width: 6),
+              Text('Est. recovery: ${kb.estimatedRecoveryDays} days',
+                  style: const TextStyle(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13)),
+            ]),
+          ),
+        ],
+        if (_detection != null) ...[
+          const SizedBox(height: 12),
+          Text(
+            'Backend source: ${_detection!.model.name} ${_detection!.model.version}',
+            style: const TextStyle(
+              color: AppColors.textLightGray,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ]),
+    );
+  }
+
+  Widget _analysisBanner(String message) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.backgroundGreenLight,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline, color: AppColors.primary, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(
+                color: AppColors.primary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _noMatchCard() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: const Column(children: [
+        Icon(Icons.help_outline, size: 48, color: AppColors.textLightGray),
+        SizedBox(height: 12),
+        Text('Unsupported or unclear photo',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        SizedBox(height: 8),
+        Text(
+            'We could not confidently match this upload to a supported crop disease. Use a clear close-up of the affected crop leaf and try again.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                color: AppColors.textGray, fontSize: 13, height: 1.4)),
+      ]),
+    );
+  }
+
+  Widget _successBanner() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.backgroundGreenLight,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+      ),
+      child: const Row(children: [
+        Icon(Icons.check_circle, color: AppColors.primary),
+        SizedBox(width: 10),
+        Expanded(
+            child: Text('Diagnosis saved. Tracking recovery for this crop.',
+                style: TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13))),
+      ]),
+    );
+  }
+
+  DiagnosisModel _matchToDiagnosis(
+    DiseaseKnowledgeModel kb, {
+    AiBackendDetectResponse? detection,
+    String? analysisMessage,
+  }) {
+    final now = DateTime.now();
+    final sourceDetection = detection ?? _detection;
+    final primaryDetection = sourceDetection?.primaryDetection;
+    return DiagnosisModel(
+      id: const Uuid().v4(),
+      cropId: widget.cropId ?? '',
+      userId: context.read<AuthProvider>().currentUser?.id ?? '',
+      diagnosisMode: DiagnosisMode.online,
+      labelKey: primaryDetection?.labelKey ?? kb.labelKey,
+      diseaseName: kb.diseaseName,
+      confidenceScore: primaryDetection?.confidence,
+      severity: Severity.moderate,
+      resultLabel: primaryDetection?.label,
+      summary: kb.description ?? analysisMessage ?? _analysisMessage,
+      detectedRegionsJson: sourceDetection?.toDetectedRegionsJson(),
+      modelName: sourceDetection?.model.name,
+      modelVersion: sourceDetection?.model.version,
+      diagnosedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    );
+  }
+
+  CropModel? _resolveSelectedCrop(CropsProvider cropsProvider) {
+    if (widget.cropId != null && widget.cropId!.isNotEmpty) {
+      for (final crop in cropsProvider.activeCrops) {
+        if (crop.id == widget.cropId) {
+          return crop;
+        }
+      }
+    }
+    return cropsProvider.activeCrops.isEmpty
+        ? null
+        : cropsProvider.activeCrops.first;
+  }
+
+  DiseaseKnowledgeModel? _resolveDiseaseMatch({
+    required AiBackendDetectResponse detection,
+    required CropsProvider cropsProvider,
+    required CropModel? selectedCrop,
+    required String? rejectionMessage,
+  }) {
+    if (rejectionMessage != null) {
+      return null;
+    }
+
+    final primary = detection.primaryDetection;
+    if (primary == null) {
+      return null;
+    }
+
+    final targetLabel = _normalizeLabel(primary.label);
+    final targetLabelKey = primary.labelKey?.trim();
+    final cropType =
+        _tryParseCropType(detection.cropType) ?? selectedCrop?.cropType;
+
+    for (final knowledge in cropsProvider.diseaseKnowledge) {
+      final sameCrop = cropType == null || knowledge.cropType == cropType;
+      if (!sameCrop) continue;
+
+      final knowledgeLabelKey = knowledge.labelKey?.trim();
+      if (targetLabelKey != null &&
+          targetLabelKey.isNotEmpty &&
+          knowledgeLabelKey != null &&
+          knowledgeLabelKey.isNotEmpty &&
+          knowledgeLabelKey == targetLabelKey) {
+        return knowledge;
+      }
+
+      final diseaseName = _normalizeLabel(knowledge.diseaseName);
+      if (diseaseName == targetLabel ||
+          diseaseName.contains(targetLabel) ||
+          targetLabel.contains(diseaseName)) {
+        return knowledge;
+      }
+    }
+
+    return _buildFallbackKnowledge(
+      label: primary.label,
+      cropType: cropType,
+      detection: detection,
+    );
+  }
+
+  String? _rejectionMessageForDetection({
+    required AiBackendDetectResponse detection,
+    required CropModel? selectedCrop,
+  }) {
+    if (detection.status.toLowerCase() == 'no_match') {
+      return detection.notes.isNotEmpty
+          ? detection.notes.first
+          : 'This photo does not clearly match a supported crop disease. Upload a clear crop-leaf photo and try again.';
+    }
+
+    final primary = detection.primaryDetection;
+    if (primary == null) {
+      return 'This photo does not clearly match a supported crop disease. Upload a clear crop-leaf photo and try again.';
+    }
+
+    final predictedCropType = _tryParseCropType(detection.cropType);
+    if (selectedCrop != null &&
+        predictedCropType != null &&
+        predictedCropType != selectedCrop.cropType) {
+      return 'This photo looks like ${_cropTypeLabel(predictedCropType)}, but you are scanning ${_cropTypeLabel(selectedCrop.cropType)}. Upload a photo of the selected crop or switch crops first.';
+    }
+
+    if (primary.confidence < AppConstants.temporaryScannerAcceptedConfidence) {
+      return 'This photo does not clearly match a supported crop disease. Upload a clearer close-up of the affected crop leaf and try again.';
+    }
+
+    return null;
+  }
+
+  CropType? _tryParseCropType(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return null;
+    }
+    for (final cropType in CropType.values) {
+      if (cropType.value == value.trim()) {
+        return cropType;
+      }
+    }
+    return null;
+  }
+
+  bool _shouldAttachDiagnosisToChat(AiBackendDetectResponse detection) {
+    final source = detection.source.toLowerCase();
+    final modelName = detection.model.name.toLowerCase();
+    final label = detection.primaryDetection?.label.toLowerCase() ?? '';
+
+    return !source.contains('mock') &&
+        !modelName.contains('mock') &&
+        label != 'sample_disease_region';
+  }
+
+  DiseaseKnowledgeModel _buildFallbackKnowledge({
+    required String label,
+    required CropType? cropType,
+    required AiBackendDetectResponse detection,
+  }) {
+    final now = DateTime.now();
+    final title = _titleCaseLabel(label);
+    return DiseaseKnowledgeModel(
+      id: 'backend-$label',
+      cropType: cropType ?? CropType.tomato,
+      labelKey:
+          detection.primaryDetection?.labelKey ?? _normalizeLabelKey(label),
+      diseaseName: title,
+      description:
+          'Detected by the AI backend. Add a matching knowledge-base entry for tailored treatment details.',
+      symptoms: const [
+        'Backend detection returned a label for the affected plant area.',
+        'A matching treatment record was not found in the current knowledge base.',
+      ],
+      treatmentSteps: const [
+        'Inspect the highlighted affected area again.',
+        'Use the AI assistant for monitoring guidance.',
+        'Confirm the disease against your curated knowledge dataset.',
+      ],
+      sourceName: detection.source,
+      createdAt: now,
+      updatedAt: now,
+    );
+  }
+
+  String _normalizeLabel(String value) {
+    return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+  }
+
+  String _titleCaseLabel(String value) {
+    final normalized = _normalizeLabel(value);
+    if (normalized.isEmpty) {
+      return 'Unknown disease';
+    }
+    return normalized
+        .split(' ')
+        .map((part) => part.isEmpty
+            ? part
+            : '${part[0].toUpperCase()}${part.substring(1)}')
+        .join(' ');
+  }
+
+  String _cropTypeLabel(CropType cropType) {
+    final name = cropType.name;
+    return '${name[0].toUpperCase()}${name.substring(1)}';
+  }
+
+  String _normalizeLabelKey(String value) {
+    return value
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+  }
+
+  AiBackendDetectionItem? get _primaryDetection => _detection?.primaryDetection;
+
+  String get _confidenceLabel {
+    final confidence = _primaryDetection?.confidence;
+    if (confidence == null) {
+      return 'MATCH FOUND';
+    }
+    return '${(confidence * 100).toStringAsFixed(0)}% CONFIDENCE';
+  }
+}
+
+class _XFileImageView extends StatelessWidget {
+  final XFile file;
+  final double? height;
+  final double? width;
+  final BoxFit fit;
+
+  const _XFileImageView(
+    this.file, {
+    required this.height,
+    required this.width,
+    required this.fit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List>(
+      future: file.readAsBytes(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return Container(
+            height: height,
+            width: width,
+            color: AppColors.backgroundGreenLight,
+            alignment: Alignment.center,
+            child: const CircularProgressIndicator(color: AppColors.primary),
+          );
+        }
+
+        return Image.memory(
+          snapshot.data!,
+          height: height,
+          width: width,
+          fit: fit,
+          gaplessPlayback: true,
+        );
+      },
+    );
+  }
+}

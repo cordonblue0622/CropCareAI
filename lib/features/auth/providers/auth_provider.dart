@@ -1,0 +1,319 @@
+import 'package:flutter/foundation.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'dart:async';
+import '../../../core/constants/app_constants.dart';
+import '../../../data/models/user_model.dart';
+import '../../../data/repositories/auth_repository.dart';
+
+enum AuthStatus { unknown, authenticated, unauthenticated, loading }
+
+class AuthProvider extends ChangeNotifier {
+  final AuthRepository authRepository;
+
+  AuthStatus _status = AuthStatus.unknown;
+  UserModel? _currentUser;
+  String? _errorMessage;
+  String? _infoMessage;
+  StreamSubscription<AuthState>? _authStateSubscription;
+
+  AuthProvider({required this.authRepository}) {
+    _init();
+  }
+
+  AuthStatus get status => _status;
+  UserModel? get currentUser => _currentUser;
+  String? get errorMessage => _errorMessage;
+  String? get infoMessage => _infoMessage;
+  bool get isLoading => _status == AuthStatus.loading;
+  bool get isAuthenticated => _status == AuthStatus.authenticated;
+  bool get isResolved => _status != AuthStatus.unknown;
+
+  Future<void> _restoreSession() async {
+    _status = AuthStatus.loading;
+    notifyListeners();
+
+    try {
+      final restoredUser = authRepository.isSignedIn
+          ? await authRepository.loadCurrentUser()
+          : null;
+      _currentUser = restoredUser ?? authRepository.currentUser;
+      _status =
+          _currentUser != null ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+    } catch (_) {
+      _currentUser = authRepository.currentUser;
+      _status =
+          _currentUser != null ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+    }
+
+    notifyListeners();
+  }
+
+  // ─── Init ─────────────────────────────────────────────────────────────────
+
+  void _init() {
+    // Listen to Supabase auth state changes
+    _authStateSubscription = authRepository.authStateChanges.listen((AuthState state) async {
+      if (state.event == AuthChangeEvent.signedIn && state.session != null) {
+        try {
+          _currentUser =
+              await authRepository.loadCurrentUser() ?? authRepository.currentUser;
+        } catch (_) {
+          _currentUser = authRepository.currentUser;
+        }
+        _status =
+            _currentUser != null ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+      } else if (state.event == AuthChangeEvent.signedOut) {
+        _currentUser = null;
+        _status = AuthStatus.unauthenticated;
+      }
+      notifyListeners();
+    });
+
+    // Restore existing session
+    _restoreSession();
+  }
+
+  @override
+  void dispose() {
+    _authStateSubscription?.cancel();
+    super.dispose();
+  }
+
+  // ─── Email Auth ───────────────────────────────────────────────────────────
+
+  Future<bool> signUp({
+    required String email,
+    required String password,
+    required String fullName,
+    String? barangay,
+    required String municipality,
+    required String province,
+    required String country,
+  }) async {
+    _setLoading();
+    final result = await authRepository.signUp(
+      email: email,
+      password: password,
+      fullName: fullName,
+      barangay: barangay,
+      municipality: municipality,
+      province: province,
+      country: country,
+    );
+    return _handleSignUpResult(result);
+  }
+
+  Future<bool> updateProfileLocation({
+    String? barangay,
+    required String municipality,
+    required String province,
+    required String country,
+  }) async {
+    try {
+      final user = await authRepository.updateProfileLocation(
+        barangay: barangay,
+        municipality: municipality,
+        province: province,
+        country: country,
+      );
+      _currentUser = user;
+      _errorMessage = null;
+      _infoMessage = 'Profile updated.';
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _errorMessage =
+          e is AuthException ? e.message : 'Could not update profile.';
+      _infoMessage = null;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> signIn({
+    required String email,
+    required String password,
+  }) async {
+    _setLoading();
+    final result =
+        await authRepository.signIn(email: email, password: password);
+    return _handleResult(result);
+  }
+
+  // ─── Google Sign-In ───────────────────────────────────────────────────────
+
+  Future<bool> signInWithGoogle() async {
+    _setLoading();
+    try {
+      if (kIsWeb) {
+        final started =
+            await authRepository.supabaseService.signInWithOAuthProvider(
+          provider: OAuthProvider.google,
+          redirectTo: _webRedirectUrl,
+        );
+        if (!started) {
+          _setError('Could not start Google sign-in.');
+          return false;
+        }
+        return true;
+      }
+
+      final GoogleSignIn googleSignIn = GoogleSignIn(
+        clientId: AppConstants.googleIosClientId,
+        serverClientId: AppConstants.googleWebClientId,
+        scopes: ['email', 'profile'],
+      );
+
+      final googleUser = await googleSignIn.signIn();
+      if (googleUser == null) {
+        _setError('Google sign-in cancelled.');
+        return false;
+      }
+
+      final googleAuth = await googleUser.authentication;
+      if (googleAuth.idToken == null) {
+        _setError('Failed to get Google ID token.');
+        return false;
+      }
+
+      final response =
+          await authRepository.supabaseService.signInWithGoogleIdToken(
+        idToken: googleAuth.idToken!,
+        accessToken: googleAuth.accessToken,
+      );
+
+      final result = await authRepository.handleSocialAuthResponse(response);
+      return _handleResult(result);
+    } on AuthException catch (e) {
+      _setError(e.message);
+      return false;
+    } catch (e) {
+      _setError(e.toString());
+      return false;
+    }
+  }
+
+  // ─── Facebook Sign-In ─────────────────────────────────────────────────────
+
+  Future<bool> signInWithFacebook() async {
+    _setLoading();
+    try {
+      if (kIsWeb) {
+        final started =
+            await authRepository.supabaseService.signInWithOAuthProvider(
+          provider: OAuthProvider.facebook,
+          redirectTo: _webRedirectUrl,
+        );
+        if (!started) {
+          _setError('Could not start Facebook sign-in.');
+          return false;
+        }
+        return true;
+      }
+
+      final LoginResult fbResult = await FacebookAuth.instance.login(
+        permissions: ['email', 'public_profile'],
+      );
+
+      if (fbResult.status != LoginStatus.success) {
+        _setError('Facebook sign-in cancelled or failed.');
+        return false;
+      }
+
+      final token = fbResult.accessToken!.tokenString;
+      final response =
+          await authRepository.supabaseService.signInWithFacebookToken(
+        accessToken: token,
+      );
+
+      final result = await authRepository.handleSocialAuthResponse(response);
+      return _handleResult(result);
+    } on AuthException catch (e) {
+      _setError(e.message);
+      return false;
+    } catch (e) {
+      _setError(e.toString());
+      return false;
+    }
+  }
+
+  // ─── Sign Out ─────────────────────────────────────────────────────────────
+
+  Future<void> signOut() async {
+    _setLoading();
+    await authRepository.signOut();
+    _currentUser = null;
+    _status = AuthStatus.unauthenticated;
+    notifyListeners();
+  }
+
+  // ─── Password Reset ───────────────────────────────────────────────────────
+
+  Future<bool> sendPasswordReset(String email) async {
+    try {
+      await authRepository.sendPasswordReset(email);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+
+  String get _webRedirectUrl {
+    final uri = Uri.base;
+    final path = uri.path.isEmpty ? '/' : uri.path;
+    return uri.replace(path: path, query: null, fragment: null).toString();
+  }
+
+  void _setLoading() {
+    _status = AuthStatus.loading;
+    _errorMessage = null;
+    _infoMessage = null;
+    notifyListeners();
+  }
+
+  void _setError(String message) {
+    _status = AuthStatus.unauthenticated;
+    _errorMessage = message;
+    _infoMessage = null;
+    notifyListeners();
+  }
+
+  bool _handleSignUpResult(AuthResult result) {
+    if (result.success && result.requiresEmailConfirmation) {
+      _currentUser = null;
+      _status = AuthStatus.unauthenticated;
+      _errorMessage = null;
+      _infoMessage = result.message;
+      notifyListeners();
+      return true;
+    }
+
+    _infoMessage = null;
+    return _handleResult(result);
+  }
+
+  bool _handleResult(AuthResult result) {
+    if (result.success) {
+      _currentUser = result.user;
+      _status = AuthStatus.authenticated;
+      _errorMessage = null;
+      _infoMessage = result.message;
+    } else {
+      _status = AuthStatus.unauthenticated;
+      _errorMessage = result.error;
+      _infoMessage = null;
+    }
+    notifyListeners();
+    return result.success;
+  }
+
+  void clearError() {
+    _errorMessage = null;
+    _infoMessage = null;
+    notifyListeners();
+  }
+}

@@ -1,0 +1,16 @@
+raw_label,label_key,crop_type,display_name,is_supported_in_flutter_app,notes
+Pepper__bell___Bacterial_spot,pepper_bacterial_spot,pepper,Bacterial Spot,true,Bell pepper source label mapped to generic pepper crop enum
+Pepper__bell___healthy,pepper_healthy,pepper,Healthy,true,Bell pepper source label mapped to generic pepper crop enum
+Potato___Early_blight,potato_early_blight,potato,Early Blight,false,Potato is not in current Flutter crop enum
+Potato___Late_blight,potato_late_blight,potato,Late Blight,false,Potato is not in current Flutter crop enum
+Potato___healthy,potato_healthy,potato,Healthy,false,Potato is not in current Flutter crop enum
+Tomato_Bacterial_spot,tomato_bacterial_spot,tomato,Bacterial Spot,true,
+Tomato_Early_blight,tomato_early_blight,tomato,Early Blight,true,
+Tomato_Late_blight,tomato_late_blight,tomato,Late Blight,true,
+Tomato_Leaf_Mold,tomato_leaf_mold,tomato,Leaf Mold,true,
+Tomato_Septoria_leaf_spot,tomato_septoria_leaf_spot,tomato,Septoria Leaf Spot,true,
+Tomato_Spider_mites_Two_spotted_spider_mite,tomato_spider_mites_two_spotted_spider_mite,tomato,Spider Mites (Two-spotted Spider Mite),true,
+Tomato__Target_Spot,tomato_target_spot,tomato,Target Spot,true,
+Tomato__Tomato_YellowLeaf__Curl_Virus,tomato_yellow_leaf_curl_virus,tomato,Tomato Yellow Leaf Curl Virus,true,
+Tomato__Tomato_mosaic_virus,tomato_mosaic_virus,tomato,Tomato Mosaic Virus,true,
+Tomato_healthy,tomato_healthy,tomato,Healthy,true,
