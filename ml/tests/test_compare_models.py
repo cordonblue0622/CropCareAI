@@ -182,3 +182,73 @@ def test_promotion_verdict_promotes_when_all_gates_pass() -> None:
 
     assert verdict["status"] == "PROMOTE"
     assert verdict["reasons"] == []
+
+
+def test_render_markdown_report_contains_verdict_and_per_class_table(
+    tmp_path: Path,
+) -> None:
+    from cropcare_training.compare_models import render_markdown_report
+
+    base = {
+        "macro_f1": 0.91,
+        "accuracy": 0.93,
+        "per_class": {
+            "a": {"precision": 0.92, "recall": 0.91, "f1": 0.91},
+            "b": {"precision": 0.93, "recall": 0.93, "f1": 0.93},
+        },
+    }
+    candidate = {
+        "macro_f1": 0.94,
+        "accuracy": 0.95,
+        "per_class": {
+            "a": {"precision": 0.95, "recall": 0.93, "f1": 0.94},
+            "b": {"precision": 0.95, "recall": 0.95, "f1": 0.95},
+        },
+    }
+    verdict = {"status": "PROMOTE", "reasons": []}
+
+    report = render_markdown_report(
+        base=base,
+        candidate=candidate,
+        verdict=verdict,
+        labels=["a", "b"],
+        base_path=Path("base.tflite"),
+        candidate_path=Path("candidate.tflite"),
+    )
+
+    assert "PROMOTE" in report
+    assert "macro_f1" in report
+    assert "| a |" in report
+    assert "0.94" in report  # candidate F1 for class a
+    assert "Δ" in report  # delta column header
+
+
+def test_write_comparison_report_persists_json_and_markdown(
+    tmp_path: Path,
+) -> None:
+    from cropcare_training.compare_models import write_comparison_report
+
+    payload = {
+        "base_path": "base.tflite",
+        "candidate_path": "candidate.tflite",
+        "labels": ["a"],
+        "base_metrics": {
+            "macro_f1": 0.9,
+            "accuracy": 0.9,
+            "per_class": {"a": {"precision": 0.9, "recall": 0.9, "f1": 0.9}},
+        },
+        "candidate_metrics": {
+            "macro_f1": 0.95,
+            "accuracy": 0.95,
+            "per_class": {"a": {"precision": 0.95, "recall": 0.95, "f1": 0.95}},
+        },
+        "verdict": {"status": "PROMOTE", "reasons": []},
+    }
+
+    write_comparison_report(payload=payload, report_dir=tmp_path)
+
+    assert (tmp_path / "comparison_report.json").exists()
+    assert (tmp_path / "comparison_report.md").exists()
+    assert "PROMOTE" in (
+        tmp_path / "comparison_report.md"
+    ).read_text(encoding="utf-8")

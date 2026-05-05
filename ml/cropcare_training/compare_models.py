@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
 
 
@@ -196,3 +198,150 @@ def promotion_verdict(
         "status": "PROMOTE" if not reasons else "BLOCK",
         "reasons": reasons,
     }
+
+
+def render_markdown_report(
+    *,
+    base: dict,
+    candidate: dict,
+    verdict: dict,
+    labels: list[str],
+    base_path: Path,
+    candidate_path: Path,
+) -> str:
+    """Render a human-readable comparison report."""
+    lines: list[str] = []
+    lines.append("# CropCare v2 Model Comparison\n")
+    lines.append(f"**Verdict:** `{verdict['status']}`\n")
+    if verdict.get("reasons"):
+        lines.append("**Block reasons:**\n")
+        for reason in verdict["reasons"]:
+            lines.append(f"- {reason}")
+        lines.append("")
+
+    lines.append(f"- **Base model:** `{base_path}`")
+    lines.append(f"- **Candidate model:** `{candidate_path}`\n")
+
+    lines.append("## Overall metrics\n")
+    lines.append("| Metric | Base | Candidate | Δ |")
+    lines.append("|---|---|---|---|")
+    for key in ("macro_f1", "accuracy"):
+        base_value = float(base.get(key, 0.0))
+        candidate_value = float(candidate.get(key, 0.0))
+        lines.append(
+            f"| {key} | {base_value:.4f} | {candidate_value:.4f} "
+            f"| {candidate_value - base_value:+.4f} |"
+        )
+    lines.append("")
+
+    lines.append("## Per-class\n")
+    lines.append(
+        "| Label | Base F1 | Candidate F1 | Δ F1 | Candidate Precision | Candidate Recall |"
+    )
+    lines.append("|---|---|---|---|---|---|")
+    for label in labels:
+        base_metrics = base.get("per_class", {}).get(label, {})
+        cand_metrics = candidate.get("per_class", {}).get(label, {})
+        base_f1 = float(base_metrics.get("f1", 0.0))
+        cand_f1 = float(cand_metrics.get("f1", 0.0))
+        cand_p = float(cand_metrics.get("precision", 0.0))
+        cand_r = float(cand_metrics.get("recall", 0.0))
+        lines.append(
+            f"| {label} | {base_f1:.4f} | {cand_f1:.4f} | "
+            f"{cand_f1 - base_f1:+.4f} | {cand_p:.4f} | {cand_r:.4f} |"
+        )
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def write_comparison_report(*, payload: dict, report_dir: Path) -> None:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "comparison_report.json").write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
+    markdown = render_markdown_report(
+        base=payload["base_metrics"],
+        candidate=payload["candidate_metrics"],
+        verdict=payload["verdict"],
+        labels=payload["labels"],
+        base_path=Path(payload["base_path"]),
+        candidate_path=Path(payload["candidate_path"]),
+    )
+    (report_dir / "comparison_report.md").write_text(markdown, encoding="utf-8")
+
+
+def _read_labels(path: Path) -> list[str]:
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Compare two TFLite models on a test split and emit a verdict."
+    )
+    parser.add_argument("--base", type=Path, required=True)
+    parser.add_argument("--base-labels", type=Path, required=True)
+    parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument("--candidate-labels", type=Path, required=True)
+    parser.add_argument("--test-dir", type=Path, required=True)
+    parser.add_argument("--report-dir", type=Path, required=True)
+    parser.add_argument("--min-macro-f1", type=float, default=0.90)
+    parser.add_argument("--min-accuracy", type=float, default=0.92)
+    parser.add_argument("--min-per-class-f1", type=float, default=0.85)
+    parser.add_argument("--min-per-class-precision", type=float, default=0.80)
+    parser.add_argument("--min-per-class-recall", type=float, default=0.80)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    base_labels = _read_labels(args.base_labels)
+    candidate_labels = _read_labels(args.candidate_labels)
+    if base_labels != candidate_labels:
+        # Compare on the intersection (preserves the candidate ordering for
+        # row counts and matches the spec's per-class regression check).
+        common = [label for label in candidate_labels if label in base_labels]
+        if not common:
+            raise ValueError(
+                "Base and candidate label sets do not overlap; cannot compare."
+            )
+        labels = common
+    else:
+        labels = candidate_labels
+
+    base_metrics = evaluate_model(
+        model_path=args.base, labels=labels, test_dir=args.test_dir
+    )
+    candidate_metrics = evaluate_model(
+        model_path=args.candidate, labels=labels, test_dir=args.test_dir
+    )
+    verdict = promotion_verdict(
+        base_metrics=base_metrics,
+        candidate_metrics=candidate_metrics,
+        min_macro_f1=args.min_macro_f1,
+        min_accuracy=args.min_accuracy,
+        min_per_class_f1=args.min_per_class_f1,
+        min_per_class_precision=args.min_per_class_precision,
+        min_per_class_recall=args.min_per_class_recall,
+    )
+    payload = {
+        "base_path": str(args.base),
+        "candidate_path": str(args.candidate),
+        "labels": labels,
+        "base_metrics": base_metrics,
+        "candidate_metrics": candidate_metrics,
+        "verdict": verdict,
+    }
+    write_comparison_report(payload=payload, report_dir=args.report_dir)
+    print(f"Wrote comparison report to {args.report_dir}")
+    if verdict["status"] != "PROMOTE":
+        raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    main()
