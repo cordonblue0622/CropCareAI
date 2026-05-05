@@ -325,6 +325,7 @@ def test_release_steps_train_then_promote_then_build_android() -> None:
 
     assert [step.name for step in steps] == [
         "train-efficientnet-release",
+        "compare-models",
         "promote-artifacts",
         "flutter-test",
         "flutter-build-apk",
@@ -335,29 +336,108 @@ def test_release_steps_train_then_promote_then_build_android() -> None:
     assert "apk" in steps[-1].args
 
 
+def test_release_steps_include_comparison_then_promote() -> None:
+    from cropcare_training.release import ReleaseConfig, build_release_steps
+
+    config = ReleaseConfig(
+        label_profile="cropcare_v2_base_parity",
+        max_per_label=None,
+        min_per_label=80,
+        epochs=30,
+        batch_size=32,
+        build_android=False,
+    )
+
+    steps = build_release_steps(config)
+    names = [step.name for step in steps]
+
+    assert names == [
+        "train-efficientnet-release",
+        "compare-models",
+        "promote-artifacts",
+        "flutter-test",
+    ]
+    compare_args = next(step.args for step in steps if step.name == "compare-models")
+    assert "--base" in compare_args
+    assert any(
+        "cropcare_efficientnet_with_eggplant.tflite" in arg for arg in compare_args
+    )
+    assert "--candidate" in compare_args
+    assert any(arg.endswith("cropcare_efficientnet_v2.tflite") for arg in compare_args)
+
+
+def test_promote_artifacts_aborts_when_comparison_verdict_is_block(
+    tmp_path,
+) -> None:
+    import json
+    import pytest
+
+    from cropcare_training.release import promote_artifacts
+
+    output_dir = tmp_path / "artifacts"
+    output_dir.mkdir()
+    (output_dir / "cropcare_efficientnet_v2.tflite").write_bytes(b"\x00" * 16)
+    (output_dir / "labels_v2.txt").write_text("a\nb\n", encoding="utf-8")
+    (output_dir / "training_report_v2.json").write_text(
+        json.dumps(
+            {
+                "metrics": {
+                    "macro_f1": 0.95,
+                    "per_class_precision_recall": {
+                        "a": {"recall": 0.9},
+                        "b": {"recall": 0.9},
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "comparison_report.json").write_text(
+        json.dumps(
+            {
+                "verdict": {
+                    "status": "BLOCK",
+                    "reasons": ["candidate macro_f1 0.8500 < floor 0.9000"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        promote_artifacts(
+            output_dir=output_dir,
+            assets_dir=tmp_path / "assets",
+            validate_shape=False,
+        )
+
+    assert "BLOCK" in str(excinfo.value)
+    assert not (tmp_path / "assets" / "cropcare_efficientnet_v2.tflite").exists()
+
+
 def test_metric_gate_requires_macro_f1_and_per_class_recall() -> None:
     report = {
         "metrics": {
-            "macro_f1": 0.81,
+            "macro_f1": 0.91,
             "per_class_precision_recall": {
-                "tomato_healthy": {"recall": 0.75},
-                "pepper_healthy": {"recall": 0.70},
+                "tomato_healthy": {"recall": 0.85},
+                "pepper_healthy": {"recall": 0.80},
                 "accuracy": 0.9,
             },
         }
     }
 
-    validate_metric_gates(report, min_macro_f1=0.80, min_recall=0.70)
+    validate_metric_gates(report, min_macro_f1=0.90, min_recall=0.80)
 
-    report["metrics"]["per_class_precision_recall"]["pepper_healthy"]["recall"] = 0.69
+    report["metrics"]["per_class_precision_recall"]["pepper_healthy"]["recall"] = 0.79
     try:
-        validate_metric_gates(report, min_macro_f1=0.80, min_recall=0.70)
+        validate_metric_gates(report, min_macro_f1=0.90, min_recall=0.80)
     except ValueError as exc:
         message = str(exc)
     else:
         raise AssertionError("Expected recall gate to fail")
 
-    assert "pepper_healthy recall 0.6900 < 0.7000" in message
+    assert "pepper_healthy recall 0.7900 < 0.8000" in message
 
 
 def test_plantvillage_zip_downloader_reuses_cached_archive(tmp_path) -> None:
