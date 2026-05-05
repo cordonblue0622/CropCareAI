@@ -75,6 +75,32 @@ def test_mixup_pair_blends_two_batches_when_alpha_positive() -> None:
     np.testing.assert_allclose(lab_arr.sum(axis=1), 1.0, atol=1e-6)
 
 
+def test_mixup_pair_keeps_labels_inside_unit_interval_under_default_sampling() -> None:
+    """Beta(alpha, alpha) sampling must yield lam in [0, 1] so labels stay
+    proper convex combinations; G1/(G2+G3) with three independent gammas
+    is NOT a Beta sample and can give lam > 1, which produces negative
+    label entries and nonsensical (negative) cross-entropy loss in
+    practice."""
+    from cropcare_training.augmentation import mixup_pair
+
+    batch_size = 4096
+    images_a = tf.zeros((batch_size, 2, 2, 3), dtype=tf.float32)
+    images_b = tf.zeros((batch_size, 2, 2, 3), dtype=tf.float32)
+    labels_a = tf.tile(tf.constant([[1.0, 0.0]]), (batch_size, 1))
+    labels_b = tf.tile(tf.constant([[0.0, 1.0]]), (batch_size, 1))
+
+    _, mixed_labels = mixup_pair(
+        (images_a, labels_a),
+        (images_b, labels_b),
+        alpha=0.2,
+    )
+
+    label_arr = mixed_labels.numpy()
+    assert label_arr.min() >= 0.0
+    assert label_arr.max() <= 1.0
+    np.testing.assert_allclose(label_arr.sum(axis=1), 1.0, atol=1e-5)
+
+
 def test_mixup_pair_disabled_when_alpha_zero() -> None:
     from cropcare_training.augmentation import mixup_pair
 

@@ -67,13 +67,25 @@ def mixup_pair(
     images_b, labels_b = batch_b
     batch_size = tf.shape(images_a)[0]
     if seed is None:
-        lam = tf.random.gamma((batch_size,), alpha) / (
-            tf.random.gamma((batch_size,), alpha)
-            + tf.random.gamma((batch_size,), alpha)
-        )
+        # Sample lam ~ Beta(alpha, alpha) using the gamma trick:
+        # if G1 ~ Gamma(alpha) and G2 ~ Gamma(alpha) (independent), then
+        # G1 / (G1 + G2) ~ Beta(alpha, alpha) and is therefore strictly
+        # in (0, 1). Using three independent gammas (G1 / (G2 + G3))
+        # would NOT be a valid Beta sample and could give lam > 1, which
+        # turns the "convex" combination into an extrapolation with
+        # negative label entries and produces nonsensical (negative)
+        # cross-entropy loss during fine-tune.
+        g1 = tf.random.gamma((batch_size,), alpha)
+        g2 = tf.random.gamma((batch_size,), alpha)
+        lam = g1 / (g1 + g2)
     else:
         gen = tf.random.Generator.from_seed(seed)
         lam = gen.uniform((batch_size,), minval=alpha, maxval=1.0 - alpha)
+
+    # Belt-and-suspenders: numerical edge cases (e.g. both gammas tiny)
+    # can still nudge lam outside the unit interval; clip explicitly so
+    # the resulting label vectors are always proper convex combinations.
+    lam = tf.clip_by_value(lam, 0.0, 1.0)
 
     lam_images = tf.reshape(lam, (-1, 1, 1, 1))
     lam_labels = tf.reshape(lam, (-1, 1))
