@@ -42,3 +42,41 @@ def build_augmentation_block(seed: int = 1234):
         ],
         name="cropcare_augmentation_block",
     )
+
+
+def mixup_pair(
+    batch_a,
+    batch_b,
+    *,
+    alpha: float = 0.2,
+    seed: int | None = None,
+):
+    """Convex combination of two ``(images, one_hot_labels)`` batches.
+
+    Used as a ``tf.data`` transform during the fine-tune phase. When
+    ``alpha == 0.0`` the function returns ``batch_a`` unchanged so callers
+    can use the same wired-up dataset for warm-up (no MixUp) and
+    fine-tune (MixUp on).
+    """
+    import tensorflow as tf
+
+    images_a, labels_a = batch_a
+    if alpha <= 0.0:
+        return images_a, labels_a
+
+    images_b, labels_b = batch_b
+    batch_size = tf.shape(images_a)[0]
+    if seed is None:
+        lam = tf.random.gamma((batch_size,), alpha) / (
+            tf.random.gamma((batch_size,), alpha)
+            + tf.random.gamma((batch_size,), alpha)
+        )
+    else:
+        gen = tf.random.Generator.from_seed(seed)
+        lam = gen.uniform((batch_size,), minval=alpha, maxval=1.0 - alpha)
+
+    lam_images = tf.reshape(lam, (-1, 1, 1, 1))
+    lam_labels = tf.reshape(lam, (-1, 1))
+    mixed_images = lam_images * images_a + (1.0 - lam_images) * images_b
+    mixed_labels = lam_labels * labels_a + (1.0 - lam_labels) * labels_b
+    return mixed_images, mixed_labels
