@@ -1,10 +1,10 @@
 # CropCare v2 Model Upgrade — Design
 
-**Status:** approved (brainstorming) → pending implementation plan
+**Status:** approved (brainstorming) → implementation complete → revised mid-implementation to multi-model routing (see §13).
 **Date:** 2026-05-06
 **Owner:** Allain Legaspi
 **Hardware target:** Local CPU (no GPU)
-**Approach:** "Disciplined transfer-learning upgrade" (Approach 2 from brainstorming)
+**Approach:** "Disciplined transfer-learning upgrade" (Approach 2 from brainstorming) **+ multi-model routing for eggplant** (added 2026-05-06 after dataset audit).
 
 ## 1. Goal
 
@@ -295,6 +295,51 @@ change.
 | HF rate-limits or `data.zip` URL changes | low | `ensure_plantvillage_zip` already supports `HF_TOKEN` env var; document fallback path of letting the user pre-download. |
 | Wall-clock exceeds the user's overnight window | medium | Phase 2's early-stopping bounds it; `--epochs-cap` env var lets the user shorten if needed. Estimated 6–9 h on a strong CPU. |
 | Base model has no archived metrics, so per-class comparison's "regression" check uses freshly-computed base numbers, which can vary by ±0.01 due to random subsampling | low | Comparison harness uses fixed deterministic test split, no augmentation, batch size 1; numbers are reproducible. |
+
+## 13. Revision: multi-model routing for eggplant (2026-05-06)
+
+After implementing tasks 1–17 of the plan, the first release run surfaced a
+data constraint that wasn't visible during design: DigiGreen on Hugging
+Face only has **9** `eggplant_healthy` rows, **0** `eggplant_mosaic_virus`
+rows, and **7** `eggplant_leaf_spot` rows. Mainstream PlantVillage has no
+eggplant classes at all, and a survey of HF datasets found **no
+permissively-licensed eggplant disease dataset** (the only large NC
+candidate, `Saon110/bd-crop-vegetable-plant-disease-dataset`, has no
+eggplant either; `Mobiusi/Crop-Pest-and-Disease-Classification-Dataset`
+publishes only 5 sample rows on HF).
+
+Reaching the §3 hard floor of macro-F1 ≥ 0.90 across all 16 base-parity
+labels with that data is therefore impossible without an external
+(non-HF) eggplant dataset.
+
+The accepted resolution is **multi-model routing in the Flutter classifier**:
+
+- v2 trains on the **`cropcare_v2_subset_100`** profile (13 classes:
+  9 tomato + 2 pepper + 1 squash + healthy variants — no eggplant).
+  This is achievable from the available data and gives a real accuracy
+  improvement on the 12 classes that overlap with base.
+- The **legacy `cropcare_efficientnet_with_eggplant.tflite` stays
+  shipped** alongside the new v2 model. It is loaded lazily and used
+  only when the caller's `cropType == "eggplant"`. Tomato, pepper,
+  squash, and unknown crops route to the v2 model.
+- Both interpreters live in
+  [LocalClassifierService](../../../lib/services/local_classifier_service_io.dart);
+  the eggplant model is loaded on-demand. If its asset is missing the
+  service falls back to the v2 model rather than crashing.
+
+§3's promotion gate stays — it now applies only against the 12 labels
+that overlap between base and the new v2 model (the comparison harness
+already intersects label sets correctly).
+
+This reframes the goal:
+
+- **What we ship:** a measurably better classifier for tomato, pepper,
+  and squash + unchanged eggplant capability.
+- **What we don't ship:** a regression. Nothing in the legacy eggplant
+  classes degrades.
+- **What's deferred:** retraining eggplant. A v3 pass adds eggplant
+  once a usable dataset is sourced (Kaggle / Roboflow / direct upload),
+  at which point the legacy model can finally retire.
 
 ## 11. Out of scope (parking lot)
 

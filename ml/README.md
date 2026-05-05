@@ -5,13 +5,28 @@ It is intentionally outside the Flutter/FastAPI runtime path.
 
 ## Scope
 
-V2 base-parity scope: tomato, pepper, and eggplant (16 labels matching
-the shipped `assets/models/labels_with_eggplant.txt`). Squash and
-pechay are knowledge-base only for this training pass — squash lacks
-licensed data outside PlantVillage's powdery-mildew class, and pechay
-has no production-ready Hugging Face source yet. The `cropcare_v2_full`
-profile keeps the 17-label superset for future runs once squash data is
-ready.
+**v2 trains the `cropcare_v2_subset_100` profile (13 labels):** 9 tomato
+classes, 2 pepper classes, and `squash_powdery_mildew`. It does **not**
+include eggplant — no permissively-licensed eggplant disease dataset is
+reachable via Hugging Face, so eggplant data sourcing is deferred to v3.
+
+To preserve eggplant capability without shipping a regression, the
+Flutter app uses **multi-model routing** at runtime:
+
+- Eggplant scans → legacy `cropcare_efficientnet_with_eggplant.tflite`
+  (still shipped in `assets/models/`).
+- Tomato / pepper / squash / unknown crop scans → new
+  `cropcare_efficientnet_v2.tflite` produced by this pipeline.
+
+See
+[lib/services/local_classifier_service_io.dart](../lib/services/local_classifier_service_io.dart)
+for the routing logic and
+[docs/superpowers/specs/2026-05-06-cropcare-v2-model-upgrade-design.md](../docs/superpowers/specs/2026-05-06-cropcare-v2-model-upgrade-design.md)
+§13 for the rationale.
+
+Pechay remains knowledge-base only and is not a trainable v2 label. The
+`cropcare_v2_full` and `cropcare_v2_base_parity` profiles are still
+defined for future runs once eggplant data lands.
 
 Production-eligible sources:
 
@@ -67,7 +82,7 @@ That uses these defaults from the spec:
 
 | Flag | Default | Notes |
 |---|---|---|
-| `-LabelProfile` | `cropcare_v2_base_parity` | 16 labels, matches base |
+| `-LabelProfile` | `cropcare_v2_subset_100` | 13 labels: tomato + pepper + squash (no eggplant; eggplant uses the legacy model in-app) |
 | `-Epochs` | `30` | 5 warm-up + ≤25 fine-tune |
 | `-BatchSize` | `32` | |
 | `-MaxPerLabel` | unset | PlantVillage uncapped |
