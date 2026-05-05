@@ -259,8 +259,19 @@ def train_and_export(
     train_ds_warmup = raw_train_ds.shuffle(buffer_size=2048).prefetch(autotune)
 
     def _mixup_dataset(base_ds):
-        shuffled_a = base_ds.shuffle(buffer_size=2048)
-        shuffled_b = base_ds.shuffle(buffer_size=2048, seed=4242)
+        # Unbatch then re-batch with drop_remainder=True so both streams
+        # have identical batch sizes at every step. Without this, the
+        # final partial batch (e.g. 16 of 32) lands at different positions
+        # in the two independently-shuffled streams and the MixUp
+        # convex-combination multiplication fails to broadcast across
+        # mismatched leading dimensions.
+        unbatched = base_ds.unbatch()
+        shuffled_a = unbatched.shuffle(buffer_size=2048).batch(
+            batch_size, drop_remainder=True
+        )
+        shuffled_b = unbatched.shuffle(buffer_size=2048, seed=4242).batch(
+            batch_size, drop_remainder=True
+        )
         return tf.data.Dataset.zip((shuffled_a, shuffled_b)).map(
             lambda a, b: mixup_pair(a, b, alpha=0.2),
             num_parallel_calls=autotune,
