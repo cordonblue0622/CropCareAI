@@ -7,6 +7,13 @@ import '../core/constants/app_constants.dart';
 import '../core/constants/app_enums.dart';
 import '../data/models/ai_backend_models.dart';
 
+/// Tensor input dtype that the underlying TFLite model expects.
+///
+/// EfficientNet float32 models receive ``[1, H, W, 3]`` doubles in
+/// ``[0, 255]`` (preprocessing happens inside the model graph). INT8
+/// post-quantized models receive a flat ``Uint8List`` of raw RGB bytes.
+enum TfliteInputDtype { float32, uint8 }
+
 class TfliteClassifierCore {
   const TfliteClassifierCore();
 
@@ -17,48 +24,49 @@ class TfliteClassifierCore {
     required List<String> labels,
     String? cropType,
     String source = 'local-tflite',
-    String modelName = 'cropcare_efficientnet_with_eggplant',
-    String modelVersion = 'temporary-v1',
+    String modelName = 'cropcare_efficientnet_v2',
+    String modelVersion = 'v2-subset-100',
     String? modelSource,
   }) {
-    final inputShape = interpreter.getInputTensor(0).shape;
+    final inputTensor = interpreter.getInputTensor(0);
+    final outputTensor = interpreter.getOutputTensor(0);
+    final inputShape = inputTensor.shape;
     final inputHeight = inputShape[1];
     final inputWidth = inputShape[2];
+    final isUint8Input =
+        inputTensor.type.toString().toLowerCase().contains('uint8');
+    final isUint8Output =
+        outputTensor.type.toString().toLowerCase().contains('uint8');
 
-    final decoded = img.decodeImage(imageBytes);
-    if (decoded == null) {
-      throw Exception('Failed to decode image for TFLite inference.');
-    }
-
-    final resized = img.copyResize(
-      decoded,
-      width: inputWidth,
-      height: inputHeight,
-      interpolation: img.Interpolation.average,
+    final input = buildEfficientNetInputTensor(
+      imageBytes: imageBytes,
+      inputHeight: inputHeight,
+      inputWidth: inputWidth,
+      inputDtype:
+          isUint8Input ? TfliteInputDtype.uint8 : TfliteInputDtype.float32,
     );
 
-    final input = [
-      List.generate(
-        inputHeight,
-        (y) => List.generate(
-          inputWidth,
-          (x) {
-            final pixel = resized.getPixel(x, y);
-            // Normalize to [0, 1] — matches ImageDataGenerator(rescale=1./255)
-            return [
-              pixel.r / 255.0,
-              pixel.g / 255.0,
-              pixel.b / 255.0,
-            ];
-          },
-        ),
-      ),
-    ];
-
-    final output = [List<double>.filled(labels.length, 0.0)];
-    interpreter.run(input, output);
-
-    final scores = output.first;
+    final List<double> scores;
+    if (isUint8Output) {
+      final rawOutput = [List<int>.filled(labels.length, 0)];
+      interpreter.run(input, rawOutput);
+      final params = outputTensor.params;
+      final scale = params.scale;
+      final zeroPoint = params.zeroPoint;
+      scores = rawOutput.first
+          .map((value) => (value - zeroPoint) * scale)
+          .toList();
+      final total = scores.fold<double>(0.0, (a, b) => a + b);
+      if (total > 0) {
+        for (var i = 0; i < scores.length; i++) {
+          scores[i] = scores[i] / total;
+        }
+      }
+    } else {
+      final rawOutput = [List<double>.filled(labels.length, 0.0)];
+      interpreter.run(input, rawOutput);
+      scores = rawOutput.first;
+    }
     if (scores.isEmpty) {
       throw Exception('The TFLite model returned no predictions.');
     }
@@ -140,6 +148,63 @@ class TfliteClassifierCore {
     );
   }
 
+  /// Build the per-image input tensor for EfficientNetB0.
+  ///
+  /// Returns a `List<List<List<List<double>>>>` shaped
+  /// `[1, H, W, 3]` for float32 models, or a flat `Uint8List` of raw
+  /// RGB bytes for INT8 quantized models. Both contain raw `[0, 255]`
+  /// values — EfficientNet's preprocessing layer (or the quantization
+  /// scale/zero-point) handles normalization.
+  Object buildEfficientNetInputTensor({
+    required List<int> imageBytes,
+    required int inputHeight,
+    required int inputWidth,
+    TfliteInputDtype inputDtype = TfliteInputDtype.float32,
+  }) {
+    final decoded = img.decodeImage(Uint8List.fromList(imageBytes));
+    if (decoded == null) {
+      throw Exception('Failed to decode image for TFLite inference.');
+    }
+
+    final resized = img.copyResize(
+      decoded,
+      width: inputWidth,
+      height: inputHeight,
+      interpolation: img.Interpolation.average,
+    );
+
+    if (inputDtype == TfliteInputDtype.uint8) {
+      final buffer = Uint8List(inputHeight * inputWidth * 3);
+      var offset = 0;
+      for (var y = 0; y < inputHeight; y++) {
+        for (var x = 0; x < inputWidth; x++) {
+          final pixel = resized.getPixel(x, y);
+          buffer[offset++] = pixel.r.toInt();
+          buffer[offset++] = pixel.g.toInt();
+          buffer[offset++] = pixel.b.toInt();
+        }
+      }
+      return buffer;
+    }
+
+    return [
+      List.generate(
+        inputHeight,
+        (y) => List.generate(
+          inputWidth,
+          (x) {
+            final pixel = resized.getPixel(x, y);
+            return [
+              pixel.r.toDouble(),
+              pixel.g.toDouble(),
+              pixel.b.toDouble(),
+            ];
+          },
+        ),
+      ),
+    ];
+  }
+
   _LabelSpec _labelSpecFor(String rawLabel) {
     return _labelSpecs[rawLabel] ??
         _LabelSpec(
@@ -189,6 +254,96 @@ class _LabelSpec {
 }
 
 const Map<String, _LabelSpec> _labelSpecs = {
+  'pepper_bacterial_spot': _LabelSpec(
+    rawLabel: 'pepper_bacterial_spot',
+    displayLabel: 'Bell Pepper Bacterial Spot',
+    labelKey: 'pepper_bacterial_spot',
+    cropType: CropType.pepper,
+    supportedInKnowledgeBase: true,
+  ),
+  'pepper_healthy': _LabelSpec(
+    rawLabel: 'pepper_healthy',
+    displayLabel: 'Bell Pepper Healthy',
+    labelKey: 'pepper_healthy',
+    cropType: CropType.pepper,
+    supportedInKnowledgeBase: true,
+  ),
+  'squash_powdery_mildew': _LabelSpec(
+    rawLabel: 'squash_powdery_mildew',
+    displayLabel: 'Squash Powdery Mildew',
+    labelKey: 'squash_powdery_mildew',
+    cropType: CropType.squash,
+  ),
+  'tomato_bacterial_spot': _LabelSpec(
+    rawLabel: 'tomato_bacterial_spot',
+    displayLabel: 'Tomato Bacterial Spot',
+    labelKey: 'tomato_bacterial_spot',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
+  'tomato_early_blight': _LabelSpec(
+    rawLabel: 'tomato_early_blight',
+    displayLabel: 'Tomato Early Blight',
+    labelKey: 'tomato_early_blight',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
+  'tomato_late_blight': _LabelSpec(
+    rawLabel: 'tomato_late_blight',
+    displayLabel: 'Tomato Late Blight',
+    labelKey: 'tomato_late_blight',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
+  'tomato_leaf_mold': _LabelSpec(
+    rawLabel: 'tomato_leaf_mold',
+    displayLabel: 'Tomato Leaf Mold',
+    labelKey: 'tomato_leaf_mold',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
+  'tomato_mosaic_virus': _LabelSpec(
+    rawLabel: 'tomato_mosaic_virus',
+    displayLabel: 'Tomato Mosaic Virus',
+    labelKey: 'tomato_mosaic_virus',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
+  'tomato_septoria_leaf_spot': _LabelSpec(
+    rawLabel: 'tomato_septoria_leaf_spot',
+    displayLabel: 'Tomato Septoria Leaf Spot',
+    labelKey: 'tomato_septoria_leaf_spot',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
+  'tomato_spider_mites': _LabelSpec(
+    rawLabel: 'tomato_spider_mites',
+    displayLabel: 'Tomato Spider Mites',
+    labelKey: 'tomato_spider_mites',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
+  'tomato_target_spot': _LabelSpec(
+    rawLabel: 'tomato_target_spot',
+    displayLabel: 'Tomato Target Spot',
+    labelKey: 'tomato_target_spot',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
+  'tomato_yellow_leaf_curl_virus': _LabelSpec(
+    rawLabel: 'tomato_yellow_leaf_curl_virus',
+    displayLabel: 'Tomato Yellow Leaf Curl Virus',
+    labelKey: 'tomato_yellow_leaf_curl_virus',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
+  'tomato_healthy': _LabelSpec(
+    rawLabel: 'tomato_healthy',
+    displayLabel: 'Tomato Healthy',
+    labelKey: 'tomato_healthy',
+    cropType: CropType.tomato,
+    supportedInKnowledgeBase: true,
+  ),
   'Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot': _LabelSpec(
     rawLabel: 'Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot',
     displayLabel: 'Corn Cercospora Leaf Spot / Gray Leaf Spot',
