@@ -63,3 +63,122 @@ def test_run_tflite_inference_handles_uint8_quantized_model(
 
     assert probs.shape == (2,)
     assert (probs >= 0).all() and (probs <= 1).all()
+
+
+def test_evaluate_model_returns_macro_f1_and_per_class_metrics(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
+    from cropcare_training.compare_models import evaluate_model
+
+    test_dir = tmp_path / "test"
+    for label in ("a", "b"):
+        (test_dir / label).mkdir(parents=True)
+        for i in range(2):
+            Image.new(
+                "RGB",
+                (8, 8),
+                color=(255, 0, 0) if label == "a" else (0, 255, 0),
+            ).save(test_dir / label / f"{label}_{i}.png")
+
+    model_path = _toy_tflite_model(tmp_path, dtype="float")
+    metrics = evaluate_model(
+        model_path=model_path,
+        labels=["a", "b"],
+        test_dir=test_dir,
+    )
+
+    assert "macro_f1" in metrics
+    assert "accuracy" in metrics
+    assert "per_class" in metrics
+    assert set(metrics["per_class"]) == {"a", "b"}
+    for class_metrics in metrics["per_class"].values():
+        for key in ("precision", "recall", "f1", "support"):
+            assert key in class_metrics
+
+
+def test_promotion_verdict_blocks_when_macro_f1_below_floor() -> None:
+    from cropcare_training.compare_models import promotion_verdict
+
+    base = {
+        "macro_f1": 0.85,
+        "accuracy": 0.9,
+        "per_class": {"a": {"f1": 0.9}, "b": {"f1": 0.85}},
+    }
+    candidate_low = {
+        "macro_f1": 0.89,
+        "accuracy": 0.91,
+        "per_class": {"a": {"f1": 0.92}, "b": {"f1": 0.87}},
+    }
+
+    verdict = promotion_verdict(
+        base_metrics=base,
+        candidate_metrics=candidate_low,
+        min_macro_f1=0.90,
+        min_accuracy=0.92,
+        min_per_class_f1=0.85,
+    )
+
+    assert verdict["status"] == "BLOCK"
+    assert any("macro_f1" in reason for reason in verdict["reasons"])
+
+
+def test_promotion_verdict_blocks_when_class_regresses() -> None:
+    from cropcare_training.compare_models import promotion_verdict
+
+    base = {
+        "macro_f1": 0.91,
+        "accuracy": 0.94,
+        "per_class": {"a": {"f1": 0.95}, "b": {"f1": 0.93}},
+    }
+    candidate = {
+        "macro_f1": 0.92,
+        "accuracy": 0.95,
+        "per_class": {"a": {"f1": 0.96}, "b": {"f1": 0.86}},
+    }
+
+    verdict = promotion_verdict(
+        base_metrics=base,
+        candidate_metrics=candidate,
+        min_macro_f1=0.90,
+        min_accuracy=0.92,
+        min_per_class_f1=0.85,
+    )
+
+    assert verdict["status"] == "BLOCK"
+    assert any(
+        "regression" in reason and "b" in reason for reason in verdict["reasons"]
+    )
+
+
+def test_promotion_verdict_promotes_when_all_gates_pass() -> None:
+    from cropcare_training.compare_models import promotion_verdict
+
+    base = {
+        "macro_f1": 0.91,
+        "accuracy": 0.94,
+        "per_class": {
+            "a": {"f1": 0.95, "precision": 0.95, "recall": 0.95},
+            "b": {"f1": 0.93, "precision": 0.93, "recall": 0.93},
+        },
+    }
+    candidate = {
+        "macro_f1": 0.94,
+        "accuracy": 0.96,
+        "per_class": {
+            "a": {"f1": 0.96, "precision": 0.96, "recall": 0.96},
+            "b": {"f1": 0.94, "precision": 0.94, "recall": 0.94},
+        },
+    }
+
+    verdict = promotion_verdict(
+        base_metrics=base,
+        candidate_metrics=candidate,
+        min_macro_f1=0.90,
+        min_accuracy=0.92,
+        min_per_class_f1=0.85,
+    )
+
+    assert verdict["status"] == "PROMOTE"
+    assert verdict["reasons"] == []
