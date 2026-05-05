@@ -370,6 +370,32 @@ def test_plantvillage_zip_downloader_reuses_cached_archive(tmp_path) -> None:
     assert resolved.read_bytes() == b"cached"
 
 
+def test_build_model_emits_efficientnet_b0_with_augmentation_then_head() -> None:
+    pytest = __import__("pytest")
+    tf = pytest.importorskip("tensorflow")
+    from cropcare_training.train_efficientnet import build_model
+
+    model = build_model(num_classes=3, image_size=(64, 64), trainable_base=False)
+
+    assert isinstance(model, tf.keras.Model)
+    assert model.output_shape == (None, 3)
+    # The augmentation block must appear before the EfficientNetB0 backbone.
+    layer_names = [layer.name for layer in model.layers]
+    assert "cropcare_augmentation_block" in layer_names
+    aug_index = layer_names.index("cropcare_augmentation_block")
+    backbone_indices = [
+        i for i, name in enumerate(layer_names) if "efficientnet" in name.lower()
+    ]
+    assert backbone_indices, "EfficientNet backbone must be present"
+    assert aug_index < backbone_indices[0]
+    # Backbone is frozen.
+    assert all(
+        not layer.trainable
+        for layer in model.layers
+        if "efficientnet" in layer.name.lower()
+    )
+
+
 def test_base_parity_profile_matches_shipped_base_labels() -> None:
     labels = labels_for_profile("cropcare_v2_base_parity")
     excluded = excluded_labels_for_profile("cropcare_v2_base_parity")
