@@ -336,6 +336,73 @@ def test_release_steps_train_then_promote_then_build_android() -> None:
     assert "apk" in steps[-1].args
 
 
+def test_automation_default_uncaps_plantvillage_and_uses_base_parity_profile() -> None:
+    from cropcare_training.automation import TrainingRunConfig, build_run_steps
+
+    config = TrainingRunConfig()  # all defaults
+
+    assert config.label_profile == "cropcare_v2_base_parity"
+    assert config.max_per_label is None
+    assert config.min_per_label == 80
+    assert config.digigreen_max_per_label == 1500
+
+    steps = build_run_steps(config)
+    prepare_args = steps[0].args
+    assert "--max-per-label" not in prepare_args
+    assert "--digigreen-max-per-label" in prepare_args
+    assert "1500" in prepare_args
+    assert "--min-per-label" in prepare_args
+    assert "80" in prepare_args
+
+
+def test_prepare_dataset_caps_digigreen_independently_of_plantvillage() -> None:
+    from cropcare_training.prepare_dataset import _enforce_per_source_caps
+    from cropcare_training.manifest import ManifestRow
+
+    rows = []
+    for index in range(5):
+        rows.append(
+            ManifestRow(
+                row_id=f"dg-{index}",
+                image_uri=f"https://example.com/{index}.jpg",
+                label_key="eggplant_healthy",
+                crop_type="eggplant",
+                split="train",
+                source_dataset="DigiGreen/Crop_Disease_Images",
+                source_split="train",
+                source_license="cc-by-4.0",
+                raw_crop="Brinjal",
+                raw_label="Healthy",
+            )
+        )
+    for index in range(7):
+        rows.append(
+            ManifestRow(
+                row_id=f"pv-{index}",
+                image_uri=f"data/{index}.jpg",
+                label_key="eggplant_healthy",
+                crop_type="eggplant",
+                split="train",
+                source_dataset="mohanty/PlantVillage",
+                source_split="train",
+                source_license="cc-by-sa-3.0",
+                raw_crop="eggplant",
+                raw_label="Eggplant___healthy",
+            )
+        )
+
+    capped = _enforce_per_source_caps(rows, digigreen_max=2, plantvillage_max=None)
+    digigreen = [
+        row for row in capped if row.source_dataset == "DigiGreen/Crop_Disease_Images"
+    ]
+    plantvillage = [
+        row for row in capped if row.source_dataset == "mohanty/PlantVillage"
+    ]
+
+    assert len(digigreen) == 2
+    assert len(plantvillage) == 7
+
+
 def test_release_steps_include_comparison_then_promote() -> None:
     from cropcare_training.release import ReleaseConfig, build_release_steps
 
