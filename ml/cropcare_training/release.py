@@ -31,6 +31,7 @@ class ReleaseConfig:
     flutter_command: str = "flutter"
     base_model_path: Path = DEFAULT_BASE_MODEL_PATH
     base_labels_path: Path = DEFAULT_BASE_LABELS_PATH
+    digigreen_max_per_label: int = 1500
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,8 @@ def build_release_steps(config: ReleaseConfig) -> list[ReleaseStep]:
         str(config.epochs),
         "--batch-size",
         str(config.batch_size),
+        "--digigreen-max-per-label",
+        str(config.digigreen_max_per_label),
     ]
     if config.max_per_label is not None:
         train_args.extend(["--max-per-label", str(config.max_per_label)])
@@ -210,6 +213,7 @@ def parse_args() -> argparse.Namespace:
     run_parser.add_argument(
         "--base-labels-path", type=Path, default=DEFAULT_BASE_LABELS_PATH
     )
+    run_parser.add_argument("--digigreen-max-per-label", type=int, default=1500)
     run_parser.add_argument("--build-android", action="store_true")
     run_parser.add_argument("--flutter-command", default="flutter")
 
@@ -243,6 +247,7 @@ def main() -> None:
         flutter_command=args.flutter_command,
         base_model_path=args.base_model_path,
         base_labels_path=args.base_labels_path,
+        digigreen_max_per_label=args.digigreen_max_per_label,
     )
     run_release(config)
 
