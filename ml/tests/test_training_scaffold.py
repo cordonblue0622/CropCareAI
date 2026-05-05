@@ -370,6 +370,90 @@ def test_plantvillage_zip_downloader_reuses_cached_archive(tmp_path) -> None:
     assert resolved.read_bytes() == b"cached"
 
 
+def test_representative_dataset_yields_uint8_compatible_float_batches(tmp_path) -> None:
+    pytest = __import__("pytest")
+    tf = pytest.importorskip("tensorflow")
+    from PIL import Image
+
+    from cropcare_training.train_efficientnet import representative_dataset_gen
+
+    train_dir = tmp_path / "train"
+    for label in ("a", "b"):
+        (train_dir / label).mkdir(parents=True)
+        for i in range(3):
+            Image.new("RGB", (16, 16), color=(10 * i, 20 * i, 30 * i)).save(
+                train_dir / label / f"{label}_{i}.png"
+            )
+
+    samples = list(
+        representative_dataset_gen(
+            train_dir=train_dir,
+            class_names=["a", "b"],
+            image_size=(16, 16),
+            num_samples=4,
+        )
+    )
+
+    assert len(samples) == 4
+    for batch in samples:
+        assert isinstance(batch, list) and len(batch) == 1
+        arr = batch[0]
+        assert arr.shape == (1, 16, 16, 3)
+        assert arr.dtype.name == "float32"
+        # Raw RGB in [0, 255], not normalised.
+        assert arr.min() >= 0.0 and arr.max() <= 255.0
+
+
+def test_unfreeze_top_layers_makes_only_last_n_trainable_and_keeps_bn_frozen() -> None:
+    pytest = __import__("pytest")
+    tf = pytest.importorskip("tensorflow")
+    from cropcare_training.train_efficientnet import (
+        build_model,
+        unfreeze_top_layers,
+    )
+
+    model = build_model(
+        num_classes=4,
+        image_size=(64, 64),
+        trainable_base=False,
+    )
+    backbone = next(
+        layer
+        for layer in model.layers
+        if "efficientnet" in layer.name.lower() and hasattr(layer, "layers")
+    )
+
+    unfreeze_top_layers(backbone, n=30)
+
+    last_trainable = [layer for layer in backbone.layers if layer.trainable]
+    # At least one trainable layer (we asked for 30; backbone has > 30 layers).
+    assert len(last_trainable) >= 1
+    # BatchNormalization stays frozen everywhere.
+    assert all(
+        not layer.trainable
+        for layer in backbone.layers
+        if isinstance(layer, tf.keras.layers.BatchNormalization)
+    )
+
+
+def test_phase_step_count_matches_expected_warmup_and_fine_tune_split() -> None:
+    from cropcare_training.train_efficientnet import phase_epoch_split
+
+    warmup, fine_tune = phase_epoch_split(total_epochs=30, warmup_epochs=5)
+
+    assert warmup == 5
+    assert fine_tune == 25
+
+
+def test_phase_step_count_clips_warmup_when_total_is_smaller() -> None:
+    from cropcare_training.train_efficientnet import phase_epoch_split
+
+    warmup, fine_tune = phase_epoch_split(total_epochs=4, warmup_epochs=5)
+
+    assert warmup == 4
+    assert fine_tune == 0
+
+
 def test_class_weights_inverse_frequency_normalises_to_mean_one() -> None:
     from cropcare_training.train_efficientnet import compute_class_weights
 

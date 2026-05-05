@@ -13,6 +13,63 @@ DEFAULT_DATA_DIR = Path("ml/artifacts/cropcare_v2/images_by_split")
 DEFAULT_OUTPUT_DIR = Path("ml/artifacts/cropcare_v2")
 
 
+def representative_dataset_gen(
+    *,
+    train_dir: Path,
+    class_names: list[str],
+    image_size: tuple[int, int],
+    num_samples: int = 200,
+):
+    """Yield single-image batches for INT8 post-training calibration.
+
+    Returns lists shaped ``[1, H, W, 3]`` of float32 in ``[0, 255]`` so the
+    representative dataset matches the model's float input layer.
+    """
+    import numpy as np
+    from PIL import Image
+
+    samples_per_class = max(1, num_samples // max(1, len(class_names)))
+    yielded = 0
+    for label in class_names:
+        label_dir = train_dir / label
+        if not label_dir.exists():
+            continue
+        for path in sorted(label_dir.glob("*.*"))[:samples_per_class]:
+            with Image.open(path) as image:
+                resized = image.convert("RGB").resize(image_size)
+                arr = np.asarray(resized, dtype=np.float32)
+            yield [arr.reshape(1, image_size[0], image_size[1], 3)]
+            yielded += 1
+            if yielded >= num_samples:
+                return
+
+
+def export_int8_tflite(
+    *,
+    model,
+    train_dir: Path,
+    class_names: list[str],
+    image_size: tuple[int, int],
+    output_path: Path,
+    num_calibration_samples: int = 200,
+) -> None:
+    """Convert ``model`` to a fully-quantized INT8 TFLite at ``output_path``."""
+    import tensorflow as tf
+
+    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+    converter.representative_dataset = lambda: representative_dataset_gen(
+        train_dir=train_dir,
+        class_names=class_names,
+        image_size=image_size,
+        num_samples=num_calibration_samples,
+    )
+    converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+    converter.inference_input_type = tf.uint8
+    converter.inference_output_type = tf.uint8
+    output_path.write_bytes(converter.convert())
+
+
 def unfreeze_top_layers(backbone, n: int = 30) -> None:
     """Make the last ``n`` non-BatchNorm layers of ``backbone`` trainable.
 
