@@ -3,6 +3,7 @@
 *.log
 *.pyc
 *.swp
+*.egg-info/
 .DS_Store
 .atom/
 .build/
@@ -59,9 +60,24 @@ ai_backend/models/**/*.ckpt
 ai_backend/models/**/*.safetensors
 ai_backend/models/whisper-cache/
 
+# ML training artifacts
+ml/.venv/
+ml/.pytest_cache/
+ml/artifacts/
+ml/data/
+ml/**/*.tflite
+
 # Local native/vendor artifacts
 .external/
 .native/
 .tmp/
 blobs/libtensorflowlite_c-win.dll
 flutter_*.log
+windows/flutter/generated_plugin_registrant.cc
+
+windows/flutter/generated_plugin_registrant.h
+windows/flutter/generated_plugins.cmake
+macos/Flutter/GeneratedPluginRegistrant.swift
+linux/flutter/generated_plugin_registrant.cc
+linux/flutter/generated_plugin_registrant.h
+linux/flutter/generated_plugins.cmake
