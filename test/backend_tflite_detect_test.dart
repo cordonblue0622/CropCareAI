@@ -58,8 +58,8 @@ void main() {
           labels: labels,
           cropType: _cropType.trim().isEmpty ? null : _cropType,
           source: 'backend-tflite',
-          modelName: 'cropcare_efficientnet_with_eggplant',
-          modelVersion: 'temporary-v1',
+          modelName: 'cropcare_efficientnet_v2',
+          modelVersion: 'v2-subset-100',
           modelSource: p.basename(_modelPath),
         );
 

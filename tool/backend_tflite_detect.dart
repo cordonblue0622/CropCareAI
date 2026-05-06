@@ -39,8 +39,8 @@ Future<void> main(List<String> args) async {
       labels: labels,
       cropType: options['crop-type'],
       source: 'backend-tflite',
-      modelName: 'cropcare_efficientnet_with_eggplant',
-      modelVersion: 'temporary-v1',
+      modelName: 'cropcare_efficientnet_v2',
+      modelVersion: 'v2-subset-100',
       modelSource: p.basename(modelPath),
     );
 

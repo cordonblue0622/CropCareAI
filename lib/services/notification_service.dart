@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-// ignore: avoid_web_libraries_in_flutter
-import 'dart:js' as js;
 
 import '../data/models/treatment_task_model.dart';
+import '_notification_js_stub.dart'
+    if (dart.library.js) '_notification_js_web.dart' as js;
 
 /// Schedules browser Notification API reminders for treatment tasks.
 ///
@@ -27,7 +27,7 @@ class NotificationService {
   void requestPermission() {
     if (!kIsWeb) return;
     try {
-      js.context.callMethod('cropCareRequestNotificationPermission', []);
+      js.requestPermission();
     } catch (_) {}
   }
 
@@ -98,7 +98,7 @@ class NotificationService {
   void _show(String title, String body) {
     if (!kIsWeb) return;
     try {
-      js.context.callMethod('cropCareShowNotification', [title, body]);
+      js.showNotification(title, body);
     } catch (_) {}
   }
 }

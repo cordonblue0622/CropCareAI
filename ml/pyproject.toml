@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cropcare-training"
+version = "0.1.0"
+description = "Training scaffold for CropCare AI image classifiers"
+requires-python = ">=3.11"
+dependencies = [
+  "datasets>=3.0.0",
+  "tensorflow>=2.16.0",
+  "pillow>=10.0.0",
+  "scikit-learn>=1.4.0",
+  "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cropcare_training*"]
