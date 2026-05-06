@@ -2,6 +2,13 @@
 
 A new Flutter project.
 
+## ML training scaffold
+
+The Hugging Face dataset expansion and EfficientNet/TFLite training scaffold
+lives in [`ml/README.md`](ml/README.md). It prepares production-eligible
+CropCare v2 classifier datasets, writes label/manifest metadata, and exports
+the future `cropcare_efficientnet_v2.tflite` artifact.
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.
