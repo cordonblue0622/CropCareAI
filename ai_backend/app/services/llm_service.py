@@ -4,17 +4,6 @@ from app.schemas.user import AuthenticatedUser
 
 # Human-readable names for every label the trained EfficientNet model recognises.
 _TRAINED_LABEL_NAMES: dict[str, str] = {
-    "corn_cercospora_leaf_spot_gray_leaf_spot": "Corn – Cercospora Leaf Spot / Gray Leaf Spot",
-    "corn_common_rust": "Corn – Common Rust",
-    "corn_northern_leaf_blight": "Corn – Northern Leaf Blight",
-    "corn_healthy": "Corn – Healthy",
-    "eggplant_healthy": "Eggplant – Healthy",
-    "eggplant_insect_pest": "Eggplant – Insect Pest Damage",
-    "eggplant_leaf_spot": "Eggplant – Leaf Spot",
-    "eggplant_mosaic_virus": "Eggplant – Mosaic Virus",
-    "eggplant_small_leaf": "Eggplant – Small Leaf (Phyllody / Big Bud)",
-    "eggplant_white_mold": "Eggplant – White Mold (Sclerotinia)",
-    "eggplant_wilt": "Eggplant – Wilt (Fusarium / Bacterial)",
     "pepper_bacterial_spot": "Bell Pepper – Bacterial Spot",
     "pepper_healthy": "Bell Pepper – Healthy",
     "squash_powdery_mildew": "Squash – Powdery Mildew",
@@ -32,10 +21,8 @@ _TRAINED_LABEL_NAMES: dict[str, str] = {
 
 _SYSTEM_PROMPT = """You are CropCare AI, an expert crop disease assistant trained to support Filipino smallholder farmers.
 
-The app's AI model was trained specifically on the following 24 crop conditions. When the user asks about a diagnosis, ALWAYS tie your answer to the exact condition identified:
+The app's AI model was trained specifically on the following 13 crop conditions. When the user asks about a diagnosis, ALWAYS tie your answer to the exact condition identified:
 
-CORN: Cercospora Leaf Spot/Gray Leaf Spot · Common Rust · Northern Leaf Blight · Healthy
-EGGPLANT: Healthy · Insect Pest Damage · Leaf Spot · Mosaic Virus · Small Leaf (Phyllody) · White Mold (Sclerotinia) · Wilt (Fusarium/Bacterial)
 PEPPER (Bell): Bacterial Spot · Healthy
 SQUASH: Powdery Mildew
 TOMATO: Bacterial Spot · Early Blight · Late Blight · Leaf Mold · Septoria Leaf Spot · Spider Mites · Target Spot · Yellow Leaf Curl Virus · Mosaic Virus · Healthy

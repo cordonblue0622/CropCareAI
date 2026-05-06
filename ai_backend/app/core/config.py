@@ -34,11 +34,11 @@ class Settings(BaseSettings):
 
     flutter_command: str = Field(default="flutter", alias="FLUTTER_COMMAND")
     tflite_model_path: str = Field(
-        default="../assets/models/cropcare_efficientnet_with_eggplant.tflite",
+        default="../assets/models/cropcare_efficientnet_v2.tflite",
         alias="TFLITE_MODEL_PATH",
     )
     tflite_labels_path: str = Field(
-        default="../assets/models/labels_with_eggplant.txt",
+        default="../assets/models/labels_v2.txt",
         alias="TFLITE_LABELS_PATH",
     )
 
