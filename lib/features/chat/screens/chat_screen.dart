@@ -79,9 +79,13 @@ class _ChatScreenState extends State<ChatScreen> {
         isVideoFrame: widget.initialIsVideoFrame,
       );
     } else if (widget.initialDiagnosis != null || widget.initialImageBytes != null) {
+      final diagnosis = widget.initialDiagnosis;
+      final confidenceText = diagnosis?.confidenceScore != null
+          ? ' at ${(diagnosis!.confidenceScore! * 100).toStringAsFixed(0)}% confidence'
+          : '';
       await _sendMessage(
-        widget.initialDiagnosis != null
-            ? 'I just scanned a crop and got a diagnosis: ${widget.initialDiagnosis!.diseaseName}. What should I do?'
+        diagnosis != null
+            ? 'The TFLite scanner\'s current best match is ${diagnosis.diseaseName}$confidenceText. Please verify that scan against the attached photo before answering. If the image suggests a different crop or condition, correct the scan result first, then explain the diagnosis and what the farmer should do.'
             : 'Please analyze this crop photo and tell me what to do next.',
         attachedDiagnosis: widget.initialDiagnosis,
         attachedImageBytes: widget.initialImageBytes,
@@ -705,6 +709,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
     final List<String> actions = rawActions is List
         ? List<String>.from(rawActions.map((e) => e.toString()))
         : [];
+    final showTreatmentCard = message.metadata?['show_treatment_card'] == true;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -869,7 +874,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     ),
                   ),
                 // ── Treatment checklist (assistant messages only) ──
-                if (!isUser && actions.isNotEmpty)
+                if (!isUser && showTreatmentCard && actions.isNotEmpty)
                   _buildTreatmentChecklist(context, actions),
               ],
             ),

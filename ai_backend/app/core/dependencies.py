@@ -6,10 +6,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.core.config import get_settings
 from app.schemas.user import AuthenticatedUser
 from app.services.auth_service import AuthService
+from app.services.detect_service import DetectService
 from app.services.knowledge_service import KnowledgeService
 from app.services.llm_service import LlmService
 from app.services.whisper_service import WhisperService
-from app.services.yolo_service import YoloService
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -20,8 +20,8 @@ def get_auth_service() -> AuthService:
 
 
 @lru_cache
-def get_yolo_service() -> YoloService:
-    return YoloService(settings=get_settings())
+def get_detect_service() -> DetectService:
+    return DetectService(settings=get_settings())
 
 
 @lru_cache

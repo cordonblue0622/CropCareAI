@@ -16,7 +16,10 @@ async def health() -> dict[str, object]:
         "version": settings.api_version,
         "mockServices": settings.enable_mock_services,
         "models": {
-            "yoloConfigured": Path(settings.yolo_model_path).exists(),
+            "tfliteConfigured": (
+                Path(settings.resolved_tflite_model_path).exists()
+                and Path(settings.resolved_tflite_labels_path).exists()
+            ),
             "whisperConfigured": bool(settings.whisper_model_size),
             "openaiConfigured": bool(settings.openai_api_key),
         },

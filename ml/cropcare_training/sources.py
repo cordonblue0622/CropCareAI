@@ -65,7 +65,7 @@ DATASET_SOURCES: tuple[DatasetSource, ...] = (
         license_id="cc-by-4.0",
         task="object-detection",
         production_allowed=False,
-        role="future YOLO phase reference",
+        role="future object-detection phase reference",
         notes="Object-detection data is intentionally out of scope for classifier v1 expansion.",
     ),
 )

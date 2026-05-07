@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(".env", ".env.example"),
+        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -42,7 +42,6 @@ class Settings(BaseSettings):
         alias="TFLITE_LABELS_PATH",
     )
 
-    yolo_model_path: str = Field(default="models/yolo/best.pt", alias="YOLO_MODEL_PATH")
     whisper_model_size: str = Field(default="small", alias="WHISPER_MODEL_SIZE")
     whisper_model_device: str = Field(default="cpu", alias="WHISPER_MODEL_DEVICE")
 

@@ -276,6 +276,7 @@ class KnowledgeService:
             rows = await self._supabase.fetch_knowledge(
                 crop_type=crop_type,
                 disease_name=disease_name,
+                label_key=label_key,
             )
             if rows:
                 return rows
@@ -294,34 +295,3 @@ class KnowledgeService:
                 return matches[:2]
 
         return []
-
-    def __init__(self, settings: Settings):
-        self._settings = settings
-        self._supabase = SupabaseService(settings)
-
-    async def fetch_relevant_records(self, payload: ChatRequest) -> list[dict[str, str]]:
-        disease_name = payload.diagnosis.disease_name if payload.diagnosis else None
-        crop_type = payload.diagnosis.crop_type if payload.diagnosis else None
-
-        if self._settings.supabase_url and self._settings.supabase_service_role_key:
-            rows = await self._supabase.fetch_knowledge(
-                crop_type=crop_type,
-                disease_name=disease_name,
-            )
-            if rows:
-                return rows
-
-        records: list[dict[str, str]] = []
-        if crop_type or disease_name:
-            records.append(
-                {
-                    "title": disease_name or "General crop guidance",
-                    "crop_type": crop_type or "unknown",
-                    "source": "knowledge-base-placeholder",
-                    "summary": (
-                        "Replace this placeholder with curated FAO and Department "
-                        "of Agriculture Philippines guidance in Supabase."
-                    ),
-                }
-            )
-        return records

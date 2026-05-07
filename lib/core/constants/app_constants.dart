@@ -29,26 +29,16 @@ class AppConstants {
     defaultValue: '',
   );
 
-  // Primary tomato/pepper/squash classifier (cropcare_v2_subset_100, 13 labels).
-  // Used for every crop *except* eggplant.
+  // Shipped on-device classifier (cropcare_v2_subset_100, 13 labels).
+  // The accepted crop types are inferred from labels_v2.txt at runtime.
   static const String temporaryScannerModelAsset =
       'assets/models/cropcare_efficientnet_v2.tflite';
   static const String temporaryScannerLabelsAsset =
       'assets/models/labels_v2.txt';
 
-  // Legacy eggplant-aware classifier kept for eggplant scans only — the new v2
-  // model has no eggplant data because no permissively-licensed eggplant
-  // disease dataset was available on Hugging Face when v2 was trained.
-  // [LocalClassifierService] routes eggplant crops to this model and
-  // tomato/pepper/squash to the v2 model above.
-  static const String eggplantScannerModelAsset =
-      'assets/models/cropcare_efficientnet_with_eggplant.tflite';
-  static const String eggplantScannerLabelsAsset =
-      'assets/models/labels_with_eggplant.txt';
-
-  static const double temporaryScannerMinConfidence = 0.20;
-  static const double temporaryScannerAcceptedConfidence = 0.25;
-  static const double temporaryScannerAcceptedMargin = 0.05;
+  static const double temporaryScannerMinConfidence = 0.45;
+  static const double temporaryScannerAcceptedConfidence = 0.60;
+  static const double temporaryScannerAcceptedMargin = 0.15;
 
   // ─── Local Database ───────────────────────────────────────────────────────
   static const String dbName = 'cropcare_ai.db';

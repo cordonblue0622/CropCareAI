@@ -14,8 +14,8 @@ DEFAULT_OUTPUT_DIR = Path("ml/artifacts/cropcare_v2")
 DEFAULT_ASSETS_DIR = Path("assets/models")
 MODEL_FILENAME = "cropcare_efficientnet_v2.tflite"
 LABELS_FILENAME = "labels_v2.txt"
-DEFAULT_BASE_MODEL_PATH = Path("assets/models/cropcare_efficientnet_with_eggplant.tflite")
-DEFAULT_BASE_LABELS_PATH = Path("assets/models/labels_with_eggplant.txt")
+DEFAULT_BASE_MODEL_PATH = Path("assets/models/cropcare_efficientnet_v2.tflite")
+DEFAULT_BASE_LABELS_PATH = Path("assets/models/labels_v2.txt")
 
 
 @dataclass(frozen=True)

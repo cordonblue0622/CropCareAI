@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -16,12 +18,18 @@ class WeatherContext(BaseModel):
     condition: str | None = None
 
 
+class ConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class ChatRequest(BaseModel):
     user_message: str
     crop_id: str | None = None
     diagnosis: DiagnosisContext | None = None
     image_data_url: str | None = None
     weather: WeatherContext | None = None
+    conversation_history: list[ConversationTurn] = Field(default_factory=list)
     locale: str | None = "en"
 
 

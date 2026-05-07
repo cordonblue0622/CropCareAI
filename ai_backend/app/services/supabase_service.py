@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import httpx
@@ -8,6 +9,24 @@ from app.core.config import Settings
 class SupabaseService:
     def __init__(self, settings: Settings):
         self._settings = settings
+
+    @staticmethod
+    def _parse_string_list(raw: Any) -> list[str]:
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            return [str(item).strip() for item in raw if str(item).strip()]
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return []
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError:
+                return [text]
+            if isinstance(decoded, list):
+                return [str(item).strip() for item in decoded if str(item).strip()]
+        return []
 
     async def get_user(self, access_token: str) -> dict[str, Any] | None:
         if not self._settings.supabase_url or not self._settings.supabase_service_role_key:
@@ -29,6 +48,7 @@ class SupabaseService:
         self,
         crop_type: str | None,
         disease_name: str | None,
+        label_key: str | None = None,
     ) -> list[dict[str, Any]]:
         if not self._settings.supabase_url or not self._settings.supabase_service_role_key:
             return []
@@ -39,9 +59,11 @@ class SupabaseService:
             "Authorization": f"Bearer {self._settings.supabase_service_role_key}",
         }
         params = {
-            "select": "disease_name,crop_type,description,source",
+            "select": "label_key,disease_name,crop_type,description,source,treatment_steps",
             "limit": "5",
         }
+        if label_key:
+            params["label_key"] = f"eq.{label_key}"
         if crop_type:
             params["crop_type"] = f"eq.{crop_type}"
         if disease_name:
@@ -55,10 +77,12 @@ class SupabaseService:
 
         return [
             {
+                "label_key": row.get("label_key") or "",
                 "title": row.get("disease_name") or "Untitled",
                 "crop_type": row.get("crop_type") or "unknown",
                 "summary": row.get("description") or "",
                 "source": row.get("source") or "supabase",
+                "treatment_steps": self._parse_string_list(row.get("treatment_steps")),
             }
             for row in rows
         ]

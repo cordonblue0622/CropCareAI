@@ -83,7 +83,10 @@ class TfliteClassifierCore {
     final scoreMargin = (score - secondaryScore).clamp(-1.0, 1.0).toDouble();
     final labelSpec = _labelSpecFor(rawLabel);
     final isLowConfidence =
-        score < AppConstants.temporaryScannerAcceptedConfidence;
+      score < AppConstants.temporaryScannerAcceptedConfidence;
+    final isAmbiguous =
+      ranked.length > 1 &&
+      scoreMargin < AppConstants.temporaryScannerAcceptedMargin;
 
     final topPredictions = ranked
         .take(3)
@@ -91,7 +94,18 @@ class TfliteClassifierCore {
             '${labels[index]} ${(scores[index] * 100).toStringAsFixed(1)}%')
         .join(' | ');
 
-    if (isLowConfidence) {
+    if (isLowConfidence || isAmbiguous) {
+      final rejectionNotes = <String>[];
+      if (isLowConfidence) {
+        rejectionNotes.add(
+          'Top prediction confidence was ${(score * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerAcceptedConfidence * 100).toStringAsFixed(0)}% acceptance threshold.',
+        );
+      }
+      if (isAmbiguous) {
+        rejectionNotes.add(
+          'Top prediction margin was ${(scoreMargin * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerAcceptedMargin * 100).toStringAsFixed(0)}% confidence-gap threshold.',
+        );
+      }
       return AiBackendDetectResponse(
         status: 'no_match',
         source: source,
@@ -102,7 +116,7 @@ class TfliteClassifierCore {
           version: modelVersion,
         ),
         notes: [
-          'Top prediction confidence was ${(score * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerAcceptedConfidence * 100).toStringAsFixed(0)}% acceptance threshold.',
+          ...rejectionNotes,
           'Input file: $filename',
           'Top predictions: $topPredictions',
           if (modelSource != null && modelSource.isNotEmpty)
@@ -115,6 +129,7 @@ class TfliteClassifierCore {
       'Temporary TFLite model result generated on the backend.',
       'Input file: $filename',
       'Top predictions: $topPredictions',
+      'Top prediction margin: ${(scoreMargin * 100).toStringAsFixed(1)}%',
       if (!labelSpec.supportedInKnowledgeBase)
         'This predicted class is not fully covered by the current app knowledge base yet.',
       if (score < AppConstants.temporaryScannerMinConfidence)

@@ -13,10 +13,9 @@ from app.schemas.detect import BoundingBox, DetectResponse, DetectionItem, Model
 from app.schemas.user import AuthenticatedUser
 
 
-class YoloService:
+class DetectService:
     def __init__(self, settings: Settings):
         self._settings = settings
-        self._model = None
 
     async def detect_image(
         self,
@@ -36,7 +35,7 @@ class YoloService:
         if self._settings.enable_mock_services:
             return DetectResponse(
                 status="ok",
-                source="mock-yolo",
+                source="mock-detector",
                 crop_type=crop_type,
                 detections=[
                     DetectionItem(
@@ -46,50 +45,16 @@ class YoloService:
                         bbox=BoundingBox(x=0.18, y=0.22, width=0.37, height=0.29),
                     )
                 ],
-                model=ModelInfo(name="mock-yolo", version="0.1.0"),
+                model=ModelInfo(name="mock-tflite-detector", version="0.1.0"),
                 notes=[
                     f"Mock detection for {filename} requested by {requested_by.id}.",
-                    "Disable mock services after YOLO weights are ready.",
+                    "Disable mock services after the v2 detector is ready for live use.",
                 ],
             )
 
-        from io import BytesIO
-
-        from PIL import Image
-
-        image = Image.open(BytesIO(image_bytes)).convert("RGB")
-        model = self._load_model()
-        results = model.predict(image, verbose=False)
-        result = results[0]
-        width, height = image.size
-
-        detections: list[DetectionItem] = []
-        for box in result.boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            confidence = float(box.conf[0].item())
-            class_id = int(box.cls[0].item())
-            label = result.names.get(class_id, str(class_id))
-            detections.append(
-                DetectionItem(
-                    label=label,
-                    label_key=label,
-                    confidence=confidence,
-                    bbox=BoundingBox(
-                        x=x1 / width,
-                        y=y1 / height,
-                        width=(x2 - x1) / width,
-                        height=(y2 - y1) / height,
-                    ),
-                )
-            )
-
-        return DetectResponse(
-            status="ok",
-            source="yolo",
-            crop_type=crop_type,
-            detections=detections,
-            model=ModelInfo(name="yolo", version="1.0.0"),
-            notes=[],
+        raise RuntimeError(
+            "TFLite detection backend is unavailable. Ensure the v2 model, labels, "
+            "helper test, and required runtime files are present."
         )
 
     def _can_use_tflite_backend(self) -> bool:
@@ -280,10 +245,3 @@ class YoloService:
             / "blobs"
             / "libtensorflowlite_c-win.dll"
         )
-
-    def _load_model(self):
-        if self._model is None:
-            from ultralytics import YOLO
-
-            self._model = YOLO(self._settings.yolo_model_path)
-        return self._model

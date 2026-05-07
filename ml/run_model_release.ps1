@@ -7,8 +7,8 @@ param(
     [int]$Epochs = 30,
     [int]$BatchSize = 32,
     [string]$PlantVillageZipPath = "",
-    [string]$BaseModelPath = "assets/models/cropcare_efficientnet_with_eggplant.tflite",
-    [string]$BaseLabelsPath = "assets/models/labels_with_eggplant.txt",
+    [string]$BaseModelPath = "assets/models/cropcare_efficientnet_v2.tflite",
+    [string]$BaseLabelsPath = "assets/models/labels_v2.txt",
     [string]$FlutterCommand = "flutter",
     [switch]$BuildAndroid,
     [switch]$SkipInstall

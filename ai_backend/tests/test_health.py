@@ -11,3 +11,8 @@ def test_health() -> None:
     payload = response.json()
     assert payload["status"] == "ok"
     assert "models" in payload
+    assert sorted(payload["models"].keys()) == [
+        "openaiConfigured",
+        "tfliteConfigured",
+        "whisperConfigured",
+    ]

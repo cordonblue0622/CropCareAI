@@ -573,7 +573,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               color: AppColors.primary,
               size: 28,
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             const Text(
               'No disease knowledge synced yet.',
               style: TextStyle(
@@ -582,19 +582,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 color: AppColors.textDark,
               ),
             ),
-            const SizedBox(height: 6),
-            const Text(
-              'Import or sync your disease dataset to show real crop risks in this section.',
-              style: TextStyle(
-                fontSize: 13,
-                color: AppColors.textGray,
-                height: 1.4,
+            const SizedBox(height: 4),
+            const Expanded(
+              child: Text(
+                'Import or sync your disease dataset to show real crop risks in this section.',
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppColors.textGray,
+                  height: 1.35,
+                ),
               ),
             ),
-            const Spacer(),
-            TextButton(
-              onPressed: () => _pushLibrary(ctx),
-              child: const Text('Open Library'),
+            Align(
+              alignment: Alignment.bottomLeft,
+              child: TextButton(
+                onPressed: () => _pushLibrary(ctx),
+                child: const Text('Open Library'),
+              ),
             ),
           ],
         ),

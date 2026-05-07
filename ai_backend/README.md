@@ -2,7 +2,7 @@
 
 FastAPI service for the online AI parts of CropCare AI:
 
-- YOLO disease-region detection
+- v2 TFLite disease detection
 - GPT-5.4 mini chat orchestration
 - Whisper transcription
 - Supabase auth and storage integration
@@ -18,7 +18,7 @@ FastAPI service for the online AI parts of CropCare AI:
 - mock responses enabled by default until your models and API keys are ready
 
 The backend can run in mock mode on Python 3.14 using the base requirements.
-For real YOLO and Whisper inference, use Python 3.11 or 3.12 and install the ML dependencies from `requirements-ml.txt`.
+For faster-whisper extras, use Python 3.11 or 3.12 and install the ML dependencies from `requirements-ml.txt`.
 
 ## Project layout
 
@@ -33,7 +33,6 @@ ai_backend/
     main.py
   models/
     whisper/
-    yolo/
   tests/
   .env.example
   requirements.txt
@@ -53,7 +52,7 @@ If Python is not installed yet, `setup.ps1` will stop and tell you the exact `wi
 ## Windows quick start
 
 Python 3.14 is fine for mock mode and API integration.
-Use Python 3.11 or 3.12 when you are ready to install YOLO and Whisper dependencies from `requirements-ml.txt`.
+Use Python 3.11 or 3.12 when you are ready to install faster-whisper dependencies from `requirements-ml.txt`.
 
 1. Install Python 3.11:
 
@@ -83,7 +82,7 @@ Later, install Python 3.11 alongside it for the real ML runtime.
 
 ## ML dependency setup later
 
-When your YOLO weights and Whisper runtime are ready, install the ML extras with Python 3.11 or 3.12:
+When you are ready to install faster-whisper extras, use Python 3.11 or 3.12:
 
 ```powershell
 cd ai_backend
@@ -103,14 +102,15 @@ Fill these in as your stack becomes available:
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `OPENAI_API_KEY`
-- `YOLO_MODEL_PATH`
+- `TFLITE_MODEL_PATH`
+- `TFLITE_LABELS_PATH`
 - `WHISPER_MODEL_SIZE`
 
 For the first run, leave `ENABLE_MOCK_SERVICES=true` so the endpoints work before your trained weights are ready.
 
 ## Recommended next steps
 
-1. Replace mock detection in `app/services/yolo_service.py` with your trained YOLO weights.
+1. Keep `assets/models/cropcare_efficientnet_v2.tflite` and `assets/models/labels_v2.txt` in sync with the Flutter app if you want live `/v1/detect` responses.
 2. Replace mock transcription in `app/services/whisper_service.py` with your chosen Whisper runtime.
 3. Connect `app/services/knowledge_service.py` to your curated FAO and Department of Agriculture knowledge records in Supabase.
 4. Lock the Flutter app to these route contracts before the model files are finalized.

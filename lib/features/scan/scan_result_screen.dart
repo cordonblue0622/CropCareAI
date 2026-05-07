@@ -153,45 +153,10 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     if (normalizedInitialQuery != null && normalizedInitialQuery.isNotEmpty) {
       initialQuery = normalizedInitialQuery;
     } else if (diagnosis == null) {
-      // Build a query that tells GPT what the model found so it can supplement
-      final topPred = _detection?.primaryDetection;
-      if (topPred != null) {
-        final pct = (topPred.confidence * 100).toStringAsFixed(1);
-        final labelName = topPred.label
-            .replaceAll('_', ' ')
-            .split(' ')
-            .map((w) => w.isNotEmpty
-                ? '${w[0].toUpperCase()}${w.substring(1)}'
-                : w)
-            .join(' ');
-        if (widget.isFromVideo) {
-          initialQuery =
-              'I recorded a short video of my crop. This frame was extracted for analysis — '
-              'the scanner\'s closest match was "$labelName" at $pct% confidence. '
-              'Please analyze the attached image directly: what crop and condition do '
-              'you observe, and what should the farmer do?';
-        } else {
-          initialQuery =
-              'The crop scanner wasn\'t confident enough to make a definite diagnosis — '
-              'the closest match was "$labelName" at $pct% confidence. '
-              'Please analyze the attached photo directly: what crop and condition do '
-              'you observe, and what should the farmer do?';
-        }
-      } else {
-        if (widget.isFromVideo) {
-          initialQuery =
-              'I recorded a short video of my crop and this frame was extracted for analysis. '
-              'The scanner could not identify a disease. Please analyze the image directly '
-              'and tell me what crop and condition you observe, and what the farmer should do.';
-        } else {
-          initialQuery =
-              'The crop scanner could not identify a disease from this photo. '
-              'Please analyze the image directly and tell me what crop and condition '
-              'you observe, and what the farmer should do.';
-        }
-      }
+      initialQuery = _buildUncertainScanPrompt();
     }
     // else: diagnosis != null with no custom query — ChatScreen builds its own prompt
+
 
     setState(() => _redirectingToChat = true);
 
@@ -207,6 +172,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       ),
     );
   }
+
 
   Future<void> _trackDiagnosis() async {
     final user = context.read<AuthProvider>().currentUser;
@@ -375,7 +341,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                                 : null,
                             initialImageBytes: _resolvedImageBytes,
                             initialQuery: _match == null
-                                ? 'I uploaded a crop photo but the scanner could not identify it. Please analyze the image and tell me what crop disease or condition you can see, and what I should do.'
+                                ? _buildUncertainScanPrompt()
                                 : null,
                           ),
                         ),
@@ -764,8 +730,11 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     final source = detection.source.toLowerCase();
     final modelName = detection.model.name.toLowerCase();
     final label = detection.primaryDetection?.label.toLowerCase() ?? '';
+    final confidence = detection.primaryDetection?.confidence ?? 0;
 
-    return !source.contains('mock') &&
+    return detection.status.toLowerCase() == 'ok' &&
+      confidence >= AppConstants.temporaryScannerAcceptedConfidence &&
+      !source.contains('mock') &&
         !modelName.contains('mock') &&
         label != 'sample_disease_region';
   }

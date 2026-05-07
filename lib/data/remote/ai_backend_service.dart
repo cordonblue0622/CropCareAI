@@ -47,6 +47,7 @@ class AiBackendService {
     DiagnosisModel? diagnosis,
     List<int>? imageBytes,
     String? imageMimeType,
+    List<Map<String, String>> conversationHistory = const [],
     String? locale,
   }) async {
     final response = await _client
@@ -58,6 +59,7 @@ class AiBackendService {
             if (cropId != null && cropId.isNotEmpty) 'crop_id': cropId,
             if (diagnosis != null)
               'diagnosis': {
+                'crop_type': _inferDiagnosisCropType(diagnosis),
                 'label_key': diagnosis.labelKey,
                 'disease_name': diagnosis.diseaseName,
                 'confidence': diagnosis.confidenceScore,
@@ -68,6 +70,8 @@ class AiBackendService {
                 imageBytes,
                 mimeType: imageMimeType,
               ),
+            if (conversationHistory.isNotEmpty)
+              'conversation_history': conversationHistory,
             if (locale != null && locale.isNotEmpty) 'locale': locale,
           }),
         )
@@ -187,6 +191,24 @@ class AiBackendService {
     final normalizedMimeType =
         (mimeType != null && mimeType.trim().isNotEmpty) ? mimeType.trim() : 'image/jpeg';
     return 'data:$normalizedMimeType;base64,${base64Encode(imageBytes)}';
+  }
+
+  String _inferDiagnosisCropType(DiagnosisModel diagnosis) {
+    final normalized =
+        '${diagnosis.labelKey ?? ''} ${diagnosis.diseaseName}'.toLowerCase();
+    for (final entry in const {
+      'tomato': ['tomato'],
+      'eggplant': ['eggplant', 'talong'],
+      'pepper': ['pepper', 'capsicum'],
+      'pechay': ['pechay', 'bok choy', 'bokchoy'],
+      'squash': ['squash', 'kalabasa'],
+      'corn': ['corn', 'maize'],
+    }.entries) {
+      if (entry.value.any(normalized.contains)) {
+        return entry.key;
+      }
+    }
+    return '';
   }
 
   void _throwIfError(http.Response response) {

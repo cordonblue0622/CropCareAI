@@ -13,6 +13,14 @@ import '../../../data/models/disease_knowledge_model.dart';
 import '../../../data/remote/supabase_service.dart';
 
 class ChatProvider extends ChangeNotifier {
+  static const Set<String> _supportedTreatmentCardCrops = {
+    'tomato',
+    'eggplant',
+    'pepper',
+    'pechay',
+    'squash',
+  };
+
   final SupabaseService _supabase;
   final DatabaseHelper _db;
   final AiBackendService _aiBackend;
@@ -175,6 +183,8 @@ class ChatProvider extends ChangeNotifier {
       await startNewSession(userId);
     }
 
+    final conversationHistory = _recentConversationHistory();
+
     // Upload image to Supabase Storage so it survives history loads
     final msgId = const Uuid().v4();
     String? uploadedImageUrl;
@@ -222,15 +232,48 @@ class ChatProvider extends ChangeNotifier {
         diagnosis: attachedDiagnosis,
         imageBytes: attachedImageBytes,
         imageMimeType: attachedImageMimeType,
+        conversationHistory: conversationHistory,
       );
+      final inferredDiseaseName =
+          (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
+              ? attachedDiagnosis!.diseaseName.trim()
+              : _inferDiseaseName(backendResponse.answer);
+      final inferredCropType = _inferCropType(
+        labelKey: attachedDiagnosis?.labelKey,
+        diseaseName: inferredDiseaseName,
+        aiContent: backendResponse.answer,
+      );
+      final inferredLabelKey =
+          (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
+              ? attachedDiagnosis!.labelKey!.trim()
+              : _inferLabelKey(
+                  diseaseName: inferredDiseaseName,
+                  cropType: inferredCropType,
+                );
+      final normalizedActions = backendResponse.recommendedActions.isNotEmpty
+          ? backendResponse.recommendedActions
+          : _extractTreatmentActionsFromContent(
+              backendResponse.answer,
+              inferredCropType: inferredCropType,
+              inferredDiseaseName: inferredDiseaseName,
+            );
       // Store recommended_actions in metadata but DON'T append them to text
       // — they are rendered as an interactive checklist in the UI.
       aiContent = _formatBackendResponse(backendResponse);
       aiMetadata = {
         'model': backendResponse.model,
         'sources': backendResponse.sources,
-        'recommended_actions': backendResponse.recommendedActions,
+        'recommended_actions': normalizedActions,
         'warnings': backendResponse.warnings,
+        'disease_name': inferredDiseaseName,
+        'crop_type': inferredCropType,
+        'label_key': inferredLabelKey,
+        'show_treatment_card': _shouldShowTreatmentCard(
+          attachedDiagnosis: attachedDiagnosis,
+          recommendedActions: normalizedActions,
+          inferredDiseaseName: inferredDiseaseName,
+          inferredCropType: inferredCropType,
+        ),
       };
     } catch (_) {
       await Future.delayed(const Duration(milliseconds: 500));
@@ -238,7 +281,13 @@ class ChatProvider extends ChangeNotifier {
         content,
         attachedDiagnosis: attachedDiagnosis,
       );
-      aiMetadata = {'model': 'local-fallback'};
+      aiMetadata = {
+        'model': 'local-fallback',
+        'sources': const <String>[],
+        'recommended_actions': const <String>[],
+        'warnings': const <String>[],
+        'show_treatment_card': false,
+      };
     }
 
     final aiMsg = ChatMessageModel(
@@ -259,27 +308,32 @@ class ChatProvider extends ChangeNotifier {
     // Add an "Add to My Crops" suggestion card when:
     //   - a local diagnosis was attached (scan result), OR
     //   - an image was sent and the AI returned treatment steps (GPT vision)
-    final hasActions =
-        (aiMetadata['recommended_actions'] as List<dynamic>? ?? []).isNotEmpty;
-    final hasImage =
-        attachedImageBytes != null && attachedImageBytes.isNotEmpty;
-    if (attachedDiagnosis != null || (hasImage && hasActions)) {
+    final showTreatmentCard = aiMetadata['show_treatment_card'] == true;
+    if (showTreatmentCard) {
       final inferredDiseaseName =
           (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
               ? attachedDiagnosis!.diseaseName.trim()
-              : _inferDiseaseName(aiContent);
+              : (aiMetadata['disease_name'] as String? ?? '').trim();
       final inferredCropType = _inferCropType(
         labelKey: attachedDiagnosis?.labelKey,
         diseaseName: inferredDiseaseName,
-        aiContent: aiContent,
+        aiContent: (aiMetadata['crop_type'] as String? ?? aiContent),
       );
+      final isSupportedCrop =
+          _supportedTreatmentCardCrops.contains(inferredCropType);
       final inferredLabelKey =
           (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
               ? attachedDiagnosis!.labelKey!.trim()
-              : _inferLabelKey(
-                  diseaseName: inferredDiseaseName,
-                  cropType: inferredCropType,
-                );
+              : ((aiMetadata['label_key'] as String? ?? '').trim().isNotEmpty
+                  ? (aiMetadata['label_key'] as String).trim()
+                  : _inferLabelKey(
+                      diseaseName: inferredDiseaseName,
+                      cropType: inferredCropType,
+                    ));
+      if (!isSupportedCrop || inferredDiseaseName.isEmpty) {
+        notifyListeners();
+        return;
+      }
       final cardMsg = ChatMessageModel(
         id: const Uuid().v4(),
         sessionId: _currentSession!.id,
@@ -313,6 +367,57 @@ class ChatProvider extends ChangeNotifier {
     } catch (_) {}
 
     notifyListeners();
+  }
+
+  List<Map<String, String>> _recentConversationHistory({int limit = 6}) {
+    final history = <Map<String, String>>[];
+
+    for (final message in _currentMessages.reversed) {
+      if (message.role == MessageRole.system) {
+        continue;
+      }
+
+      final content = message.content.trim();
+      if (content.isEmpty) {
+        continue;
+      }
+
+      history.add({
+        'role': message.role.value,
+        'content': content,
+      });
+
+      if (history.length == limit) {
+        break;
+      }
+    }
+
+    return history.reversed.toList();
+  }
+
+  bool _shouldShowTreatmentCard({
+    required DiagnosisModel? attachedDiagnosis,
+    required List<String> recommendedActions,
+    required String inferredDiseaseName,
+    required String inferredCropType,
+  }) {
+    if (recommendedActions.isEmpty) {
+      return false;
+    }
+
+    final diseaseName = attachedDiagnosis?.diseaseName.trim() ?? inferredDiseaseName;
+    if (diseaseName.isEmpty) {
+      return false;
+    }
+
+    final cropType = attachedDiagnosis != null
+        ? _inferCropType(
+            labelKey: attachedDiagnosis.labelKey,
+            diseaseName: attachedDiagnosis.diseaseName,
+            aiContent: '',
+          )
+        : inferredCropType;
+    return _supportedTreatmentCardCrops.contains(cropType);
   }
 
   // ─── AI Response Builder ─────────────────────────────────────────────────
@@ -419,25 +524,9 @@ class ChatProvider extends ChangeNotifier {
   }
 
   String _formatBackendResponse(AiBackendChatResponse response) {
-    final buffer = StringBuffer(response.answer.trim());
-
-    // recommended_actions are NOT appended here — they render as a checklist
-    // widget in _MessageBubble via metadata['recommended_actions'].
-
-    if (response.warnings.isNotEmpty) {
-      buffer
-        ..write('\n\nWarnings:\n')
-        ..writeAll(
-          response.warnings.map((warning) => '• $warning'),
-          '\n',
-        );
-    }
-
-    if (response.sources.isNotEmpty) {
-      buffer.write('\n\nSources: ${response.sources.join(', ')}');
-    }
-
-    return buffer.toString().trim();
+    return response.answer.trim().isNotEmpty
+        ? response.answer.trim()
+        : 'I could not generate a response right now.';
   }
 
   // ─── Save ────────────────────────────────────────────────────────────────
@@ -489,6 +578,83 @@ class ChatProvider extends ChangeNotifier {
     return '';
   }
 
+  List<String> _extractTreatmentActionsFromContent(
+    String aiContent, {
+    required String inferredCropType,
+    required String inferredDiseaseName,
+  }) {
+    if (aiContent.trim().isEmpty ||
+        inferredDiseaseName.trim().isEmpty ||
+        !_supportedTreatmentCardCrops.contains(inferredCropType)) {
+      return const [];
+    }
+
+    final actions = <String>[];
+    final sections = [
+      _extractSection(
+        aiContent,
+        'Immediate action',
+        const ['Treatment', 'Prevention tip', 'Prevention'],
+      ),
+      _extractSection(
+        aiContent,
+        'Treatment',
+        const ['Prevention tip', 'Prevention', 'Warnings'],
+      ),
+    ];
+
+    for (final section in sections) {
+      if (section.trim().isEmpty) {
+        continue;
+      }
+      actions.addAll(_splitIntoActionSentences(section));
+    }
+
+    final deduped = <String>[];
+    for (final action in actions) {
+      final normalized = action.trim();
+      if (normalized.isNotEmpty && !deduped.contains(normalized)) {
+        deduped.add(normalized);
+      }
+    }
+    return deduped.take(7).toList();
+  }
+
+  String _extractSection(String text, String label, List<String> nextLabels) {
+    final normalizedText = text.replaceAll('\n', ' ');
+    final lowerText = normalizedText.toLowerCase();
+    final labelToken = '${label.toLowerCase()}:';
+    final start = lowerText.indexOf(labelToken);
+    if (start == -1) {
+      return '';
+    }
+
+    final contentStart = start + labelToken.length;
+    var end = normalizedText.length;
+    for (final nextLabel in nextLabels) {
+      final nextIndex =
+          lowerText.indexOf('${nextLabel.toLowerCase()}:', contentStart);
+      if (nextIndex != -1 && nextIndex < end) {
+        end = nextIndex;
+      }
+    }
+
+    return normalizedText.substring(contentStart, end).trim();
+  }
+
+  List<String> _splitIntoActionSentences(String text) {
+    final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.isEmpty) {
+      return const [];
+    }
+
+    return normalized
+        .split(RegExp(r'(?<=[.!?])\s+'))
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList();
+  }
+
   String _inferLabelKey({
     required String diseaseName,
     required String cropType,
@@ -526,6 +692,7 @@ class ChatProvider extends ChangeNotifier {
       'eggplant': ['eggplant', 'talong'],
       'pechay': ['pechay', 'bok choy', 'bokchoy'],
       'squash': ['squash', 'kalabasa'],
+      'corn': ['corn', 'maize'],
     }.entries) {
       for (final kw in entry.value) {
         if (lk.contains(kw) || dn.contains(kw) || ai.contains(kw)) {
@@ -533,6 +700,6 @@ class ChatProvider extends ChangeNotifier {
         }
       }
     }
-    return 'tomato'; // fallback
+    return '';
   }
 }

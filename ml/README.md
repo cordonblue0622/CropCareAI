@@ -10,19 +10,10 @@ classes, 2 pepper classes, and `squash_powdery_mildew`. It does **not**
 include eggplant — no permissively-licensed eggplant disease dataset is
 reachable via Hugging Face, so eggplant data sourcing is deferred to v3.
 
-To preserve eggplant capability without shipping a regression, the
-Flutter app uses **multi-model routing** at runtime:
-
-- Eggplant scans → legacy `cropcare_efficientnet_with_eggplant.tflite`
-  (still shipped in `assets/models/`).
-- Tomato / pepper / squash / unknown crop scans → new
-  `cropcare_efficientnet_v2.tflite` produced by this pipeline.
-
-See
-[lib/services/local_classifier_service_io.dart](../lib/services/local_classifier_service_io.dart)
-for the routing logic and
-[docs/superpowers/specs/2026-05-06-cropcare-v2-model-upgrade-design.md](../docs/superpowers/specs/2026-05-06-cropcare-v2-model-upgrade-design.md)
-§13 for the rationale.
+The Flutter app now ships a single on-device model,
+`cropcare_efficientnet_v2.tflite`, for tomato / pepper / squash scans.
+Eggplant and pechay remain outside the local classifier label set until a
+future retrain adds supported data for them.
 
 Pechay remains knowledge-base only and is not a trainable v2 label. The
 `cropcare_v2_full` and `cropcare_v2_base_parity` profiles are still
@@ -38,7 +29,7 @@ Research/excluded sources:
 - `wellCh4n/tomato-leaf-disease-image`: missing license
 - `avinashhm/plant-disease-classification`: missing license
 - `Mobiusi/Crop-Pest-and-Disease-Classification-Dataset`: non-commercial
-- `susnato/plant_disease_detection_processed`: object detection, future YOLO phase
+- `susnato/plant_disease_detection_processed`: object detection, future non-classifier phase
 
 ## Setup
 
@@ -82,7 +73,7 @@ That uses these defaults from the spec:
 
 | Flag | Default | Notes |
 |---|---|---|
-| `-LabelProfile` | `cropcare_v2_subset_100` | 13 labels: tomato + pepper + squash (no eggplant; eggplant uses the legacy model in-app) |
+| `-LabelProfile` | `cropcare_v2_subset_100` | 13 labels: tomato + pepper + squash (no eggplant local runtime support yet) |
 | `-Epochs` | `30` | 5 warm-up + ≤25 fine-tune |
 | `-BatchSize` | `32` | |
 | `-MaxPerLabel` | unset | PlantVillage uncapped |
@@ -108,9 +99,9 @@ The release runs these steps in order:
    - Exports float32 TFLite (`*_float.tflite` for sanity), Keras
      `*.keras`, and the production INT8 TFLite via post-training
      quantization with a 200-sample representative dataset.
-3. **`compare-models`** — runs both
-   `assets/models/cropcare_efficientnet_with_eggplant.tflite` (base) and
-   the candidate INT8 TFLite on the held-out test split, writes
+3. **`compare-models`** — runs the currently shipped
+  `assets/models/cropcare_efficientnet_v2.tflite` (base) and the
+  candidate INT8 TFLite on the held-out test split, writes
    `comparison_report.json` and `comparison_report.md`, and exits non-zero
    if the verdict is BLOCK.
 4. **`promote-artifacts`** — only copies `cropcare_efficientnet_v2.tflite`
@@ -134,8 +125,8 @@ Final shipped `.tflite` size ≤ 7 MB is a *soft* target. If INT8
 quantization regresses macro-F1 by more than 0.02, the float32 model
 ships instead even though it exceeds 7 MB — accuracy beats size.
 
-If the gate blocks, the existing
-`cropcare_efficientnet_with_eggplant.tflite` remains the shipped artifact.
+If the gate blocks, the existing `cropcare_efficientnet_v2.tflite`
+remains the shipped artifact.
 
 ### Comparison Report
 
@@ -158,8 +149,8 @@ You can also run the harness against any candidate model standalone:
 
 ```powershell
 .\ml\.venv\Scripts\python.exe -m cropcare_training.compare_models `
-    --base assets/models/cropcare_efficientnet_with_eggplant.tflite `
-    --base-labels assets/models/labels_with_eggplant.txt `
+  --base assets/models/cropcare_efficientnet_v2.tflite `
+  --base-labels assets/models/labels_v2.txt `
     --candidate ml/artifacts/cropcare_v2/cropcare_efficientnet_v2.tflite `
     --candidate-labels ml/artifacts/cropcare_v2/labels_v2.txt `
     --test-dir ml/artifacts/cropcare_v2/images_by_split/test `
@@ -209,11 +200,10 @@ The Flutter classifier
 auto-detects the TFLite input dtype at load time and dispatches to the
 appropriate path:
 
-- **Float32 input** (`cropcare_efficientnet_with_eggplant.tflite`):
-  passes raw RGB doubles in `[0, 255]`. Preprocessing is inside the
-  model graph for v2 (no Dart-side `/255` divide).
-- **Uint8 input** (`cropcare_efficientnet_v2.tflite`): packs raw RGB
-  bytes into a flat `Uint8List`. Output is dequantized using the
+- **Current shipped runtime** (`cropcare_efficientnet_v2.tflite`): packs
+  raw RGB bytes into a flat `Uint8List`. Output is dequantized using the
   tensor's quantization scale/zero-point before softmax/argmax.
+- **Float32 fallback support** remains in the classifier core for future
+  exports and tests that use float input tensors.
 
 Both work without changing any other Flutter code.

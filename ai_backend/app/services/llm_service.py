@@ -1,6 +1,12 @@
+import logging
+import re
+from typing import Any
+
 from app.core.config import Settings
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.user import AuthenticatedUser
+
+logger = logging.getLogger(__name__)
 
 # Human-readable names for every label the trained EfficientNet model recognises.
 _TRAINED_LABEL_NAMES: dict[str, str] = {
@@ -21,20 +27,30 @@ _TRAINED_LABEL_NAMES: dict[str, str] = {
 
 _SYSTEM_PROMPT = """You are CropCare AI, an expert crop disease assistant trained to support Filipino smallholder farmers.
 
-The app's AI model was trained specifically on the following 13 crop conditions. When the user asks about a diagnosis, ALWAYS tie your answer to the exact condition identified:
+The app's TFLite scanner was trained specifically on the following 13 crop conditions. Any scanner output is a hint to verify against the attached image, not ground truth:
 
 PEPPER (Bell): Bacterial Spot · Healthy
 SQUASH: Powdery Mildew
 TOMATO: Bacterial Spot · Early Blight · Late Blight · Leaf Mold · Septoria Leaf Spot · Spider Mites · Target Spot · Yellow Leaf Curl Virus · Mosaic Virus · Healthy
 
 Rules:
-1. Base your response on the diagnosis label provided. If knowledge records are supplied, incorporate their treatment steps directly.
-2. Structure every disease response with: What it is → Key symptoms → Immediate action → Treatment → Prevention tip.
-3. If the photo has no match or is unclear, advise the farmer to retake a close-up shot of the affected leaf in good lighting.
-4. Prefer organic/integrated pest management options first; mention chemical options with exact safety notes.
-5. Use simple English. Avoid jargon. Keep answers under 250 words unless the farmer asks for more detail.
-6. If confidence is below 40%, explicitly tell the farmer the result is uncertain and recommend a follow-up scan.
-7. Return plain text only – no markdown, no bullet symbols."""
+1. Treat any diagnosis label or confidence score as scanner output to verify against the image. If the image contradicts the scanner result, say so clearly and correct it.
+2. If the crop in the image appears outside the scanner's supported crops, explicitly say the scanner may be wrong and answer from the visual evidence as carefully as possible.
+3. If knowledge records are supplied and they match the verified diagnosis, incorporate their treatment steps directly.
+4. Structure every disease response with: What it is → Key symptoms → Immediate action → Treatment → Prevention tip.
+5. If the photo has no reliable match or is unclear, advise the farmer to retake a close-up shot of the affected leaf in good lighting.
+6. Prefer organic/integrated pest management options first; mention chemical options with exact safety notes.
+7. Use simple English. Avoid jargon. Keep answers under 250 words unless the farmer asks for more detail.
+8. If scanner confidence is below 60%, explicitly tell the farmer the result is uncertain and recommend a follow-up scan.
+9. Return plain text only – no markdown, no bullet symbols."""
+
+_SUPPORTED_TREATMENT_CARD_CROPS = {
+    "tomato",
+    "eggplant",
+    "pepper",
+    "pechay",
+    "squash",
+}
 
 
 class LlmService:
@@ -45,8 +61,9 @@ class LlmService:
         self,
         payload: ChatRequest,
         current_user: AuthenticatedUser,
-        knowledge_records: list[dict[str, str]],
+        knowledge_records: list[dict[str, Any]],
     ) -> ChatResponse:
+        _ = current_user
         if not self._settings.openai_api_key:
             return self._fallback_response(payload, knowledge_records)
 
@@ -55,13 +72,16 @@ class LlmService:
         client = OpenAI(api_key=self._settings.openai_api_key)
 
         # ── Build knowledge block ────────────────────────────────────────────
-        knowledge_text = "\n".join(
-            f"- {record.get('title', 'Untitled')}: {record.get('summary', '')}"
-            for record in knowledge_records
-        )
+        knowledge_text = self._format_knowledge_records(knowledge_records)
 
         # ── Build user context ───────────────────────────────────────────────
-        user_context_lines = [f"Question: {payload.user_message}"]
+        user_context_lines: list[str] = []
+
+        conversation_text = self._format_conversation_history(payload)
+        if conversation_text:
+            user_context_lines.append(f"Recent conversation:\n{conversation_text}")
+
+        user_context_lines.append(f"Farmer's latest message: {payload.user_message}")
 
         if knowledge_text:
             user_context_lines.append(f"\nRelevant knowledge:\n{knowledge_text}")
@@ -75,8 +95,8 @@ class LlmService:
                 else "unknown"
             )
             user_context_lines.append(
-                f"\nDiagnosis from the AI model:"
-                f"\n- Identified condition: {disease_label}"
+                f"\nScanner hint from the TFLite model (verify this against the image before answering):"
+                f"\n- Closest condition: {disease_label}"
                 f"\n- Model label key: {label_key}"
                 f"\n- Confidence: {confidence_pct}"
                 f"\n- Crop: {payload.diagnosis.crop_type or 'unknown'}"
@@ -116,52 +136,65 @@ class LlmService:
             answer = getattr(response, "output_text", None) or (
                 "I could not generate an answer from the configured model."
             )
+            recommended_actions = self._recommended_actions(
+                payload,
+                knowledge_records,
+                answer=answer,
+            )
 
             return ChatResponse(
                 answer=answer,
-                recommended_actions=self._recommended_actions(payload, knowledge_records),
+                recommended_actions=recommended_actions,
                 warnings=self._warnings(payload),
-                sources=[record.get("source", "knowledge-base") for record in knowledge_records]
-                or ["openai-vision" if payload.image_data_url else "openai"],
+                sources=self._response_sources(
+                    payload,
+                    knowledge_records,
+                    include_openai=True,
+                ),
                 model=self._settings.openai_model,
             )
         except Exception:
+            logger.exception("OpenAI chat response failed. Falling back to diagnosis-grounded guidance.")
             return self._fallback_response(payload, knowledge_records)
 
     def _recommended_actions(
         self,
         payload: ChatRequest,
-        knowledge_records: list[dict[str, str]],
+        knowledge_records: list[dict[str, Any]],
+        *,
+        answer: str = "",
     ) -> list[str]:
-        actions: list[str] = []
-        if payload.image_data_url:
-            actions.append("Compare the AI read with the actual leaf symptoms in the photo.")
-        if knowledge_records:
-            actions.extend(
-                record.get("title", "").strip()
-                for record in knowledge_records
-                if record.get("title", "").strip()
-            )
+        diagnosis = payload.diagnosis
+        if diagnosis is None:
+            return []
 
-        actions.extend(
-            [
-                "Inspect the affected crop again within 24 hours.",
-                "Confirm any spray or treatment plan before field application.",
-            ]
-        )
+        crop_type = (diagnosis.crop_type or "").strip().lower()
+        if crop_type not in _SUPPORTED_TREATMENT_CARD_CROPS:
+            return []
+
+        actions: list[str] = []
+        for record in knowledge_records:
+            actions.extend(self._normalize_string_list(record.get("treatment_steps")))
+            if not actions:
+                actions.extend(
+                    self._extract_treatment_actions(record.get("summary", ""))
+                )
+
+        if not actions and answer.strip():
+            actions.extend(self._extract_treatment_actions(answer))
 
         deduped: list[str] = []
         for action in actions:
             if action not in deduped:
                 deduped.append(action)
-        return deduped[:3]
+        return deduped[:5]
 
     def _warnings(self, payload: ChatRequest) -> list[str]:
         warnings = ["Verify treatment dosage and intervals before spraying."]
         if payload.diagnosis and payload.diagnosis.confidence is not None:
-            if payload.diagnosis.confidence < 0.40:
+            if payload.diagnosis.confidence < 0.60:
                 warnings.append(
-                    "Diagnosis confidence is below 40%. Use a clearer, close-up photo of the affected leaf and rescan."
+                    "Diagnosis confidence is below 60%. Use a clearer, close-up photo of the affected leaf and rescan."
                 )
         elif payload.image_data_url:
             warnings.append("Image-only analysis should be confirmed against field symptoms.")
@@ -170,190 +203,152 @@ class LlmService:
     def _fallback_response(
         self,
         payload: ChatRequest,
-        knowledge_records: list[dict[str, str]],
+        knowledge_records: list[dict[str, Any]],
     ) -> ChatResponse:
         disease = payload.diagnosis.disease_name if payload.diagnosis else None
         label_key = payload.diagnosis.label_key if payload.diagnosis else None
-        crop = payload.diagnosis.crop_type if payload.diagnosis else None
         disease_label = _TRAINED_LABEL_NAMES.get(label_key or "", disease or "")
         summary = knowledge_records[0]["summary"] if knowledge_records else ""
 
         answer_parts: list[str] = []
         if disease_label:
             answer_parts.append(
-                f"The scan identified: {disease_label}."
+                f"Based on the scan, the closest detected condition is {disease_label}."
             )
         if summary:
             answer_parts.append(summary)
+        elif payload.diagnosis:
+            answer_parts.append(
+                "I couldn't reach the OpenAI response model right now, so I can only reflect the scan result. "
+                "Please send the message again in a moment for a fuller conversational reply."
+            )
         else:
             answer_parts.append(
-                "Please ensure the Supabase knowledge base is populated with treatment data for your trained model classes "
-                "so the assistant can provide specific guidance."
+                "I couldn't reach the OpenAI response model right now. Please try again in a moment, "
+                "or attach a clearer close-up photo of the affected leaf."
             )
 
-        if payload.image_data_url:
-            answer_parts.append(
-                "The uploaded image should still be verified against field symptoms before starting any treatment."
-            )
-        answer_parts.append(f"Your question: {payload.user_message}")
+        if payload.diagnosis and payload.diagnosis.confidence is not None:
+            if payload.diagnosis.confidence < 0.60:
+                answer_parts.append(
+                    "The scan confidence is still low, so please confirm it with a clearer leaf photo before treating."
+                )
+
+        answer = " ".join(part.strip() for part in answer_parts if part.strip())
 
         return ChatResponse(
-            answer=" ".join(answer_parts),
-            recommended_actions=self._recommended_actions(payload, knowledge_records),
+            answer=answer,
+            recommended_actions=self._recommended_actions(
+                payload,
+                knowledge_records,
+                answer=answer,
+            ),
             warnings=self._warnings(payload),
-            sources=[record.get("source", "knowledge-base") for record in knowledge_records]
-            or ["knowledge-base"],
+            sources=self._response_sources(
+                payload,
+                knowledge_records,
+                include_openai=False,
+            ),
             model="knowledge-fallback",
         )
 
-    def __init__(self, settings: Settings):
-        self._settings = settings
+    def _format_conversation_history(self, payload: ChatRequest) -> str:
+        lines: list[str] = []
+        for turn in payload.conversation_history[-6:]:
+            content = " ".join(turn.content.split())
+            if not content:
+                continue
+            prefix = "Farmer" if turn.role == "user" else "CropCare AI"
+            lines.append(f"{prefix}: {content}")
+        return "\n".join(lines)
 
-    async def generate_response(
-        self,
-        payload: ChatRequest,
-        current_user: AuthenticatedUser,
-        knowledge_records: list[dict[str, str]],
-    ) -> ChatResponse:
-        if not self._settings.openai_api_key:
-            return self._fallback_response(payload, knowledge_records)
+    def _format_knowledge_records(self, knowledge_records: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for record in knowledge_records:
+            title = record.get("title", "Untitled")
+            summary = record.get("summary", "")
+            entry = f"- {title}: {summary}".strip()
+            steps = self._normalize_string_list(record.get("treatment_steps"))
+            if steps:
+                entry = f"{entry}\n  Structured treatment steps: {' | '.join(steps)}"
+            parts.append(entry)
+        return "\n".join(part for part in parts if part.strip())
 
-        from openai import OpenAI
+    def _normalize_string_list(self, raw: Any) -> list[str]:
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            return [str(item).strip() for item in raw if str(item).strip()]
+        if isinstance(raw, str):
+            text = raw.strip()
+            return [text] if text else []
+        return []
 
-        client = OpenAI(api_key=self._settings.openai_api_key)
+    def _extract_treatment_actions(self, text: str) -> list[str]:
+        if not text.strip():
+            return []
 
-        knowledge_text = "\n".join(
-            f"- {record.get('title', 'Untitled')}: {record.get('summary', '')}"
-            for record in knowledge_records
-        )
-        user_context = (
-            f"User ID: {current_user.id}\n"
-            f"Question: {payload.user_message}\n"
-            f"Knowledge:\n{knowledge_text or '- none'}"
-        )
-
-        if payload.diagnosis:
-            user_context += (
-                "\nDiagnosis context:\n"
-                f"- crop_type: {payload.diagnosis.crop_type or 'unknown'}\n"
-                f"- label_key: {payload.diagnosis.label_key or 'unknown'}\n"
-                f"- disease_name: {payload.diagnosis.disease_name or 'unknown'}\n"
-                f"- confidence: {payload.diagnosis.confidence or 'unknown'}\n"
-                f"- severity: {payload.diagnosis.severity or 'unknown'}"
-            )
-
-        user_content: list[dict[str, str]] = [
-            {"type": "input_text", "text": user_context}
-        ]
-        if payload.image_data_url:
-            user_content.append(
-                {"type": "input_image", "image_url": payload.image_data_url}
-            )
-
-        try:
-            response = client.responses.create(
-                model=self._settings.openai_model,
-                input=[
-                    {
-                        "role": "system",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": (
-                                    "You are CropCare AI. Provide concise, practical crop "
-                                    "guidance grounded in the supplied knowledge. If an image is "
-                                    "provided, analyze the visible crop condition directly from the "
-                                    "photo and clearly state uncertainty when needed. Return plain text."
-                                ),
-                            }
-                        ],
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content,
-                    },
-                ],
-            )
-
-            answer = getattr(response, "output_text", None) or (
-                "I could not generate an answer from the configured model."
-            )
-
-            return ChatResponse(
-                answer=answer,
-                recommended_actions=self._recommended_actions(payload, knowledge_records),
-                warnings=self._warnings(payload),
-                sources=[record.get("source", "knowledge-base") for record in knowledge_records]
-                or ["openai-vision" if payload.image_data_url else "openai"],
-                model=self._settings.openai_model,
-            )
-        except Exception:
-            return self._fallback_response(payload, knowledge_records)
-
-    def _recommended_actions(
-        self,
-        payload: ChatRequest,
-        knowledge_records: list[dict[str, str]],
-    ) -> list[str]:
         actions: list[str] = []
-        if payload.image_data_url:
-            actions.append("Compare the AI read with the actual leaf symptoms in the photo.")
-        if knowledge_records:
-            actions.extend(
-                record.get("title", "").strip()
-                for record in knowledge_records
-                if record.get("title", "").strip()
-            )
+        sections = [
+            self._extract_section(text, "Immediate action", ["Treatment", "Prevention tip", "Prevention"]),
+            self._extract_section(text, "Treatment", ["Prevention tip", "Prevention", "Warnings"]),
+        ]
 
-        actions.extend(
-            [
-                "Inspect the affected crop again within 24 hours.",
-                "Confirm any spray or treatment plan before field application.",
-            ]
+        for section in sections:
+            if not section:
+                continue
+            actions.extend(self._sentences_to_actions(section))
+
+        if actions:
+            return actions[:5]
+
+        treatment_match = re.search(
+            r"Treatment\s*:\s*(.+?)(?:Prevention(?: tip)?\s*:|Warnings\s*:|$)",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if treatment_match:
+            return self._sentences_to_actions(treatment_match.group(1))[:5]
+
+        return []
+
+    def _extract_section(self, text: str, label: str, next_labels: list[str]) -> str:
+        next_pattern = "|".join(re.escape(item) for item in next_labels)
+        pattern = (
+            rf"{re.escape(label)}\s*:\s*(.+?)"
+            rf"(?:(?:{next_pattern})\s*:|$)"
+        )
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return ""
+        return match.group(1).strip()
+
+    def _sentences_to_actions(self, text: str) -> list[str]:
+        normalized = re.sub(r"\s+", " ", text).strip()
+        if not normalized:
+            return []
+        sentences = re.split(r"(?<=[.!?])\s+", normalized)
+        return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+    def _response_sources(
+        self,
+        payload: ChatRequest,
+        knowledge_records: list[dict[str, Any]],
+        *,
+        include_openai: bool,
+    ) -> list[str]:
+        sources: list[str] = []
+        if include_openai:
+            sources.append("openai-vision" if payload.image_data_url else "openai")
+        sources.extend(
+            str(record.get("source", "knowledge-base")) for record in knowledge_records
         )
 
         deduped: list[str] = []
-        for action in actions:
-            if action not in deduped:
-                deduped.append(action)
-        return deduped[:3]
-
-    def _warnings(self, payload: ChatRequest) -> list[str]:
-        warnings = ["Verify treatment dosage and intervals before spraying."]
-        if payload.diagnosis and payload.diagnosis.confidence is not None:
-            if payload.diagnosis.confidence < 0.6:
-                warnings.append("Diagnosis confidence is low; use a clearer follow-up image if possible.")
-        elif payload.image_data_url:
-            warnings.append("Image-only analysis should be confirmed against field symptoms.")
-        return warnings[:2]
-
-    def _fallback_response(
-        self,
-        payload: ChatRequest,
-        knowledge_records: list[dict[str, str]],
-    ) -> ChatResponse:
-        disease = payload.diagnosis.disease_name if payload.diagnosis else None
-        crop = payload.diagnosis.crop_type if payload.diagnosis else None
-        summary = knowledge_records[0]["summary"] if knowledge_records else ""
-
-        answer_parts = [
-            summary or "Here is the best guidance available from the current crop knowledge base.",
-        ]
-        if crop or disease:
-            answer_parts.append(
-                f"Field context: crop={crop or 'unknown'}, disease={disease or 'unknown'}."
-            )
-        if payload.image_data_url:
-            answer_parts.append(
-                "The uploaded image should still be verified against field symptoms before treatment."
-            )
-        answer_parts.append(f"Question: {payload.user_message}")
-
-        return ChatResponse(
-            answer=" ".join(answer_parts),
-            recommended_actions=self._recommended_actions(payload, knowledge_records),
-            warnings=self._warnings(payload),
-            sources=[record.get("source", "knowledge-base") for record in knowledge_records]
-            or ["knowledge-base"],
-            model="knowledge-fallback",
-        )
+        for source in sources:
+            normalized = source.strip()
+            if normalized and normalized not in deduped:
+                deduped.append(normalized)
+        if deduped:
+            return deduped
+        return ["knowledge-base"] if not include_openai else ["openai"]

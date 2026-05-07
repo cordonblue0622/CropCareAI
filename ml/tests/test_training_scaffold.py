@@ -341,9 +341,8 @@ def test_automation_default_uncaps_plantvillage_and_uses_subset_100_profile() ->
 
     config = TrainingRunConfig()  # all defaults
 
-    # Multi-model architecture: v2 trains on subset_100 (no eggplant) and
-    # the legacy cropcare_efficientnet_with_eggplant.tflite stays shipped
-    # for eggplant scans. See [LocalClassifierService] in the Flutter app.
+    # The shipped runtime now uses the v2 subset model directly, while
+    # eggplant stays outside the on-device label set until a future retrain.
     assert config.label_profile == "cropcare_v2_subset_100"
     assert config.max_per_label is None
     assert config.min_per_label == 80
@@ -429,9 +428,7 @@ def test_release_steps_include_comparison_then_promote() -> None:
     ]
     compare_args = next(step.args for step in steps if step.name == "compare-models")
     assert "--base" in compare_args
-    assert any(
-        "cropcare_efficientnet_with_eggplant.tflite" in arg for arg in compare_args
-    )
+    assert "assets/models/cropcare_efficientnet_v2.tflite" in compare_args
     assert "--candidate" in compare_args
     assert any(arg.endswith("cropcare_efficientnet_v2.tflite") for arg in compare_args)
 
@@ -670,9 +667,9 @@ def test_base_parity_profile_matches_shipped_base_labels() -> None:
     labels = labels_for_profile("cropcare_v2_base_parity")
     excluded = excluded_labels_for_profile("cropcare_v2_base_parity")
 
-    # Must equal the 16 labels currently shipped in
-    # assets/models/labels_with_eggplant.txt (no squash for the v2
-    # base-parity scope; squash stays in the wider full profile).
+    # Must equal the 16 labels in the legacy pre-v2 baseline set
+    # (no squash for the base-parity scope; squash stays in the wider
+    # full profile).
     assert labels == [
         "tomato_bacterial_spot",
         "tomato_early_blight",

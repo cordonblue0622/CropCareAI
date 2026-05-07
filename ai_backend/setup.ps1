@@ -70,7 +70,7 @@ if (-not $pythonCommand) {
     Write-Host '  winget install -e --id Python.Python.3.11' -ForegroundColor Cyan
     Write-Host ''
     Write-Host 'After installation, close and reopen PowerShell, then run .\setup.ps1 again.' -ForegroundColor Yellow
-    Write-Host 'Use 3.11 or 3.12 later when you need real YOLO and Whisper model packages.' -ForegroundColor Yellow
+    Write-Host 'Use 3.11 or 3.12 later when you need faster-whisper model packages.' -ForegroundColor Yellow
     exit 1
 }
 
@@ -105,4 +105,4 @@ Write-Host 'Backend setup complete.' -ForegroundColor Green
 Write-Host 'Next steps:' -ForegroundColor Green
 Write-Host '  1. Edit .env and set your real keys when ready.' -ForegroundColor Cyan
 Write-Host '  2. Run .\run.ps1' -ForegroundColor Cyan
-Write-Host '  3. Use Python 3.11 or 3.12 plus requirements-ml.txt later for real YOLO and Whisper inference.' -ForegroundColor Cyan
+Write-Host '  3. Use Python 3.11 or 3.12 plus requirements-ml.txt later for faster-whisper inference.' -ForegroundColor Cyan

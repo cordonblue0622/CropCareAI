@@ -19,9 +19,8 @@ SUBSET_100_LABELS: tuple[str, ...] = (
     "squash_powdery_mildew",
 )
 
-# 16 labels matching the shipped base model
-# (assets/models/labels_with_eggplant.txt). Squash is intentionally
-# excluded — base parity means matching base, and base has no squash.
+# 16 labels matching the legacy pre-v2 baseline. Squash is intentionally
+# excluded because the older baseline did not include squash classes.
 BASE_PARITY_LABELS: tuple[str, ...] = (
     "tomato_bacterial_spot",
     "tomato_early_blight",
