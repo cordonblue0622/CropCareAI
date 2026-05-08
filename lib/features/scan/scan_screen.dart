@@ -5,6 +5,10 @@ import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../../core/theme/app_colors.dart';
 import 'preview_screen.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
+import 'video_preview_screen.dart';
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -14,6 +18,8 @@ class ScanScreen extends StatefulWidget {
 }
 
 class _ScanScreenState extends State<ScanScreen> {
+  static const Duration _maxVideoDuration = Duration(seconds: 15);
+
   CameraController? _controller;
   List<CameraDescription>? _cameras;
   bool _initializing = true;
@@ -113,37 +119,102 @@ class _ScanScreenState extends State<ScanScreen> {
   Future<void> _toggleVideo() async {
     if (_controller == null || !_controller!.value.isInitialized) return;
     if (_isRecording) {
-      // ── Stop: cancel timer, take a still snapshot ──
-      _recordingTimer?.cancel();
-      _recordingTimer = null;
-      setState(() {
-        _isRecording = false;
-        _recordingSeconds = 0;
-      });
-
-      XFile? frameFile;
-      try {
-        frameFile = await _controller!.takePicture();
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not capture frame: $e')),
-          );
-        }
-        return;
-      }
-
-      await _openPreview(frameFile, isFromVideo: true);
+      await _stopRecording();
     } else {
-      // ── Start: show recording UI immediately, no actual video recording ──
-      setState(() {
-        _isRecording = true;
-        _recordingSeconds = 0;
-      });
-      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => _recordingSeconds++);
-      });
+      await _startRecording();
     }
+  }
+
+  Future<void> _startRecording() async {
+    try {
+      await _controller!.prepareForVideoRecording();
+      await _controller!.startVideoRecording();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not start recording: $e')),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _isRecording = true;
+      _recordingSeconds = 0;
+    });
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return;
+      setState(() => _recordingSeconds++);
+      if (_recordingSeconds >= _maxVideoDuration.inSeconds) {
+        // Auto-stop at the cap.
+        _stopRecording();
+      }
+    });
+  }
+
+  Future<void> _stopRecording() async {
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+
+    XFile? rawFile;
+    try {
+      rawFile = await _controller!.stopVideoRecording();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not finalize recording: $e')),
+        );
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isRecording = false;
+      _recordingSeconds = 0;
+    });
+
+    if (rawFile == null) return;
+
+    final saved = await _persistRecording(rawFile);
+    if (saved == null || !mounted) return;
+    await _openVideoPreview(saved);
+  }
+
+  /// Move the camera-package's temp recording into `<app docs>/videos/<uuid>.mp4`.
+  /// Returns the persisted XFile or null on failure.
+  Future<XFile?> _persistRecording(XFile rawFile) async {
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final videosDir = Directory('${docs.path}/videos');
+      if (!await videosDir.exists()) {
+        await videosDir.create(recursive: true);
+      }
+      final id = const Uuid().v4();
+      final destPath = '${videosDir.path}/$id.mp4';
+      final source = File(rawFile.path);
+      await source.copy(destPath);
+      try {
+        await source.delete();
+      } catch (_) {/* tolerate temp-file lock on some Android devices */}
+      return XFile(destPath);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not save video: $e')),
+        );
+      }
+      return null;
+    }
+  }
+
+  Future<void> _openVideoPreview(XFile videoFile) async {
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPreviewScreen(videoFile: videoFile),
+      ),
+    );
   }
 
   String _formatDuration(int seconds) {

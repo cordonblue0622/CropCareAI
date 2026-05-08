@@ -20,6 +20,7 @@ import 'services/connectivity_service.dart';
 import 'services/local_classifier_service.dart';
 import 'services/notification_service.dart';
 import 'services/sync_service.dart';
+import 'services/video_cleanup_service.dart';
 
 class CropCareApp extends StatefulWidget {
   const CropCareApp({super.key});
@@ -40,6 +41,7 @@ class _CropCareAppState extends State<CropCareApp> {
     // Subscribe lazily so the singleton has been created.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _tapSub = NotificationService.instance.tapStream.listen(_handleTap);
+      _runVideoCleanup();
     });
   }
 
@@ -47,6 +49,17 @@ class _CropCareAppState extends State<CropCareApp> {
   void dispose() {
     _tapSub?.cancel();
     super.dispose();
+  }
+
+  Future<void> _runVideoCleanup() async {
+    try {
+      final ctx = _navigatorKey.currentContext;
+      if (ctx == null) return;
+      final db = ctx.read<DatabaseHelper>();
+      // Fire-and-forget; we never block UI on this.
+      // ignore: discarded_futures
+      VideoCleanupService(db: db).runIfDue();
+    } catch (_) {/* defensive — never break app start */}
   }
 
   Future<void> _handleTap(String payload) async {

@@ -223,6 +223,17 @@ class _DiagnosticHistoryScreenState extends State<DiagnosticHistoryScreen> {
                                     fontSize: 12,
                                     color: AppColors.textLightGray),
                               ),
+                              if (d.videoUrl != null && d.videoUrl!.startsWith('expired:')) ...[
+                                const SizedBox(width: 6),
+                                const Icon(Icons.videocam_off,
+                                    size: 13, color: AppColors.textLightGray),
+                                const SizedBox(width: 3),
+                                const Text(
+                                  'Video expired',
+                                  style: TextStyle(
+                                      fontSize: 11, color: AppColors.textLightGray),
+                                ),
+                              ],
                             ]),
                             if (d.summary != null &&
                                 d.summary!.isNotEmpty) ...[
