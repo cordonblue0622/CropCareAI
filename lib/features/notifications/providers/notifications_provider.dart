@@ -44,7 +44,9 @@ class NotificationsProvider extends ChangeNotifier {
     notifyListeners();
 
     // Schedule browser notifications for today's pending tasks.
+    // ignore: discarded_futures
     NotificationService.instance.requestPermission();
+    // ignore: discarded_futures
     NotificationService.instance.scheduleForTasks(_todayTasks);
   }
 
@@ -145,6 +147,7 @@ class NotificationsProvider extends ChangeNotifier {
       }
 
       // Reschedule so the completed task no longer fires reminders.
+      // ignore: discarded_futures
       NotificationService.instance.scheduleForTasks(_todayTasks);
       notifyListeners();
     } catch (_) {}

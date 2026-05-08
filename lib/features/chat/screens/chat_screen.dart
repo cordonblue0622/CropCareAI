@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../core/utils/label_formatter.dart';
 import '../../../data/models/chat_message_model.dart';
 import '../../../data/models/chat_session_model.dart';
 import '../../../data/models/diagnosis_model.dart';
@@ -155,7 +156,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             const SizedBox(height: 4),
             Text(
-              'Detected: ${diagnosis.diseaseName}',
+              'Detected: ${humanizeDiseaseLabel(diagnosis.diseaseName)}',
               style: const TextStyle(
                   fontWeight: FontWeight.w600, color: AppColors.primaryDark),
             ),
@@ -565,7 +566,7 @@ class _DiagnosisSummaryCard extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
-            diagnosis.diseaseName,
+            humanizeDiseaseLabel(diagnosis.diseaseName),
             style: const TextStyle(
               fontSize: 24,
               fontWeight: FontWeight.w800,
@@ -982,7 +983,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
             ),
             if (diseaseName.isNotEmpty) ...[
               const SizedBox(height: 6),
-              Text('Detected: $diseaseName',
+              Text('Detected: ${humanizeDiseaseLabel(diseaseName)}',
                   style: const TextStyle(
                       fontSize: 12, color: AppColors.textGray)),
             ] else ...[

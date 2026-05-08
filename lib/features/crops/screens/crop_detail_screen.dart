@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../../../core/constants/app_enums.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/label_formatter.dart';
 import '../../../data/models/chat_message_model.dart';
 import '../../../data/models/chat_session_model.dart';
 import '../../../data/models/crop_model.dart';
@@ -681,7 +682,7 @@ class _DiagnosisSummaryCard extends StatelessWidget {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Expanded(
-            child: Text(diagnosis.diseaseName,
+            child: Text(humanizeDiseaseLabel(diagnosis.diseaseName),
                 style: const TextStyle(
                     fontWeight: FontWeight.w700, fontSize: 15)),
           ),
@@ -1189,7 +1190,7 @@ class _ProgressCard extends StatelessWidget {
                 if ((update.detectedDiseaseName ?? '').isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Text(
-                    update.detectedDiseaseName!,
+                    humanizeDiseaseLabel(update.detectedDiseaseName!),
                     style: const TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
@@ -1280,7 +1281,7 @@ class _DiagnosesTab extends StatelessWidget {
                       children: [
                         Row(children: [
                           Expanded(
-                            child: Text(d.diseaseName,
+                            child: Text(humanizeDiseaseLabel(d.diseaseName),
                                 style: const TextStyle(
                                     fontWeight: FontWeight.w700,
                                     fontSize: 15)),

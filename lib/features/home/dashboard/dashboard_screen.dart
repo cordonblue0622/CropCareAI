@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../core/utils/label_formatter.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/models/crop_model.dart';
 import '../../../data/models/disease_knowledge_model.dart';
@@ -613,7 +614,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         itemCount: items.length,
         separatorBuilder: (_, __) => const SizedBox(width: 12),
         itemBuilder: (_, i) => _DiseaseCard(
-          name: items[i].diseaseName,
+          name: humanizeDiseaseLabel(items[i].diseaseName),
           risk: _diseaseRiskLabel(items[i]),
           color: _diseaseAccentColor(items[i]),
           onTap: () => _pushLibrary(ctx),
