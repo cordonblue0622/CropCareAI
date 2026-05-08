@@ -49,6 +49,7 @@ class AiBackendService {
     String? imageMimeType,
     List<Map<String, String>> conversationHistory = const [],
     String? locale,
+    String? hintCropType,
   }) async {
     final response = await _client
         .post(
@@ -73,6 +74,8 @@ class AiBackendService {
             if (conversationHistory.isNotEmpty)
               'conversation_history': conversationHistory,
             if (locale != null && locale.isNotEmpty) 'locale': locale,
+            if (hintCropType != null && hintCropType!.trim().isNotEmpty)
+              'hint_crop_type': hintCropType!.trim().toLowerCase(),
           }),
         )
         .timeout(const Duration(seconds: 20));
@@ -241,6 +244,8 @@ class AiBackendChatResponse {
   final List<String> warnings;
   final List<String> sources;
   final String model;
+  final bool inAppCropScope;
+  final bool showTreatmentUi;
 
   const AiBackendChatResponse({
     required this.answer,
@@ -248,6 +253,8 @@ class AiBackendChatResponse {
     required this.warnings,
     required this.sources,
     required this.model,
+    this.inAppCropScope = true,
+    this.showTreatmentUi = false,
   });
 
   factory AiBackendChatResponse.fromMap(Map<String, dynamic> map) {
@@ -259,12 +266,17 @@ class AiBackendChatResponse {
       return const [];
     }
 
+    final scopeRaw = map['in_app_crop_scope'];
+    final showRaw = map['show_treatment_ui'];
+
     return AiBackendChatResponse(
       answer: (map['answer'] as String? ?? '').trim(),
       recommendedActions: parseList('recommended_actions'),
       warnings: parseList('warnings'),
       sources: parseList('sources'),
       model: (map['model'] as String? ?? 'backend').trim(),
+      inAppCropScope: scopeRaw is bool ? scopeRaw : true,
+      showTreatmentUi: showRaw is bool ? showRaw : false,
     );
   }
 }

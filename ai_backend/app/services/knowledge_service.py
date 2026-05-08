@@ -1,3 +1,5 @@
+from typing import Any
+
 from app.core.config import Settings
 from app.schemas.chat import ChatRequest
 from app.services.supabase_service import SupabaseService
@@ -266,10 +268,11 @@ class KnowledgeService:
         self._settings = settings
         self._supabase = SupabaseService(settings)
 
-    async def fetch_relevant_records(self, payload: ChatRequest) -> list[dict[str, str]]:
+    async def fetch_relevant_records(self, payload: ChatRequest) -> list[dict[str, Any]]:
         disease_name = payload.diagnosis.disease_name if payload.diagnosis else None
         crop_type = payload.diagnosis.crop_type if payload.diagnosis else None
         label_key = payload.diagnosis.label_key if payload.diagnosis else None
+        hint = (payload.hint_crop_type or "").strip().lower() or None
 
         # 1. Try Supabase first (authoritative source when populated)
         if self._settings.supabase_url and self._settings.supabase_service_role_key:
@@ -280,6 +283,16 @@ class KnowledgeService:
             )
             if rows:
                 return rows
+
+            # Vision-only: no TFLite diagnosis but farmer selected a crop (eggplant / pechay, etc.)
+            if (
+                payload.image_data_url
+                and not payload.diagnosis
+                and hint
+            ):
+                overview = await self._supabase.fetch_knowledge_for_crop_overview(hint)
+                if overview:
+                    return overview
 
         # 2. Fall back to inline knowledge keyed by the model label_key
         if label_key and label_key in _INLINE_KNOWLEDGE:

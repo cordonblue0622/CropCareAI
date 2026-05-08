@@ -13,6 +13,7 @@ import '../../../data/models/diagnosis_model.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../crops/providers/crops_provider.dart';
 import '../providers/chat_provider.dart';
+import '../../../services/connectivity_service.dart';
 import '../../home/home_screen.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -23,6 +24,8 @@ class ChatScreen extends StatefulWidget {
   final bool initialIsVideoFrame;
   final String? cropId;
   final String? cropName;
+  /// Guides GPT + Supabase when TFLite did not attach a diagnosis (eggplant / pechay).
+  final String? hintCropType;
 
   const ChatScreen({
     super.key,
@@ -33,6 +36,7 @@ class ChatScreen extends StatefulWidget {
     this.initialIsVideoFrame = false,
     this.cropId,
     this.cropName,
+    this.hintCropType,
   });
 
   @override
@@ -248,6 +252,23 @@ class _ChatScreenState extends State<ChatScreen> {
     return CropType.tomato; // default
   }
 
+  /// Hint sent to the AI backend when TFLite did not produce a diagnosis.
+  String? _effectiveHintCropType() {
+    final w = (widget.hintCropType ?? '').trim().toLowerCase();
+    if (w.isNotEmpty) return w;
+    final d = widget.initialDiagnosis;
+    if (d == null) return null;
+    return ChatProvider.resolveHintCropType(
+      attachedDiagnosis: d,
+      explicitHint: null,
+    );
+  }
+
+  bool _cropNeedsOnlineDiagnosis(String? crop) {
+    final c = (crop ?? '').toLowerCase();
+    return c == 'eggplant' || c == 'pechay';
+  }
+
   Future<void> _sendMessage(
     String text, {
     DiagnosisModel? attachedDiagnosis,
@@ -264,6 +285,25 @@ class _ChatScreenState extends State<ChatScreen> {
         ? trimmed
         : 'I\'ve attached a crop photo. Please analyze it and tell me what you observe — any diseases, pests, or conditions — and what I should do.';
 
+    final hint = _effectiveHintCropType();
+    final needsOnline = _cropNeedsOnlineDiagnosis(hint);
+    if (needsOnline) {
+      final online = await context.read<ConnectivityService>().isConnected;
+      if (!online && mounted) {
+        setState(() => _sending = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Eggplant and pechay (bok choy) diagnosis needs an internet connection. '
+              'Connect to the internet and try again.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+    }
+
     _textCtrl.clear();
     setState(() => _sending = true);
     await context.read<ChatProvider>().sendMessage(
@@ -272,6 +312,7 @@ class _ChatScreenState extends State<ChatScreen> {
           attachedDiagnosis: attachedDiagnosis,
           attachedImageBytes: attachedImageBytes,
           isVideoFrame: isVideoFrame,
+          hintCropType: _effectiveHintCropType(),
         );
     setState(() => _sending = false);
     _scrollToBottom();

@@ -178,10 +178,14 @@ class ChatProvider extends ChangeNotifier {
     List<int>? attachedImageBytes,
     String? attachedImageMimeType,
     bool isVideoFrame = false,
+    String? hintCropType,
   }) async {
     if (_currentSession == null) {
       await startNewSession(userId);
     }
+
+    final hadAssistantBefore =
+        _currentMessages.any((m) => m.role == MessageRole.assistant);
 
     final conversationHistory = _recentConversationHistory();
 
@@ -233,6 +237,10 @@ class ChatProvider extends ChangeNotifier {
         imageBytes: attachedImageBytes,
         imageMimeType: attachedImageMimeType,
         conversationHistory: conversationHistory,
+        hintCropType: ChatProvider.resolveHintCropType(
+          attachedDiagnosis: attachedDiagnosis,
+          explicitHint: hintCropType,
+        ),
       );
       final inferredDiseaseName =
           (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
@@ -260,20 +268,28 @@ class ChatProvider extends ChangeNotifier {
       // Store recommended_actions in metadata but DON'T append them to text
       // — they are rendered as an interactive checklist in the UI.
       aiContent = _formatBackendResponse(backendResponse);
+      final backendWantsTreatmentUi = backendResponse.showTreatmentUi &&
+          backendResponse.inAppCropScope &&
+          !hadAssistantBefore;
       aiMetadata = {
         'model': backendResponse.model,
         'sources': backendResponse.sources,
-        'recommended_actions': normalizedActions,
-        'warnings': backendResponse.warnings,
+        'recommended_actions': backendWantsTreatmentUi
+            ? normalizedActions
+            : const <String>[],
+        'warnings':
+            backendWantsTreatmentUi ? backendResponse.warnings : const <String>[],
         'disease_name': inferredDiseaseName,
         'crop_type': inferredCropType,
         'label_key': inferredLabelKey,
-        'show_treatment_card': _shouldShowTreatmentCard(
-          attachedDiagnosis: attachedDiagnosis,
-          recommendedActions: normalizedActions,
-          inferredDiseaseName: inferredDiseaseName,
-          inferredCropType: inferredCropType,
-        ),
+        'in_app_crop_scope': backendResponse.inAppCropScope,
+        'show_treatment_card': backendWantsTreatmentUi &&
+            _shouldShowTreatmentCard(
+              attachedDiagnosis: attachedDiagnosis,
+              recommendedActions: normalizedActions,
+              inferredDiseaseName: inferredDiseaseName,
+              inferredCropType: inferredCropType,
+            ),
       };
     } catch (_) {
       await Future.delayed(const Duration(milliseconds: 500));
@@ -286,6 +302,7 @@ class ChatProvider extends ChangeNotifier {
         'sources': const <String>[],
         'recommended_actions': const <String>[],
         'warnings': const <String>[],
+        'in_app_crop_scope': true,
         'show_treatment_card': false,
       };
     }
@@ -308,6 +325,7 @@ class ChatProvider extends ChangeNotifier {
     // Add an "Add to My Crops" suggestion card when:
     //   - a local diagnosis was attached (scan result), OR
     //   - an image was sent and the AI returned treatment steps (GPT vision)
+    // Treatment checklist + "Add to My Crops" only on first diagnosis turn with backend consent
     final showTreatmentCard = aiMetadata['show_treatment_card'] == true;
     if (showTreatmentCard) {
       final inferredDiseaseName =
@@ -701,5 +719,20 @@ class ChatProvider extends ChangeNotifier {
       }
     }
     return '';
+  }
+
+  static String? resolveHintCropType({
+    DiagnosisModel? attachedDiagnosis,
+    String? explicitHint,
+  }) {
+    final ex = (explicitHint ?? '').trim().toLowerCase();
+    if (ex.isNotEmpty) return ex;
+    if (attachedDiagnosis == null) return null;
+    final fromDx = _inferCropType(
+      labelKey: attachedDiagnosis.labelKey,
+      diseaseName: attachedDiagnosis.diseaseName,
+      aiContent: '',
+    );
+    return fromDx.isEmpty ? null : fromDx;
   }
 }

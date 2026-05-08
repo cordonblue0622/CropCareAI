@@ -31,6 +31,8 @@ class ChatRequest(BaseModel):
     weather: WeatherContext | None = None
     conversation_history: list[ConversationTurn] = Field(default_factory=list)
     locale: str | None = "en"
+    # When TFLite did not attach a diagnosis (e.g. eggplant/pechay), guides KB fetch + vision.
+    hint_crop_type: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -39,3 +41,5 @@ class ChatResponse(BaseModel):
     warnings: list[str]
     sources: list[str]
     model: str
+    in_app_crop_scope: bool = True
+    show_treatment_ui: bool = False

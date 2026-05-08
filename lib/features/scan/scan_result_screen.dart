@@ -158,6 +158,9 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     // else: diagnosis != null with no custom query — ChatScreen builds its own prompt
 
 
+    final cropsProvider = context.read<CropsProvider>();
+    final hintCropType = _resolveSelectedCrop(cropsProvider)?.cropType.value;
+
     setState(() => _redirectingToChat = true);
 
     await Navigator.of(context).pushReplacement(
@@ -168,6 +171,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
           initialDiagnosis: diagnosis,
           initialImageBytes: _resolvedImageBytes ?? widget.imageBytes,
           initialIsVideoFrame: widget.isFromVideo,
+          hintCropType: hintCropType,
         ),
       ),
     );
@@ -331,7 +335,10 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
                     // Ask AI — always visible so GPT can analyze even unclear photos
                     OutlinedButton.icon(
-                      onPressed: () => Navigator.push(
+                      onPressed: () {
+                        final crops = context.read<CropsProvider>();
+                        final hint = _resolveSelectedCrop(crops)?.cropType.value;
+                        Navigator.push(
                         context,
                         MaterialPageRoute(
                           builder: (_) => ChatScreen(
@@ -343,9 +350,11 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                             initialQuery: _match == null
                                 ? _buildUncertainScanPrompt()
                                 : null,
+                            hintCropType: hint,
                           ),
                         ),
-                      ),
+                      );
+                      },
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: AppColors.primary),
                         foregroundColor: AppColors.primary,
@@ -635,6 +644,14 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     return cropsProvider.activeCrops.isEmpty
         ? null
         : cropsProvider.activeCrops.first;
+  }
+
+  /// User message when the on-device scan did not attach a confident diagnosis.
+  String _buildUncertainScanPrompt() {
+    return 'The automatic scan could not confidently match this photo to a '
+        'disease in our current model. Please analyze the attached image, '
+        'say whether it is one of our supported crops (tomato, pepper, squash, '
+        'eggplant, or pechay), and tell me what you observe plus what I should do next.';
   }
 
   DiseaseKnowledgeModel? _resolveDiseaseMatch({
