@@ -14,6 +14,7 @@ class NotificationsProvider extends ChangeNotifier {
   List<NotificationModel> _notifications = [];
   List<TreatmentTaskModel> _todayTasks = [];
   List<TreatmentTaskModel> _missedTasks = [];
+  List<TreatmentTaskModel> _upcomingTasks = [];
   bool _isLoading = false;
 
   NotificationsProvider(
@@ -26,6 +27,7 @@ class NotificationsProvider extends ChangeNotifier {
       _notifications.where((n) => !n.isRead).toList();
   List<TreatmentTaskModel> get todayTasks => _todayTasks;
   List<TreatmentTaskModel> get missedTasks => _missedTasks;
+  List<TreatmentTaskModel> get upcomingTasks => _upcomingTasks;
   bool get isLoading => _isLoading;
   int get unreadCount => unread.length;
 
@@ -47,7 +49,7 @@ class NotificationsProvider extends ChangeNotifier {
     // ignore: discarded_futures
     NotificationService.instance.requestPermission();
     // ignore: discarded_futures
-    NotificationService.instance.scheduleForTasks(_todayTasks);
+    NotificationService.instance.scheduleForTasks(_upcomingTasks);
   }
 
   Future<void> _fetchNotifications(String userId) async {
@@ -85,6 +87,7 @@ class NotificationsProvider extends ChangeNotifier {
     final now = DateTime.now();
     final todayStart = DateTime(now.year, now.month, now.day);
     final todayEnd = todayStart.add(const Duration(days: 1));
+    final sevenDaysOut = todayStart.add(const Duration(days: 7));
 
     _todayTasks = allTasks
         .where((task) =>
@@ -96,6 +99,13 @@ class NotificationsProvider extends ChangeNotifier {
     _missedTasks = allTasks
         .where((task) =>
             task.dueAt.isBefore(todayStart) &&
+            task.status == TaskStatus.pending)
+        .toList();
+
+    _upcomingTasks = allTasks
+        .where((task) =>
+            !task.dueAt.isBefore(todayStart) &&
+            task.dueAt.isBefore(sevenDaysOut) &&
             task.status == TaskStatus.pending)
         .toList();
   }
@@ -148,7 +158,7 @@ class NotificationsProvider extends ChangeNotifier {
 
       // Reschedule so the completed task no longer fires reminders.
       // ignore: discarded_futures
-      NotificationService.instance.scheduleForTasks(_todayTasks);
+      NotificationService.instance.scheduleForTasks(_upcomingTasks);
       notifyListeners();
     } catch (_) {}
   }
@@ -157,6 +167,7 @@ class NotificationsProvider extends ChangeNotifier {
     _notifications = [];
     _todayTasks = [];
     _missedTasks = [];
+    _upcomingTasks = [];
     notifyListeners();
   }
 }

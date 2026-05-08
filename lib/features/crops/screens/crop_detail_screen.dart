@@ -23,10 +23,22 @@ import '../../auth/providers/auth_provider.dart';
 import '../../chat/screens/chat_screen.dart';
 import '../providers/crops_provider.dart';
 import 'add_crop_screen.dart';
+import '../../../services/health_score_service.dart';
+import '../../../services/notification_service.dart';
+import '../widgets/calendar_tracker.dart';
+import '../widgets/health_score_graph.dart';
 
 class CropDetailScreen extends StatefulWidget {
   final CropModel crop;
-  const CropDetailScreen({super.key, required this.crop});
+  final int? initialTabIndex;          // 0..3 to override default tab
+  final DateTime? initialSelectedDate; // for calendar deep-linking from notifications
+
+  const CropDetailScreen({
+    super.key,
+    required this.crop,
+    this.initialTabIndex,
+    this.initialSelectedDate,
+  });
 
   @override
   State<CropDetailScreen> createState() => _CropDetailScreenState();
@@ -44,11 +56,32 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   List<ChatMessageModel> _chatHistory = [];
   bool _loading = true;
 
+  DateTime _selectedDate = _todayDate();
+
+  static DateTime _todayDate() {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+  }
+
+  List<HealthScorePoint> get _healthCurve => HealthScoreService.compute14DayCurve(
+        tasks: _tasks,
+        diagnoses: _diagnoses,
+        now: DateTime.now(),
+      );
+
   @override
   void initState() {
     super.initState();
     _crop = widget.crop;
-    _tabs = TabController(length: 4, vsync: this);
+    _tabs = TabController(
+      length: 4,
+      vsync: this,
+      initialIndex: widget.initialTabIndex?.clamp(0, 3) ?? 0,
+    );
+    if (widget.initialSelectedDate != null) {
+      final d = widget.initialSelectedDate!;
+      _selectedDate = DateTime(d.year, d.month, d.day);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadData());
   }
 
@@ -257,6 +290,50 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     await Future.delayed(const Duration(milliseconds: 1500));
     if (!mounted || !dialogOpen) return;
     Navigator.of(context, rootNavigator: true).pop();
+  }
+
+  Future<void> _onTaskToggled(TreatmentTaskModel task) async {
+    if (task.status == TaskStatus.completed) return;
+
+    // Optimistic update.
+    final now = DateTime.now();
+    setState(() {
+      _tasks = _tasks.map((t) {
+        if (t.id != task.id) return t;
+        return t.copyWith(
+          status: TaskStatus.completed,
+          completedAt: now,
+          updatedAt: now,
+        );
+      }).toList();
+    });
+
+    // Persist via provider.
+    final cropsProvider = context.read<CropsProvider>();
+    final updated = await cropsProvider.markTaskDone(task.id);
+    if (!mounted) return;
+
+    if (updated == null) {
+      // Persistence failed — revert.
+      setState(() {
+        _tasks = _tasks.map((t) {
+          if (t.id != task.id) return t;
+          return t.copyWith(
+            status: TaskStatus.pending,
+            completedAt: null,
+            updatedAt: now,
+          );
+        }).toList();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not mark task done. Try again.')),
+      );
+      return;
+    }
+
+    // Cancel any scheduled reminders for this task.
+    // ignore: discarded_futures
+    NotificationService.instance.cancelForTask(task.id);
   }
 
   Color _statusColor(CropStatus s) {
@@ -514,10 +591,27 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                     treatments: _treatments,
                     onTaskComplete: _showCheckInSheetForTask,
                   ),
-                  _ProgressTab(
-                    crop: _crop,
-                    progress: _progress,
-                    sparklineSpots: spots,
+                  SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        CalendarTracker(
+                          tasks: _tasks,
+                          selectedDate: _selectedDate,
+                          onDateSelected: (d) =>
+                              setState(() => _selectedDate = d),
+                          onTaskToggled: _onTaskToggled,
+                        ),
+                        const SizedBox(height: 16),
+                        HealthScoreGraph(
+                          points: _healthCurve,
+                          selectedDate: _selectedDate,
+                          onPointTap: (d) =>
+                              setState(() => _selectedDate = d),
+                        ),
+                      ],
+                    ),
                   ),
                   _DiagnosesTab(
                     diagnoses: _diagnoses,
