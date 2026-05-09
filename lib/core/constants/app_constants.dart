@@ -28,6 +28,10 @@ class AppConstants {
     'AI_BACKEND_BASE_URL',
     defaultValue: '',
   );
+  static const String aiBackendAndroidBaseUrl = String.fromEnvironment(
+    'AI_BACKEND_ANDROID_BASE_URL',
+    defaultValue: '',
+  );
 
   // Shipped on-device classifier (cropcare_v2_subset_100, 13 labels).
   // The accepted crop types are inferred from labels_v2.txt at runtime.
