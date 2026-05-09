@@ -18,6 +18,7 @@ import '../../../data/models/treatment_model.dart';
 import '../../../data/models/treatment_task_model.dart';
 import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/remote/supabase_service.dart';
+import '../../../services/health_score_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../chat/screens/chat_screen.dart';
 import '../providers/crops_provider.dart';
@@ -138,7 +139,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     return last7
         .asMap()
         .entries
-        .map((e) => FlSpot(e.key.toDouble(), (e.value.healthScore ?? 0).toDouble()))
+        .map((e) =>
+            FlSpot(e.key.toDouble(), (e.value.healthScore ?? 0).toDouble()))
         .toList();
   }
 
@@ -194,12 +196,14 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       backgroundColor: Colors.transparent,
       builder: (_) => _CheckInSheet(
         crop: _crop,
+        allTasks: _tasks,
         checkedTasks: [task],
         activeTreatment: _treatmentForTask(task),
         latestDiagnosis: _diagnosisForTask(task),
         onSubmitted: (newScore, newStatus, update) async {
           final completedAt = update.createdAt;
-          await cropsProvider.updateCropHealthScore(_crop.id, newScore, newStatus);
+          await cropsProvider.updateCropHealthScore(
+              _crop.id, newScore, newStatus);
           await supabaseService.insertProgressUpdate(update.toMap());
           if (!mounted) return;
           setState(() {
@@ -389,8 +393,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                             const SizedBox(width: 14),
                             Expanded(
                               child: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.start,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(_crop.cropName,
                                         style: const TextStyle(
@@ -450,8 +453,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                                       ),
                                       const SizedBox(height: 4),
                                       ClipRRect(
-                                        borderRadius:
-                                            BorderRadius.circular(3),
+                                        borderRadius: BorderRadius.circular(3),
                                         child: LinearProgressIndicator(
                                           value: score / 100,
                                           minHeight: 5,
@@ -484,8 +486,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
               indicatorColor: Colors.white,
               labelColor: Colors.white,
               unselectedLabelColor: Colors.white60,
-              labelStyle: const TextStyle(
-                  fontSize: 12, fontWeight: FontWeight.w600),
+              labelStyle:
+                  const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
               tabs: const [
                 Tab(text: 'Overview'),
                 Tab(text: 'Daily Plan'),
@@ -497,8 +499,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         ],
         body: _loading
             ? const Center(
-                child: CircularProgressIndicator(
-                    color: AppColors.primary))
+                child: CircularProgressIndicator(color: AppColors.primary))
             : TabBarView(
                 controller: _tabs,
                 children: [
@@ -623,8 +624,7 @@ class _OverviewTab extends StatelessWidget {
             _InfoRow(
               icon: Icons.check_circle_outline,
               label: 'Last Checked',
-              value: DateFormat('MMM d, y HH:mm')
-                  .format(crop.lastCheckedAt!),
+              value: DateFormat('MMM d, y HH:mm').format(crop.lastCheckedAt!),
             ),
         ]),
         if (crop.notes != null && crop.notes!.isNotEmpty) ...[
@@ -632,19 +632,16 @@ class _OverviewTab extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12)),
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Notes',
-                      style: TextStyle(
-                          fontWeight: FontWeight.w700, fontSize: 14)),
-                  const SizedBox(height: 8),
-                  Text(crop.notes!,
-                      style: const TextStyle(
-                          color: AppColors.textGray, height: 1.5)),
-                ]),
+                color: Colors.white, borderRadius: BorderRadius.circular(12)),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Notes',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+              const SizedBox(height: 8),
+              Text(crop.notes!,
+                  style:
+                      const TextStyle(color: AppColors.textGray, height: 1.5)),
+            ]),
           ),
         ],
       ],
@@ -682,17 +679,15 @@ class _DiagnosisSummaryCard extends StatelessWidget {
         Row(children: [
           Expanded(
             child: Text(diagnosis.diseaseName,
-                style: const TextStyle(
-                    fontWeight: FontWeight.w700, fontSize: 15)),
+                style:
+                    const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
           ),
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
               color: _severityColor.withOpacity(0.1),
               borderRadius: BorderRadius.circular(6),
-              border:
-                  Border.all(color: _severityColor.withOpacity(0.4)),
+              border: Border.all(color: _severityColor.withOpacity(0.4)),
             ),
             child: Text(
               diagnosis.severity.name.toUpperCase(),
@@ -703,19 +698,16 @@ class _DiagnosisSummaryCard extends StatelessWidget {
             ),
           ),
         ]),
-        if (diagnosis.summary != null &&
-            diagnosis.summary!.isNotEmpty) ...[
+        if (diagnosis.summary != null && diagnosis.summary!.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(diagnosis.summary!,
               style: const TextStyle(
-                  color: AppColors.textGray,
-                  fontSize: 13,
-                  height: 1.4)),
+                  color: AppColors.textGray, fontSize: 13, height: 1.4)),
         ],
         const SizedBox(height: 6),
         Text(DateFormat('MMM d, yyyy').format(diagnosis.diagnosedAt),
-            style: const TextStyle(
-                color: AppColors.textLightGray, fontSize: 12)),
+            style:
+                const TextStyle(color: AppColors.textLightGray, fontSize: 12)),
       ]),
     );
   }
@@ -738,100 +730,94 @@ class _DailyPlanTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final activeTreatment =
-        treatments.isNotEmpty ? treatments.first : null;
-    final orderedTasks = [...tasks]
-      ..sort((a, b) {
+    final activeTreatment = treatments.isNotEmpty ? treatments.first : null;
+    final orderedTasks = [...tasks]..sort((a, b) {
         final dueCompare = a.dueAt.compareTo(b.dueAt);
         if (dueCompare != 0) return dueCompare;
         return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
       });
-    final completedCount =
-        orderedTasks.where((task) => task.status == TaskStatus.completed).length;
+    final completedCount = orderedTasks
+        .where((task) => task.status == TaskStatus.completed)
+        .length;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       children: [
-            if (activeTreatment != null) ...[
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [AppColors.primaryDark, AppColors.primary],
-                  ),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Row(children: [
-                  const Icon(Icons.medical_services,
-                      color: Colors.white, size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(activeTreatment.treatmentTitle,
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14)),
-                          Text(
-                            'Day ${_daysSince(activeTreatment)} of '
-                            '${activeTreatment.expectedDurationDays ?? '?'}',
-                            style: const TextStyle(
-                                color: Colors.white70, fontSize: 12),
-                          ),
-                        ]),
-                  ),
-                ]),
+        if (activeTreatment != null) ...[
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [AppColors.primaryDark, AppColors.primary],
               ),
-              const SizedBox(height: 16),
-            ],
-            const _SectionHeader("Today's Tasks"),
-            const SizedBox(height: 4),
-            Text(
-              '$completedCount/${orderedTasks.length} completed',
-              style: const TextStyle(
-                  color: AppColors.textGray, fontSize: 13),
+              borderRadius: BorderRadius.circular(14),
             ),
-            const SizedBox(height: 6),
-            const Text(
-              'Tap the task circle to submit a photo check-in and mark it done.',
-              style: TextStyle(
-                color: AppColors.textLightGray,
-                fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (orderedTasks.isEmpty)
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12)),
-                child: const Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+            child: Row(children: [
+              const Icon(Icons.medical_services, color: Colors.white, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.task_alt,
-                          size: 40, color: AppColors.primary),
-                      SizedBox(height: 8),
-                      Text('No tasks yet',
-                          style: TextStyle(
-                              color: AppColors.textGray, fontSize: 15)),
-                      SizedBox(height: 4),
+                      Text(activeTreatment.treatmentTitle,
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14)),
                       Text(
-                        'Tasks are created when you add a diagnosis to My Crops',
-                        style: TextStyle(
-                            color: AppColors.textLightGray,
-                            fontSize: 12),
-                        textAlign: TextAlign.center,
+                        'Day ${_daysSince(activeTreatment)} of '
+                        '${activeTreatment.expectedDurationDays ?? '?'}',
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12),
                       ),
                     ]),
-              )
-            else
-              ...orderedTasks.map((task) => _TaskCard(
-                    task: task,
-                    onComplete: () => onTaskComplete(task),
-                  )),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 16),
+        ],
+        const _SectionHeader("Today's Tasks"),
+        const SizedBox(height: 4),
+        Text(
+          '$completedCount/${orderedTasks.length} completed',
+          style: const TextStyle(color: AppColors.textGray, fontSize: 13),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Tap the task circle to submit a photo check-in and mark it done.',
+          style: TextStyle(
+            color: AppColors.textLightGray,
+            fontSize: 12,
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (orderedTasks.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+                color: Colors.white, borderRadius: BorderRadius.circular(12)),
+            child: const Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.task_alt, size: 40, color: AppColors.primary),
+                  SizedBox(height: 8),
+                  Text('No tasks yet',
+                      style:
+                          TextStyle(color: AppColors.textGray, fontSize: 15)),
+                  SizedBox(height: 4),
+                  Text(
+                    'Tasks are created when you add a diagnosis to My Crops',
+                    style:
+                        TextStyle(color: AppColors.textLightGray, fontSize: 12),
+                    textAlign: TextAlign.center,
+                  ),
+                ]),
+          )
+        else
+          ...orderedTasks.map((task) => _TaskCard(
+                task: task,
+                onComplete: () => onTaskComplete(task),
+              )),
       ],
     );
   }
@@ -859,9 +845,7 @@ class _TaskCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: isCompleted
-            ? AppColors.primary.withOpacity(0.07)
-            : Colors.white,
+        color: isCompleted ? AppColors.primary.withOpacity(0.07) : Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: isCompleted
@@ -869,13 +853,13 @@ class _TaskCard extends StatelessWidget {
               : Colors.grey[200]!,
         ),
       ),
-      child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         InkWell(
-          onTap: isCompleted ? null : () {
-            onComplete();
-          },
+          onTap: isCompleted
+              ? null
+              : () {
+                  onComplete();
+                },
           borderRadius: BorderRadius.circular(999),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 240),
@@ -896,59 +880,53 @@ class _TaskCard extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  task.title,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: isCompleted
-                        ? AppColors.textGray
-                        : AppColors.textDark,
-                    decoration: isCompleted
-                        ? TextDecoration.lineThrough
-                        : TextDecoration.none,
-                  ),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              task.title,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: isCompleted ? AppColors.textGray : AppColors.textDark,
+                decoration: isCompleted
+                    ? TextDecoration.lineThrough
+                    : TextDecoration.none,
+              ),
+            ),
+            if (task.description != null && task.description!.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                task.description!,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: isCompleted
+                      ? AppColors.textLightGray
+                      : AppColors.textGray,
+                  height: 1.4,
                 ),
-                if (task.description != null &&
-                    task.description!.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    task.description!,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: isCompleted
-                          ? AppColors.textLightGray
-                          : AppColors.textGray,
-                      height: 1.4,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 4),
-                Row(children: [
-                  Icon(
-                    isCompleted ? Icons.task_alt : Icons.schedule,
-                    size: 12,
-                    color: isCompleted
-                        ? AppColors.primary
-                        : AppColors.textLightGray,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    isCompleted
-                        ? 'Completed ${task.completedAt != null ? DateFormat('MMM d').format(task.completedAt!) : 'today'}'
-                        : 'Due: ${DateFormat('MMM d').format(task.dueAt)}',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: isCompleted
-                          ? AppColors.primary
-                          : AppColors.textLightGray,
-                    ),
-                  ),
-                ]),
-              ]),
+              ),
+            ],
+            const SizedBox(height: 4),
+            Row(children: [
+              Icon(
+                isCompleted ? Icons.task_alt : Icons.schedule,
+                size: 12,
+                color:
+                    isCompleted ? AppColors.primary : AppColors.textLightGray,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                isCompleted
+                    ? 'Completed ${task.completedAt != null ? DateFormat('MMM d').format(task.completedAt!) : 'today'}'
+                    : 'Due: ${DateFormat('MMM d').format(task.dueAt)}',
+                style: TextStyle(
+                  fontSize: 11,
+                  color:
+                      isCompleted ? AppColors.primary : AppColors.textLightGray,
+                ),
+              ),
+            ]),
+          ]),
         ),
       ]),
     );
@@ -983,8 +961,7 @@ class _ProgressTab extends StatelessWidget {
             height: 180,
             padding: const EdgeInsets.fromLTRB(8, 16, 16, 8),
             decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(14)),
+                color: Colors.white, borderRadius: BorderRadius.circular(14)),
             child: LineChart(
               LineChartData(
                 gridData: FlGridData(
@@ -1010,8 +987,7 @@ class _ProgressTab extends StatelessWidget {
                       getTitlesWidget: (v, _) => Text(
                         '${v.toInt()}%',
                         style: const TextStyle(
-                            fontSize: 10,
-                            color: AppColors.textGray),
+                            fontSize: 10, color: AppColors.textGray),
                       ),
                     ),
                   ),
@@ -1025,8 +1001,7 @@ class _ProgressTab extends StatelessWidget {
                     barWidth: 2.5,
                     dotData: FlDotData(
                       show: true,
-                      getDotPainter: (_, __, ___, ____) =>
-                          FlDotCirclePainter(
+                      getDotPainter: (_, __, ___, ____) => FlDotCirclePainter(
                         radius: 3,
                         color: AppColors.primary,
                         strokeColor: Colors.white,
@@ -1059,8 +1034,7 @@ class _ProgressTab extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12)),
+                color: Colors.white, borderRadius: BorderRadius.circular(12)),
             child: const Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -1068,13 +1042,13 @@ class _ProgressTab extends StatelessWidget {
                       size: 40, color: AppColors.textLightGray),
                   SizedBox(height: 8),
                   Text('No check-ins yet',
-                      style: TextStyle(
-                          color: AppColors.textGray, fontSize: 15)),
+                      style:
+                          TextStyle(color: AppColors.textGray, fontSize: 15)),
                   SizedBox(height: 4),
                   Text(
                     'Submit a daily check-in from the Daily Plan tab',
-                    style: TextStyle(
-                        color: AppColors.textLightGray, fontSize: 12),
+                    style:
+                        TextStyle(color: AppColors.textLightGray, fontSize: 12),
                     textAlign: TextAlign.center,
                   ),
                 ]),
@@ -1113,9 +1087,7 @@ class _ProgressCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border(left: BorderSide(color: _statusColor, width: 4)),
       ),
-      child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         if (update.imageUrl != null && update.imageUrl!.isNotEmpty)
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
@@ -1133,8 +1105,7 @@ class _ProgressCard extends StatelessWidget {
                   width: 64,
                   height: 64,
                   color: Colors.grey[200],
-                  child: const Icon(Icons.broken_image,
-                      color: Colors.grey)),
+                  child: const Icon(Icons.broken_image, color: Colors.grey)),
             ),
           )
         else
@@ -1150,74 +1121,69 @@ class _ProgressCard extends StatelessWidget {
           ),
         const SizedBox(width: 12),
         Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  Text(
-                    '${(update.healthScore ?? 0).toStringAsFixed(0)}%',
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 16,
-                        color: AppColors.textDark),
-                  ),
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: _statusColor.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      update.progressStatus.name,
-                      style: TextStyle(
-                          fontSize: 11,
-                          color: _statusColor,
-                          fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ]),
-                const SizedBox(height: 4),
-                Text(
-                  DateFormat('MMM d, yyyy  HH:mm')
-                      .format(update.createdAt),
-                  style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textLightGray),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Text(
+                '${(update.healthScore ?? 0).toStringAsFixed(0)}%',
+                style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                    color: AppColors.textDark),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _statusColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(6),
                 ),
-                if ((update.detectedDiseaseName ?? '').isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    update.detectedDiseaseName!,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textDark,
-                    ),
-                  ),
-                ],
-                if (update.completedTaskCount > 0 || update.missedTaskCount > 0) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    'Tasks completed: ${update.completedTaskCount} • Missed: ${update.missedTaskCount}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textGray,
-                    ),
-                  ),
-                ],
-                if (update.note != null && update.note!.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(update.note!,
-                      style: const TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textGray,
-                          height: 1.4),
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis),
-                ],
-              ]),
+                child: Text(
+                  update.progressStatus.name,
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: _statusColor,
+                      fontWeight: FontWeight.w600),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 4),
+            Text(
+              DateFormat('MMM d, yyyy  HH:mm').format(update.createdAt),
+              style:
+                  const TextStyle(fontSize: 12, color: AppColors.textLightGray),
+            ),
+            if ((update.detectedDiseaseName ?? '').isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                update.detectedDiseaseName!,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark,
+                ),
+              ),
+            ],
+            if (update.completedTaskCount > 0 ||
+                update.missedTaskCount > 0) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Tasks completed: ${update.completedTaskCount} • Missed: ${update.missedTaskCount}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textGray,
+                ),
+              ),
+            ],
+            if (update.note != null && update.note!.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(update.note!,
+                  style: const TextStyle(
+                      fontSize: 13, color: AppColors.textGray, height: 1.4),
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis),
+            ],
+          ]),
         ),
       ]),
     );
@@ -1266,74 +1232,71 @@ class _DiagnosesTab extends StatelessWidget {
                 const _SectionHeader('AI Diagnoses'),
                 const SizedBox(height: 8),
                 ...diagnoses.map((d) => Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border(
-                        left: BorderSide(
-                            color: _severityColor(d.severity), width: 4)),
-                  ),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(children: [
-                          Expanded(
-                            child: Text(d.diseaseName,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 15)),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: _severityColor(d.severity)
-                                  .withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border(
+                            left: BorderSide(
+                                color: _severityColor(d.severity), width: 4)),
+                      ),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Expanded(
+                                child: Text(d.diseaseName,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 15)),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
                                   color: _severityColor(d.severity)
-                                      .withOpacity(0.4)),
-                            ),
-                            child: Text(
-                              d.severity.name.toUpperCase(),
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  color: _severityColor(d.severity)),
-                            ),
-                          ),
-                        ]),
-                        if (d.confidenceScore != null) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            'Confidence: ${(d.confidenceScore! * 100).toStringAsFixed(1)}%',
-                            style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.textGray),
-                          ),
-                        ],
-                        const SizedBox(height: 4),
-                        Text(
-                          DateFormat('MMM d, yyyy').format(d.diagnosedAt),
-                          style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textLightGray),
-                        ),
-                        if (d.summary != null &&
-                            d.summary!.isNotEmpty) ...[
-                          const SizedBox(height: 8),
-                          Text(d.summary!,
+                                      .withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: _severityColor(d.severity)
+                                          .withOpacity(0.4)),
+                                ),
+                                child: Text(
+                                  d.severity.name.toUpperCase(),
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: _severityColor(d.severity)),
+                                ),
+                              ),
+                            ]),
+                            if (d.confidenceScore != null) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                'Confidence: ${(d.confidenceScore! * 100).toStringAsFixed(1)}%',
+                                style: const TextStyle(
+                                    fontSize: 12, color: AppColors.textGray),
+                              ),
+                            ],
+                            const SizedBox(height: 4),
+                            Text(
+                              DateFormat('MMM d, yyyy').format(d.diagnosedAt),
                               style: const TextStyle(
-                                  color: AppColors.textGray,
-                                  fontSize: 13,
-                                  height: 1.4),
-                              maxLines: 4,
-                              overflow: TextOverflow.ellipsis),
-                        ],
-                      ]),
-                )),
+                                  fontSize: 12, color: AppColors.textLightGray),
+                            ),
+                            if (d.summary != null && d.summary!.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Text(d.summary!,
+                                  style: const TextStyle(
+                                      color: AppColors.textGray,
+                                      fontSize: 13,
+                                      height: 1.4),
+                                  maxLines: 4,
+                                  overflow: TextOverflow.ellipsis),
+                            ],
+                          ]),
+                    )),
                 const SizedBox(height: 8),
               ],
 
@@ -1357,14 +1320,12 @@ class _DiagnosesTab extends StatelessWidget {
                         SizedBox(height: 12),
                         Text('No history yet',
                             style: TextStyle(
-                                color: AppColors.textGray,
-                                fontSize: 16)),
+                                color: AppColors.textGray, fontSize: 16)),
                         SizedBox(height: 4),
                         Text(
                           'Start a chat to get AI advice for this crop',
                           style: TextStyle(
-                              color: AppColors.textLightGray,
-                              fontSize: 13),
+                              color: AppColors.textLightGray, fontSize: 13),
                           textAlign: TextAlign.center,
                         ),
                       ],
@@ -1409,14 +1370,12 @@ class _ChatBubble extends StatelessWidget {
                 color: AppColors.primary,
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.smart_toy,
-                  color: Colors.white, size: 16),
+              child: const Icon(Icons.smart_toy, color: Colors.white, size: 16),
             ),
           ],
           Flexible(
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 12, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
                 color: isUser ? AppColors.primary : Colors.white,
                 borderRadius: BorderRadius.only(
@@ -1457,13 +1416,10 @@ class _ChatBubble extends StatelessWidget {
                     ),
                   const SizedBox(height: 4),
                   Text(
-                    DateFormat('MMM d  HH:mm')
-                        .format(message.createdAt),
+                    DateFormat('MMM d  HH:mm').format(message.createdAt),
                     style: TextStyle(
                       fontSize: 10,
-                      color: isUser
-                          ? Colors.white60
-                          : AppColors.textLightGray,
+                      color: isUser ? Colors.white60 : AppColors.textLightGray,
                     ),
                   ),
                 ],
@@ -1493,8 +1449,7 @@ class _CropChatBar extends StatelessWidget {
               offset: const Offset(0, -2)),
         ],
       ),
-      padding:
-          const EdgeInsets.fromLTRB(12, 10, 12, 16),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 16),
       child: Row(
         children: [
           Expanded(
@@ -1510,18 +1465,18 @@ class _CropChatBar extends StatelessWidget {
                 ),
               ),
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 decoration: BoxDecoration(
                   color: Colors.grey[100],
                   borderRadius: BorderRadius.circular(24),
-                  border: Border.all(
-                      color: AppColors.primary.withOpacity(0.25)),
+                  border:
+                      Border.all(color: AppColors.primary.withOpacity(0.25)),
                 ),
                 child: Text(
                   'Ask AI about ${crop.cropName}…',
-                  style: const TextStyle(
-                      color: AppColors.textGray, fontSize: 14),
+                  style:
+                      const TextStyle(color: AppColors.textGray, fontSize: 14),
                 ),
               ),
             ),
@@ -1560,6 +1515,7 @@ class _CropChatBar extends StatelessWidget {
 
 class _CheckInSheet extends StatefulWidget {
   final CropModel crop;
+  final List<TreatmentTaskModel> allTasks;
   final List<TreatmentTaskModel> checkedTasks;
   final TreatmentModel? activeTreatment;
   final DiagnosisModel? latestDiagnosis;
@@ -1571,6 +1527,7 @@ class _CheckInSheet extends StatefulWidget {
 
   const _CheckInSheet({
     required this.crop,
+    required this.allTasks,
     required this.checkedTasks,
     required this.activeTreatment,
     required this.latestDiagnosis,
@@ -1626,29 +1583,52 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       );
 
       final days = widget.activeTreatment?.startedAt != null
-          ? DateTime.now()
-              .difference(widget.activeTreatment!.startedAt!)
-              .inDays
+          ? DateTime.now().difference(widget.activeTreatment!.startedAt!).inDays
           : 0;
 
-      final aiResponse = await aiBackend.assessCropHealth(
-        cropType: widget.crop.cropType.name,
-        diseaseName: widget.activeTreatment?.diseaseName ??
-            widget.crop.cropName,
-        daysSinceTreatment: days,
-        imageBytes: _photoBytes!.toList(),
-        imageMimeType: 'image/jpeg',
-        completedTasks:
-            widget.checkedTasks.map((t) => t.title).toList(),
-        note: _noteCtrl.text.trim().isNotEmpty
-            ? _noteCtrl.text.trim()
-            : null,
-        currentHealthScore: widget.crop.latestHealthScore,
-      );
-
-      final newScore = aiResponse.healthScore;
-      final newStatus =
-          ProgressStatusX.fromValue(aiResponse.progressStatus);
+      late final double newScore;
+      late final ProgressStatus newStatus;
+      late final String assessment;
+      try {
+        final aiResponse = await aiBackend.assessCropHealth(
+          cropType: widget.crop.cropType.name,
+          diseaseName:
+              widget.activeTreatment?.diseaseName ?? widget.crop.cropName,
+          daysSinceTreatment: days,
+          imageBytes: _photoBytes!.toList(),
+          imageMimeType: 'image/jpeg',
+          completedTasks: widget.checkedTasks.map((t) => t.title).toList(),
+          note: _noteCtrl.text.trim().isNotEmpty ? _noteCtrl.text.trim() : null,
+          currentHealthScore: widget.crop.latestHealthScore,
+        );
+        newScore = aiResponse.healthScore;
+        newStatus = _progressStatusFromBackend(aiResponse.progressStatus);
+        assessment = aiResponse.assessment;
+      } catch (_) {
+        final checkedIds = widget.checkedTasks.map((task) => task.id).toSet();
+        final estimatedTasks = widget.allTasks.map((task) {
+          if (!checkedIds.contains(task.id)) return task;
+          return task.copyWith(
+            status: TaskStatus.completed,
+            completedAt: submittedAt,
+            updatedAt: submittedAt,
+          );
+        }).toList();
+        final estimatedScore = HealthScoreService.computeCurrentScore(
+          tasks: estimatedTasks,
+          diagnoses: [
+            if (widget.latestDiagnosis != null) widget.latestDiagnosis!,
+          ],
+          now: submittedAt,
+        ).toDouble();
+        newScore = estimatedScore;
+        newStatus = HealthScoreService.statusForScoreChange(
+          previousScore: widget.crop.latestHealthScore ?? estimatedScore,
+          currentScore: estimatedScore,
+        );
+        assessment =
+            'AI backend unavailable; score estimated from completed treatment tasks.';
+      }
 
       for (final task in widget.checkedTasks) {
         await supabase.markTreatmentTaskCompleted(
@@ -1671,7 +1651,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         detectedSeverity: widget.latestDiagnosis?.severity,
         note: _noteCtrl.text.trim().isNotEmpty
             ? _noteCtrl.text.trim()
-            : aiResponse.assessment,
+            : assessment,
         imageUrl: imageUrl,
         completedTaskCount: widget.checkedTasks.length,
         missedTaskCount: 0,
@@ -1693,6 +1673,22 @@ class _CheckInSheetState extends State<_CheckInSheet> {
     }
   }
 
+  ProgressStatus _progressStatusFromBackend(String raw) {
+    switch (raw.trim().toLowerCase()) {
+      case 'improving':
+        return ProgressStatus.improving;
+      case 'declining':
+      case 'critical':
+      case 'worsening':
+        return ProgressStatus.worsening;
+      case 'insufficient_data':
+        return ProgressStatus.insufficientData;
+      case 'stable':
+      default:
+        return ProgressStatus.stable;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return DraggableScrollableSheet(
@@ -1703,8 +1699,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       builder: (_, sc) => Container(
         decoration: const BoxDecoration(
           color: Colors.white,
-          borderRadius:
-              BorderRadius.vertical(top: Radius.circular(20)),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
         child: Column(children: [
           Container(
@@ -1722,8 +1717,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
               Icon(Icons.add_a_photo, color: AppColors.primary),
               SizedBox(width: 10),
               Text('Daily Check-in',
-                  style: TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.bold)),
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             ]),
           ),
           const SizedBox(height: 8),
@@ -1758,22 +1752,19 @@ class _CheckInSheetState extends State<_CheckInSheet> {
                           ]),
                           const SizedBox(height: 6),
                           ...widget.checkedTasks.map((t) => Padding(
-                                padding:
-                                    const EdgeInsets.only(top: 2),
+                                padding: const EdgeInsets.only(top: 2),
                                 child: Row(
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
                                     children: [
                                       const Text('• ',
                                           style: TextStyle(
-                                              color:
-                                                  AppColors.primary)),
+                                              color: AppColors.primary)),
                                       Expanded(
                                           child: Text(t.title,
                                               style: const TextStyle(
                                                   fontSize: 12,
-                                                  color: AppColors
-                                                      .textGray))),
+                                                  color: AppColors.textGray))),
                                     ]),
                               )),
                         ]),
@@ -1781,8 +1772,8 @@ class _CheckInSheetState extends State<_CheckInSheet> {
                   const SizedBox(height: 16),
                 ],
                 const Text('Crop Photo *',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w600, fontSize: 14)),
+                    style:
+                        TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
                 const SizedBox(height: 8),
                 GestureDetector(
                   onTap: _pickPhoto,
@@ -1801,21 +1792,18 @@ class _CheckInSheetState extends State<_CheckInSheet> {
                     child: _photoBytes != null
                         ? ClipRRect(
                             borderRadius: BorderRadius.circular(13),
-                            child: Image.memory(_photoBytes!,
-                                fit: BoxFit.cover),
+                            child:
+                                Image.memory(_photoBytes!, fit: BoxFit.cover),
                           )
                         : const Column(
-                            mainAxisAlignment:
-                                MainAxisAlignment.center,
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Icon(Icons.camera_alt,
-                                  size: 40,
-                                  color: AppColors.textLightGray),
+                                  size: 40, color: AppColors.textLightGray),
                               SizedBox(height: 8),
                               Text('Tap to take a photo',
                                   style: TextStyle(
-                                      color: AppColors.textGray,
-                                      fontSize: 14)),
+                                      color: AppColors.textGray, fontSize: 14)),
                               SizedBox(height: 4),
                               Text('Required for AI analysis',
                                   style: TextStyle(
@@ -1835,15 +1823,14 @@ class _CheckInSheetState extends State<_CheckInSheet> {
                 ],
                 const SizedBox(height: 16),
                 const Text('Notes (optional)',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w600, fontSize: 14)),
+                    style:
+                        TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
                 const SizedBox(height: 8),
                 TextField(
                   controller: _noteCtrl,
                   maxLines: 3,
                   decoration: InputDecoration(
-                    hintText:
-                        'How does the crop look today? Any changes?',
+                    hintText: 'How does the crop look today? Any changes?',
                     filled: true,
                     fillColor: Colors.grey[100],
                     border: OutlineInputBorder(
@@ -1869,8 +1856,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
                               color: Colors.white, strokeWidth: 2))
                       : const Text('Submit & Analyze',
                           style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.bold)),
+                              fontSize: 15, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
@@ -1907,8 +1893,8 @@ class _InfoCard extends StatelessWidget {
       child: Column(
         children: items
             .map((row) => Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   child: Row(children: [
                     Icon(row.icon, size: 18, color: AppColors.primary),
                     const SizedBox(width: 12),
@@ -1917,8 +1903,7 @@ class _InfoCard extends StatelessWidget {
                         children: [
                           Text(row.label,
                               style: const TextStyle(
-                                  fontSize: 11,
-                                  color: AppColors.textGray)),
+                                  fontSize: 11, color: AppColors.textGray)),
                           Text(row.value,
                               style: const TextStyle(
                                   fontSize: 14,

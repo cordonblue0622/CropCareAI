@@ -113,7 +113,10 @@ class NotificationsProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<void> markTaskDone(String taskId) async {
+  /// Marks the task complete in remote + local stores. Returns the affected
+  /// crop's id so callers can refresh derived state (e.g. Farm Vitality).
+  /// Returns null if the task could not be located in either bucket.
+  Future<String?> markTaskDone(String taskId) async {
     try {
       final now = DateTime.now();
       await _supabase.markTreatmentTaskCompleted(taskId, completedAt: now);
@@ -147,7 +150,11 @@ class NotificationsProvider extends ChangeNotifier {
       // Reschedule so the completed task no longer fires reminders.
       NotificationService.instance.scheduleForTasks(_todayTasks);
       notifyListeners();
-    } catch (_) {}
+
+      return completedTask?.cropId;
+    } catch (_) {
+      return null;
+    }
   }
 
   void clear() {

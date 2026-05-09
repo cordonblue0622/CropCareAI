@@ -11,6 +11,7 @@ import '../../../data/models/disease_knowledge_model.dart';
 import '../../../data/models/treatment_model.dart';
 import '../../../data/models/treatment_task_model.dart';
 import '../../../data/remote/supabase_service.dart';
+import '../../../services/health_score_service.dart';
 
 class CropsProvider extends ChangeNotifier {
   final SupabaseService _supabase;
@@ -329,6 +330,40 @@ class CropsProvider extends ChangeNotifier {
       updatedAt: DateTime.now(),
     );
     await updateCrop(updated);
+  }
+
+  /// Recomputes [latestHealthScore] for [cropId] from the local DB without
+  /// requiring a photo check-in. Used so marking a treatment task DONE in the
+  /// dashboard or notifications screen immediately moves Farm Vitality.
+  ///
+  /// Silent on missing crop / DB failure — best-effort UI sync.
+  Future<void> recomputeHealthScoreForCrop(String cropId) async {
+    if (cropId.isEmpty) return;
+    final idx = _crops.indexWhere((c) => c.id == cropId);
+    if (idx == -1) return;
+
+    try {
+      final taskRows = await _db.queryTasksForCrop(cropId);
+      final tasks = taskRows.map(TreatmentTaskModel.fromMap).toList();
+
+      final dxRows = await _db.queryDiagnosesForCrop(cropId);
+      final diagnoses = dxRows.map(DiagnosisModel.fromMap).toList();
+
+      final snapshot = HealthScoreService.computeScoreAndStatus(
+        tasks: tasks,
+        diagnoses: diagnoses,
+        previousScore: _crops[idx].latestHealthScore,
+        now: DateTime.now(),
+      );
+
+      await updateCropHealthScore(
+        cropId,
+        snapshot.score.toDouble(),
+        snapshot.status,
+      );
+    } catch (_) {
+      // Best-effort; leave the existing score untouched.
+    }
   }
 
   Future<List<DiseaseKnowledgeModel>> fetchDiseaseKnowledge(
