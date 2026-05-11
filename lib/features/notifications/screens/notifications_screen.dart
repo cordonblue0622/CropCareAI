@@ -6,6 +6,7 @@ import '../../../core/constants/app_enums.dart';
 import '../../../data/models/notification_model.dart';
 import '../../../data/models/treatment_task_model.dart';
 import '../../auth/providers/auth_provider.dart';
+import '../../crops/providers/crops_provider.dart';
 import '../providers/notifications_provider.dart';
 
 class NotificationsScreen extends StatefulWidget {
@@ -106,7 +107,15 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                 _TasksTab(
                     todayTasks: notifs.todayTasks,
                     missedTasks: notifs.missedTasks,
-                    onTaskDone: notifs.markTaskDone),
+                    onTaskDone: (taskId) async {
+                      final cropId = await notifs.markTaskDone(taskId);
+                      if (!context.mounted) return;
+                      if (cropId != null && cropId.isNotEmpty) {
+                        await context
+                            .read<CropsProvider>()
+                            .recomputeHealthScoreForCrop(cropId);
+                      }
+                    }),
                 _RemindersTab(
                     notifications: notifs.notifications
                         .where((n) =>

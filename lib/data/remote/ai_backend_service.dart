@@ -22,23 +22,43 @@ class AiBackendService {
         _client = client ?? http.Client();
 
   String get baseUrl {
-    final configured = AppConstants.aiBackendBaseUrl.trim();
+    return resolveBaseUrl(
+      configuredBaseUrl: AppConstants.aiBackendBaseUrl,
+      configuredAndroidBaseUrl: AppConstants.aiBackendAndroidBaseUrl,
+      isWeb: kIsWeb,
+      platform: defaultTargetPlatform,
+    );
+  }
+
+  static String resolveBaseUrl({
+    required String configuredBaseUrl,
+    required String configuredAndroidBaseUrl,
+    required bool isWeb,
+    required TargetPlatform platform,
+  }) {
+    final configured = configuredBaseUrl.trim();
     if (configured.isNotEmpty) {
-      return configured.endsWith('/')
-          ? configured.substring(0, configured.length - 1)
-          : configured;
+      return _withoutTrailingSlash(configured);
     }
 
-    if (kIsWeb) {
+    if (isWeb) {
       return 'http://127.0.0.1:8000';
     }
 
-    switch (defaultTargetPlatform) {
+    switch (platform) {
       case TargetPlatform.android:
+        final androidConfigured = configuredAndroidBaseUrl.trim();
+        if (androidConfigured.isNotEmpty) {
+          return _withoutTrailingSlash(androidConfigured);
+        }
         return 'http://10.0.2.2:8000';
       default:
         return 'http://127.0.0.1:8000';
     }
+  }
+
+  static String _withoutTrailingSlash(String value) {
+    return value.endsWith('/') ? value.substring(0, value.length - 1) : value;
   }
 
   Future<AiBackendChatResponse> sendChatMessage({
@@ -74,8 +94,8 @@ class AiBackendService {
             if (conversationHistory.isNotEmpty)
               'conversation_history': conversationHistory,
             if (locale != null && locale.isNotEmpty) 'locale': locale,
-            if (hintCropType != null && hintCropType!.trim().isNotEmpty)
-              'hint_crop_type': hintCropType!.trim().toLowerCase(),
+            if (hintCropType != null && hintCropType.trim().isNotEmpty)
+              'hint_crop_type': hintCropType.trim().toLowerCase(),
           }),
         )
         .timeout(const Duration(seconds: 20));
@@ -165,8 +185,8 @@ class AiBackendService {
             'disease_name': diseaseName,
             'days_since_treatment': daysSinceTreatment,
             if (imageBytes != null && imageBytes.isNotEmpty)
-              'image_data_url': _buildImageDataUrl(imageBytes,
-                  mimeType: imageMimeType),
+              'image_data_url':
+                  _buildImageDataUrl(imageBytes, mimeType: imageMimeType),
             'completed_tasks': completedTasks,
             if (note != null && note.isNotEmpty) 'note': note,
             if (currentHealthScore != null)
@@ -191,8 +211,9 @@ class AiBackendService {
   }
 
   String _buildImageDataUrl(List<int> imageBytes, {String? mimeType}) {
-    final normalizedMimeType =
-        (mimeType != null && mimeType.trim().isNotEmpty) ? mimeType.trim() : 'image/jpeg';
+    final normalizedMimeType = (mimeType != null && mimeType.trim().isNotEmpty)
+        ? mimeType.trim()
+        : 'image/jpeg';
     return 'data:$normalizedMimeType;base64,${base64Encode(imageBytes)}';
   }
 
@@ -311,4 +332,3 @@ class AiBackendTranscribeResponse {
     );
   }
 }
-

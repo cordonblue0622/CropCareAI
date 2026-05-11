@@ -501,6 +501,29 @@ class DatabaseHelper {
     );
   }
 
+  Future<List<Map<String, dynamic>>> queryTasksForCrop(String cropId) async {
+    if (_isDisabledOnPlatform) return [];
+    final db = await database;
+    return db.query(
+      AppConstants.treatmentTasksTable,
+      where: 'crop_id = ? AND is_deleted = 0',
+      whereArgs: [cropId],
+      orderBy: 'task_order ASC, due_at ASC',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> queryDiagnosesForCrop(
+      String cropId) async {
+    if (_isDisabledOnPlatform) return [];
+    final db = await database;
+    return db.query(
+      AppConstants.diagnosesTable,
+      where: 'crop_id = ? AND is_deleted = 0',
+      whereArgs: [cropId],
+      orderBy: 'diagnosed_at ASC',
+    );
+  }
+
   Future<List<Map<String, dynamic>>> queryDiseaseKnowledge(
       String cropType) async {
     if (_isDisabledOnPlatform) return [];

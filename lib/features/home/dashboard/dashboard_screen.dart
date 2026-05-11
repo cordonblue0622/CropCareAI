@@ -489,7 +489,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _openChat(BuildContext ctx) => Navigator.push(
-      ctx, MaterialPageRoute(builder: (_) => const ChatScreen(startFreshSession: true)));
+      ctx,
+      MaterialPageRoute(
+          builder: (_) => const ChatScreen(startFreshSession: true)));
   void _pushNotifications(BuildContext ctx) => Navigator.push(
       ctx, MaterialPageRoute(builder: (_) => const NotificationsScreen()));
   void _pushLibrary(BuildContext ctx) => Navigator.push(
@@ -534,6 +536,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ctx,
                 MaterialPageRoute(builder: (_) => CropDetailScreen(crop: crop)),
               );
+              if (!mounted) return;
+              final user = context.read<AuthProvider>().currentUser;
+              if (user != null) {
+                await context.read<CropsProvider>().fetchCrops(user.id);
+              }
               if (!mounted) return;
               setState(() {
                 _cropImageFutures.remove(crop.id);
@@ -851,8 +858,10 @@ class _ActiveCropCard extends StatelessWidget {
                     return CachedNetworkImage(
                       imageUrl: imageUrl,
                       fit: BoxFit.cover,
-                      placeholder: (_, __) => _DashboardCropPlaceholder(crop: crop),
-                      errorWidget: (_, __, ___) => _DashboardCropPlaceholder(crop: crop),
+                      placeholder: (_, __) =>
+                          _DashboardCropPlaceholder(crop: crop),
+                      errorWidget: (_, __, ___) =>
+                          _DashboardCropPlaceholder(crop: crop),
                     );
                   }
                   return _DashboardCropPlaceholder(crop: crop);
@@ -925,6 +934,17 @@ class _TodayTasksCard extends StatelessWidget {
   final VoidCallback onViewAll;
   const _TodayTasksCard({required this.notifs, required this.onViewAll});
 
+  /// Marks the task done and, if the affected crop can be identified, asks
+  /// CropsProvider to recompute its Farm Vitality score so the dashboard
+  /// reflects the change without requiring a photo check-in.
+  Future<void> _handleTaskDone(BuildContext context, String taskId) async {
+    final crops = context.read<CropsProvider>();
+    final cropId = await notifs.markTaskDone(taskId);
+    if (cropId != null && cropId.isNotEmpty) {
+      await crops.recomputeHealthScoreForCrop(cropId);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final todayTasks = notifs.todayTasks;
@@ -966,9 +986,8 @@ class _TodayTasksCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                  color: missedTasks.isNotEmpty
-                      ? Colors.red
-                      : AppColors.primary,
+                  color:
+                      missedTasks.isNotEmpty ? Colors.red : AppColors.primary,
                   borderRadius: BorderRadius.circular(10)),
               child: Text('$totalCount',
                   style: const TextStyle(
@@ -1014,7 +1033,7 @@ class _TodayTasksCard extends StatelessWidget {
             ...missedTasks.map((t) => _DashboardTaskRow(
                   task: t,
                   isMissed: true,
-                  onDone: () => notifs.markTaskDone(t.id),
+                  onDone: () => _handleTaskDone(context, t.id),
                 )),
             if (todayTasks.isNotEmpty) const SizedBox(height: 8),
           ],
@@ -1038,7 +1057,7 @@ class _TodayTasksCard extends StatelessWidget {
             ...todayTasks.map((t) => _DashboardTaskRow(
                   task: t,
                   isMissed: false,
-                  onDone: () => notifs.markTaskDone(t.id),
+                  onDone: () => _handleTaskDone(context, t.id),
                 )),
           ],
         ],
@@ -1131,8 +1150,18 @@ class _DashboardTaskRow extends StatelessWidget {
 
   String _dueDateLabel(DateTime dt) {
     const months = [
-      'Jan','Feb','Mar','Apr','May','Jun',
-      'Jul','Aug','Sep','Oct','Nov','Dec'
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
     ];
     return '${months[dt.month - 1]} ${dt.day}';
   }

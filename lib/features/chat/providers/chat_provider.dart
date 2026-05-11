@@ -130,11 +130,12 @@ class ChatProvider extends ChangeNotifier {
       final url = _currentMessages[i].imageUrl;
       if (url != null && url.isNotEmpty) {
         try {
-          final res = await http.get(Uri.parse(url))
+          final res = await http
+              .get(Uri.parse(url))
               .timeout(const Duration(seconds: 15));
           if (res.statusCode == 200) {
-            _currentMessages[i] = _currentMessages[i]
-                .copyWith(imageBytes: res.bodyBytes);
+            _currentMessages[i] =
+                _currentMessages[i].copyWith(imageBytes: res.bodyBytes);
           }
         } catch (_) {}
       }
@@ -207,9 +208,8 @@ class ChatProvider extends ChangeNotifier {
       role: MessageRole.user,
       content: content,
       createdAt: DateTime.now(),
-      metadata: uploadedImageUrl != null
-          ? {'image_url': uploadedImageUrl}
-          : null,
+      metadata:
+          uploadedImageUrl != null ? {'image_url': uploadedImageUrl} : null,
       imageBytes: attachedImageBytes != null
           ? Uint8List.fromList(attachedImageBytes)
           : null,
@@ -274,11 +274,11 @@ class ChatProvider extends ChangeNotifier {
       aiMetadata = {
         'model': backendResponse.model,
         'sources': backendResponse.sources,
-        'recommended_actions': backendWantsTreatmentUi
-            ? normalizedActions
+        'recommended_actions':
+            backendWantsTreatmentUi ? normalizedActions : const <String>[],
+        'warnings': backendWantsTreatmentUi
+            ? backendResponse.warnings
             : const <String>[],
-        'warnings':
-            backendWantsTreatmentUi ? backendResponse.warnings : const <String>[],
         'disease_name': inferredDiseaseName,
         'crop_type': inferredCropType,
         'label_key': inferredLabelKey,
@@ -291,17 +291,22 @@ class ChatProvider extends ChangeNotifier {
               inferredCropType: inferredCropType,
             ),
       };
-    } catch (_) {
+    } catch (error) {
       await Future.delayed(const Duration(milliseconds: 500));
-      aiContent = _buildAIResponse(
+      aiContent = _buildBackendUnavailableResponse(
         content,
         attachedDiagnosis: attachedDiagnosis,
+        error: error,
       );
       aiMetadata = {
         'model': 'local-fallback',
         'sources': const <String>[],
         'recommended_actions': const <String>[],
-        'warnings': const <String>[],
+        'warnings': [
+          'Online AI backend unavailable; answer generated from local fallback rules.'
+        ],
+        'backend_error': error.toString(),
+        'backend_base_url': _aiBackend.baseUrl,
         'in_app_crop_scope': true,
         'show_treatment_card': false,
       };
@@ -423,7 +428,8 @@ class ChatProvider extends ChangeNotifier {
       return false;
     }
 
-    final diseaseName = attachedDiagnosis?.diseaseName.trim() ?? inferredDiseaseName;
+    final diseaseName =
+        attachedDiagnosis?.diseaseName.trim() ?? inferredDiseaseName;
     if (diseaseName.isEmpty) {
       return false;
     }
@@ -545,6 +551,22 @@ class ChatProvider extends ChangeNotifier {
     return response.answer.trim().isNotEmpty
         ? response.answer.trim()
         : 'I could not generate a response right now.';
+  }
+
+  String _buildBackendUnavailableResponse(
+    String userMessage, {
+    DiagnosisModel? attachedDiagnosis,
+    Object? error,
+  }) {
+    final fallback = _buildAIResponse(
+      userMessage,
+      attachedDiagnosis: attachedDiagnosis,
+    );
+    final detail = kDebugMode && error != null
+        ? '\n\nDebug: ${_aiBackend.baseUrl} failed with $error'
+        : '';
+    return 'Online AI is unavailable right now, so I am using offline crop guidance only.\n\n'
+        '$fallback$detail';
   }
 
   // ─── Save ────────────────────────────────────────────────────────────────
