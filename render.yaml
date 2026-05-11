@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: cropcare-ai-backend
+    runtime: python
+    rootDir: ai_backend
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ENABLE_MOCK_SERVICES
+        value: "false"
+      - key: REQUIRE_AUTH
+        value: "true"
+      - key: CORS_ORIGINS
+        value: http://localhost:8080,http://127.0.0.1:8080
