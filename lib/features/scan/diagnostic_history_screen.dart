@@ -6,6 +6,7 @@ import '../../../core/constants/app_enums.dart';
 import '../../../data/models/diagnosis_model.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../auth/providers/auth_provider.dart';
+import '../../../core/utils/label_formatter.dart';
 
 class DiagnosticHistoryScreen extends StatefulWidget {
   const DiagnosticHistoryScreen({super.key});
@@ -159,7 +160,7 @@ class _DiagnosticHistoryScreenState extends State<DiagnosticHistoryScreen> {
                           children: [
                             Row(children: [
                               Expanded(
-                                child: Text(d.diseaseName,
+                                child: Text(humanizeDiseaseLabel(d.diseaseName),
                                     style: const TextStyle(
                                         fontWeight: FontWeight.w800,
                                         fontSize: 16,
@@ -222,6 +223,17 @@ class _DiagnosticHistoryScreenState extends State<DiagnosticHistoryScreen> {
                                     fontSize: 12,
                                     color: AppColors.textLightGray),
                               ),
+                              if (d.videoUrl != null && d.videoUrl!.startsWith('expired:')) ...[
+                                const SizedBox(width: 6),
+                                const Icon(Icons.videocam_off,
+                                    size: 13, color: AppColors.textLightGray),
+                                const SizedBox(width: 3),
+                                const Text(
+                                  'Video expired',
+                                  style: TextStyle(
+                                      fontSize: 11, color: AppColors.textLightGray),
+                                ),
+                              ],
                             ]),
                             if (d.summary != null &&
                                 d.summary!.isNotEmpty) ...[

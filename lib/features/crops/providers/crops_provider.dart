@@ -331,6 +331,45 @@ class CropsProvider extends ChangeNotifier {
     await updateCrop(updated);
   }
 
+  /// Mark a treatment task as completed both remotely (via Supabase) and
+  /// in the local SQLite cache. Falls back to local-only if the remote
+  /// call fails.
+  ///
+  /// Returns the updated task on success, or `null` on full failure.
+  Future<TreatmentTaskModel?> markTaskDone(String taskId) async {
+    final now = DateTime.now();
+    try {
+      await _supabase.markTreatmentTaskCompleted(taskId, completedAt: now);
+    } catch (_) {
+      // Continue with local update even if remote fails — sync_service
+      // will push it later.
+    }
+
+    // Update local cache. DatabaseHelper exposes its underlying Database
+    // via the `database` getter (see database_helper.dart:16).
+    try {
+      final database = await _db.database;
+      final rows = await database.query(
+        AppConstants.treatmentTasksTable,
+        where: 'id = ?',
+        whereArgs: [taskId],
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+      final original = TreatmentTaskModel.fromMap(rows.first);
+      final updated = original.copyWith(
+        status: TaskStatus.completed,
+        completedAt: now,
+        updatedAt: now,
+      );
+      await _db.upsertRow(AppConstants.treatmentTasksTable, updated.toMap());
+      notifyListeners();
+      return updated;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<List<DiseaseKnowledgeModel>> fetchDiseaseKnowledge(
       {String? cropType}) async {
     try {

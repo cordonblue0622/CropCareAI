@@ -14,6 +14,8 @@ import '../../../data/models/disease_knowledge_model.dart';
 import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../services/local_classifier_service.dart';
+import '../../../services/video_diagnosis_service.dart';
+import '../../../core/utils/label_formatter.dart';
 import '../auth/providers/auth_provider.dart';
 import '../crops/providers/crops_provider.dart';
 import '../home/home_screen.dart';
@@ -26,6 +28,7 @@ class ScanResultScreen extends StatefulWidget {
   final String? initialQuery;
   final bool openChatOnComplete;
   final bool isFromVideo;
+  final XFile? videoFile;
 
   const ScanResultScreen({
     super.key,
@@ -35,6 +38,7 @@ class ScanResultScreen extends StatefulWidget {
     this.initialQuery,
     this.openChatOnComplete = false,
     this.isFromVideo = false,
+    this.videoFile,
   });
 
   @override
@@ -71,18 +75,50 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       _resolvedImageBytes = imageBytes;
 
       AiBackendDetectResponse detection;
-      try {
-        detection = await localClassifier.classifyImage(
-          imageBytes: imageBytes,
-          filename: widget.imageFile.name,
-          cropType: selectedCrop?.cropType.value,
-        );
-      } catch (_) {
-        detection = await aiBackend.detectImage(
-          imageBytes: imageBytes,
-          filename: widget.imageFile.name,
-          cropType: selectedCrop?.cropType.value,
-        );
+      if (widget.isFromVideo && widget.videoFile != null) {
+        try {
+          final videoResult = await VideoDiagnosisService(
+                  localClassifier: localClassifier)
+              .analyzeVideo(
+                  videoFilePath: widget.videoFile!.path,
+                  cropTypeHint: selectedCrop?.cropType.value);
+          if (videoResult.bestDetection != null) {
+            detection = videoResult.bestDetection!;
+          } else {
+            // No frame returned a detection — fall back to remote on poster.
+            detection = await aiBackend.detectImage(
+              imageBytes: imageBytes,
+              filename: widget.imageFile.name,
+              cropType: selectedCrop?.cropType.value,
+            );
+          }
+          // Use the best frame as the visible poster image.
+          final posterBytes = videoResult.posterBytes;
+          if (posterBytes != null) {
+            _resolvedImageBytes = posterBytes;
+          }
+        } catch (_) {
+          // Video pipeline failed entirely — fall back to remote on poster bytes.
+          detection = await aiBackend.detectImage(
+            imageBytes: imageBytes,
+            filename: widget.imageFile.name,
+            cropType: selectedCrop?.cropType.value,
+          );
+        }
+      } else {
+        try {
+          detection = await localClassifier.classifyImage(
+            imageBytes: imageBytes,
+            filename: widget.imageFile.name,
+            cropType: selectedCrop?.cropType.value,
+          );
+        } catch (_) {
+          detection = await aiBackend.detectImage(
+            imageBytes: imageBytes,
+            filename: widget.imageFile.name,
+            cropType: selectedCrop?.cropType.value,
+          );
+        }
       }
 
       final rejectionMessage = _rejectionMessageForDetection(
@@ -208,6 +244,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         detectedRegionsJson: _detection?.toDetectedRegionsJson(),
         modelName: _detection?.model.name,
         modelVersion: _detection?.model.version,
+        videoUrl: widget.videoFile?.path,
         diagnosedAt: now,
         createdAt: now,
         updatedAt: now,
@@ -418,7 +455,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
           ),
         ]),
         const SizedBox(height: 14),
-        Text(kb.diseaseName,
+        Text(humanizeDiseaseLabel(kb.diseaseName),
             style: const TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w800,
@@ -627,6 +664,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       detectedRegionsJson: sourceDetection?.toDetectedRegionsJson(),
       modelName: sourceDetection?.model.name,
       modelVersion: sourceDetection?.model.version,
+      videoUrl: widget.videoFile?.path,
       diagnosedAt: now,
       createdAt: now,
       updatedAt: now,
@@ -762,7 +800,12 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     required AiBackendDetectResponse detection,
   }) {
     final now = DateTime.now();
-    final title = _titleCaseLabel(label);
+    final humanized = humanizeDiseaseLabel(label);
+    // Preserve the old `_titleCaseLabel` defensive fallback: if the input has
+    // no alphanumerics (e.g. backend returned "@@@" or "---"), surface
+    // "Unknown disease" rather than the raw symbols.
+    final hasAlphanumeric = humanized.contains(RegExp(r'[a-zA-Z0-9]'));
+    final title = hasAlphanumeric ? humanized : 'Unknown disease';
     return DiseaseKnowledgeModel(
       id: 'backend-$label',
       cropType: cropType ?? CropType.tomato,
@@ -788,19 +831,6 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
   String _normalizeLabel(String value) {
     return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
-  }
-
-  String _titleCaseLabel(String value) {
-    final normalized = _normalizeLabel(value);
-    if (normalized.isEmpty) {
-      return 'Unknown disease';
-    }
-    return normalized
-        .split(' ')
-        .map((part) => part.isEmpty
-            ? part
-            : '${part[0].toUpperCase()}${part.substring(1)}')
-        .join(' ');
   }
 
   String _cropTypeLabel(CropType cropType) {

@@ -10,6 +10,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../data/remote/ai_backend_service.dart';
+import '../../services/connectivity_service.dart';
 import '../chat/screens/chat_screen.dart';
 import '../scan/scan_screen.dart';
 
@@ -105,6 +106,22 @@ class _VoiceScreenState extends State<VoiceScreen>
       _words = '';
     });
 
+    // If offline, skip the backend Whisper round-trip and use on-device STT.
+    final connectivityService = context.read<ConnectivityService>();
+    bool isOnline;
+    try {
+      isOnline = await connectivityService.isConnected;
+    } catch (_) {
+      isOnline = false;
+    }
+    if (!isOnline) {
+      await _startSpeechFallback(
+        'You are offline. Using on-device speech recognition.',
+        onDevice: true,
+      );
+      return;
+    }
+
     try {
       final hasPermission = await _recorder.hasPermission();
       if (!hasPermission) {
@@ -137,7 +154,10 @@ class _VoiceScreenState extends State<VoiceScreen>
     }
   }
 
-  Future<void> _startSpeechFallback(String message) async {
+  Future<void> _startSpeechFallback(
+    String message, {
+    bool onDevice = false,
+  }) async {
     if (!_available) {
       if (!mounted) return;
       setState(() {
@@ -152,7 +172,7 @@ class _VoiceScreenState extends State<VoiceScreen>
     setState(() {
       _listening = true;
       _usingSpeechFallback = true;
-      _commandHandled = false; // reset for new session
+      _commandHandled = false;
       _errorText = message;
       _words = '';
     });
@@ -180,6 +200,7 @@ class _VoiceScreenState extends State<VoiceScreen>
         partialResults: true,
         autoPunctuation: true,
         listenMode: ListenMode.dictation,
+        onDevice: onDevice,
       ),
     );
   }

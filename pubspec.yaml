@@ -43,6 +43,7 @@ dependencies:
 
   # Charts
   fl_chart: ^0.69.0
+  table_calendar: ^3.1.2
 
   # Camera & Image
   camera: ^0.11.0+2
@@ -51,9 +52,17 @@ dependencies:
   cached_network_image: ^3.4.1
   tflite_flutter: ^0.11.0
 
+  # Video
+  video_player: ^2.9.2
+  video_thumbnail: ^0.5.3
+
   # Voice
   speech_to_text: ^7.0.0
   record: ^5.2.1
+
+  # Local Notifications
+  flutter_local_notifications: ^17.2.3
+  timezone: ^0.9.4
 
   # Permissions
   permission_handler: ^11.3.1
@@ -64,6 +73,8 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  sqflite_common_ffi: ^2.3.3
+  path_provider_platform_interface: ^2.1.2
 
 # Force record_linux to a version compatible with record_platform_interface 1.5.0.
 # Pub resolved record_linux 0.7.2 transitively, which predates startStream / the

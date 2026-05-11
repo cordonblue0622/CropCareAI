@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -7,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../core/utils/label_formatter.dart';
 import '../../../data/models/chat_message_model.dart';
 import '../../../data/models/chat_session_model.dart';
 import '../../../data/models/diagnosis_model.dart';
@@ -15,6 +17,7 @@ import '../../crops/providers/crops_provider.dart';
 import '../providers/chat_provider.dart';
 import '../../../services/connectivity_service.dart';
 import '../../home/home_screen.dart';
+import '../widgets/video_player_view.dart';
 
 class ChatScreen extends StatefulWidget {
   final String? initialQuery;
@@ -155,7 +158,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             const SizedBox(height: 4),
             Text(
-              'Detected: ${diagnosis.diseaseName}',
+              'Detected: ${humanizeDiseaseLabel(diagnosis.diseaseName)}',
               style: const TextStyle(
                   fontWeight: FontWeight.w600, color: AppColors.primaryDark),
             ),
@@ -565,7 +568,7 @@ class _DiagnosisSummaryCard extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
-            diagnosis.diseaseName,
+            humanizeDiseaseLabel(diagnosis.diseaseName),
             style: const TextStyle(
               fontSize: 24,
               fontWeight: FontWeight.w800,
@@ -744,6 +747,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
 
     final isUser = message.role == MessageRole.user;
     final hasImage = message.imageBytes != null && message.imageBytes!.isNotEmpty;
+    final videoUrl = message.metadata?['video_url'] as String?;
+    final posterUrl = message.metadata?['video_poster_url'] as String?;
 
     // Recommended actions for assistant messages
     final rawActions = message.metadata?['recommended_actions'];
@@ -776,6 +781,72 @@ class _MessageBubbleState extends State<_MessageBubble> {
               crossAxisAlignment:
                   isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
               children: [
+                // ── Video bubble ──
+                if (videoUrl != null)
+                  GestureDetector(
+                    onTap: () {
+                      final isExpired = videoUrl.startsWith('expired:');
+                      if (isExpired) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content:
+                                  Text('This video is no longer available.')),
+                        );
+                      } else {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                VideoPlayerView(videoSource: videoUrl),
+                          ),
+                        );
+                      }
+                    },
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        if (posterUrl != null)
+                          _renderPoster(posterUrl)
+                        else
+                          Container(
+                            width: 200,
+                            height: 140,
+                            color: Colors.black26,
+                          ),
+                        Container(
+                          decoration: const BoxDecoration(
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
+                          padding: const EdgeInsets.all(10),
+                          child: Icon(
+                            videoUrl.startsWith('expired:')
+                                ? Icons.error_outline
+                                : Icons.play_arrow,
+                            color: Colors.white,
+                            size: 28,
+                          ),
+                        ),
+                        if (videoUrl.startsWith('expired:'))
+                          Positioned(
+                            bottom: 8,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black87,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Text(
+                                'Video expired',
+                                style: TextStyle(
+                                    color: Colors.white, fontSize: 11),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 // ── Image bubble (above text, like Messenger) ──
                 if (hasImage)
                   GestureDetector(
@@ -982,7 +1053,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
             ),
             if (diseaseName.isNotEmpty) ...[
               const SizedBox(height: 6),
-              Text('Detected: $diseaseName',
+              Text('Detected: ${humanizeDiseaseLabel(diseaseName)}',
                   style: const TextStyle(
                       fontSize: 12, color: AppColors.textGray)),
             ] else ...[
@@ -1253,6 +1324,13 @@ class _MessageBubbleState extends State<_MessageBubble> {
         ],
       ),
     );
+  }
+
+  Widget _renderPoster(String url) {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return Image.network(url, width: 200, height: 140, fit: BoxFit.cover);
+    }
+    return Image.file(File(url), width: 200, height: 140, fit: BoxFit.cover);
   }
 
   void _showFullImage(BuildContext context, Uint8List bytes) {

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../core/utils/label_formatter.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/models/crop_model.dart';
 import '../../../data/models/disease_knowledge_model.dart';
@@ -613,7 +614,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         itemCount: items.length,
         separatorBuilder: (_, __) => const SizedBox(width: 12),
         itemBuilder: (_, i) => _DiseaseCard(
-          name: items[i].diseaseName,
+          name: humanizeDiseaseLabel(items[i].diseaseName),
           risk: _diseaseRiskLabel(items[i]),
           color: _diseaseAccentColor(items[i]),
           onTap: () => _pushLibrary(ctx),
@@ -658,6 +659,8 @@ class _SectionHeader extends StatelessWidget {
                   color: AppColors.textDark)),
           if (sub != null)
             Text(sub!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style:
                     const TextStyle(fontSize: 12, color: AppColors.textGray)),
         ]),
@@ -886,6 +889,8 @@ class _ActiveCropCard extends StatelessWidget {
                 overflow: TextOverflow.ellipsis),
             if (crop.plotCode != null)
               Text(crop.plotCode!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style:
                       const TextStyle(fontSize: 11, color: AppColors.textGray)),
           ]),
@@ -1067,6 +1072,8 @@ class _DashboardTaskRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(task.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
@@ -1079,14 +1086,18 @@ class _DashboardTaskRow extends StatelessWidget {
                     color: isMissed ? Colors.red : AppColors.textGray,
                   ),
                   const SizedBox(width: 3),
-                  Text(
-                    isMissed
-                        ? 'Overdue — ${_dueDateLabel(task.dueAt)}'
-                        : 'Due ${_dueTimeLabel(task.dueAt)}',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color:
-                            isMissed ? Colors.red : AppColors.textGray),
+                  Flexible(
+                    child: Text(
+                      isMissed
+                          ? 'Overdue — ${_dueDateLabel(task.dueAt)}'
+                          : 'Due ${_dueTimeLabel(task.dueAt)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 11,
+                          color:
+                              isMissed ? Colors.red : AppColors.textGray),
+                    ),
                   ),
                 ]),
               ]),
@@ -1225,11 +1236,15 @@ class _DiseaseCard extends StatelessWidget {
                     color: Colors.white54, size: 32),
                 const Spacer(),
                 Text(name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w800,
                         fontSize: 14)),
                 Text(risk,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                         color: color,
                         fontSize: 12,

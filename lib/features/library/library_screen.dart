@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../data/models/disease_knowledge_model.dart';
+import '../../../core/utils/label_formatter.dart';
 import '../crops/providers/crops_provider.dart';
 
 class LibraryScreen extends StatefulWidget {
@@ -167,10 +168,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void _applyFilter() {
     _filtered = _all.where((kb) {
       final matchType = _filterType == null || kb.cropType == _filterType;
+      final query = _search.toLowerCase();
+      final humanized = humanizeDiseaseLabel(kb.diseaseName).toLowerCase();
       final matchSearch = _search.isEmpty ||
-          kb.diseaseName.toLowerCase().contains(_search.toLowerCase()) ||
-          (kb.description?.toLowerCase().contains(_search.toLowerCase()) ??
-              false);
+          kb.diseaseName.toLowerCase().contains(query) ||
+          humanized.contains(query) ||
+          (kb.description?.toLowerCase().contains(query) ?? false);
       return matchType && matchSearch;
     }).toList();
   }
@@ -371,7 +374,7 @@ class _DiseaseCardState extends State<_DiseaseCard> {
             ),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(kb.diseaseName,
+              child: Text(humanizeDiseaseLabel(kb.diseaseName),
                   style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w800,
