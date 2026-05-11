@@ -17,6 +17,7 @@ import '../../../services/local_classifier_service.dart';
 import '../../../services/video_diagnosis_service.dart';
 import '../../../core/utils/label_formatter.dart';
 import '../auth/providers/auth_provider.dart';
+import '../chat/providers/chat_provider.dart';
 import '../crops/providers/crops_provider.dart';
 import '../home/home_screen.dart';
 import '../chat/screens/chat_screen.dart';
@@ -134,7 +135,9 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       final infoMessage = rejectionMessage ??
           (match == null
             ? 'We could not confidently identify a supported crop disease from this photo. Upload a clearer close-up of the affected leaf and try again.'
-            : 'Analyzed using ${detection.model.name} ${detection.model.version} via the CropCare AI backend.');
+            : detection.source.toLowerCase().contains('local')
+                ? 'Analyzed on device using ${detection.model.name} ${detection.model.version}.'
+                : 'Analyzed using ${detection.model.name} ${detection.model.version} via the CropCare AI backend.');
       final analysisMessage = infoMessage;
       final diagnosis = match != null && _shouldAttachDiagnosisToChat(detection)
           ? _matchToDiagnosis(
@@ -195,7 +198,10 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
 
     final cropsProvider = context.read<CropsProvider>();
-    final hintCropType = _resolveSelectedCrop(cropsProvider)?.cropType.value;
+    final hintCropType = _resolveChatHintCropType(
+      selectedCrop: _resolveSelectedCrop(cropsProvider),
+      diagnosis: diagnosis,
+    );
 
     setState(() => _redirectingToChat = true);
 
@@ -234,11 +240,14 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         id: const Uuid().v4(),
         cropId: cropId,
         userId: user.id,
-        diagnosisMode: DiagnosisMode.online,
+        diagnosisMode: _diagnosisModeFor(_detection),
         labelKey: _primaryDetection?.labelKey ?? _match?.labelKey,
         diseaseName: _match!.diseaseName,
         confidenceScore: _primaryDetection?.confidence,
-        severity: Severity.moderate,
+        severity: _inferSeverityForDetection(
+          knowledge: _match,
+          detection: _detection,
+        ),
         resultLabel: _primaryDetection?.label,
         summary: _match!.description ?? _analysisMessage,
         detectedRegionsJson: _detection?.toDetectedRegionsJson(),
@@ -654,11 +663,14 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       id: const Uuid().v4(),
       cropId: widget.cropId ?? '',
       userId: context.read<AuthProvider>().currentUser?.id ?? '',
-      diagnosisMode: DiagnosisMode.online,
+      diagnosisMode: _diagnosisModeFor(sourceDetection),
       labelKey: primaryDetection?.labelKey ?? kb.labelKey,
       diseaseName: kb.diseaseName,
       confidenceScore: primaryDetection?.confidence,
-      severity: Severity.moderate,
+      severity: _inferSeverityForDetection(
+        knowledge: kb,
+        detection: sourceDetection,
+      ),
       resultLabel: primaryDetection?.label,
       summary: kb.description ?? analysisMessage ?? _analysisMessage,
       detectedRegionsJson: sourceDetection?.toDetectedRegionsJson(),
@@ -679,9 +691,31 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         }
       }
     }
-    return cropsProvider.activeCrops.isEmpty
-        ? null
-        : cropsProvider.activeCrops.first;
+    return null;
+  }
+
+  String? _resolveChatHintCropType({
+    required CropModel? selectedCrop,
+    required DiagnosisModel? diagnosis,
+  }) {
+    if (diagnosis != null) {
+      return ChatProvider.resolveHintCropType(attachedDiagnosis: diagnosis);
+    }
+
+    if (selectedCrop != null) {
+      return selectedCrop.cropType.value;
+    }
+
+    final primary = _detection?.primaryDetection;
+    if (primary == null) {
+      return null;
+    }
+
+    if (_detection?.status.toLowerCase() != 'ok') {
+      return null;
+    }
+
+    return _tryParseCropType(_detection?.cropType)?.value;
   }
 
   /// User message when the on-device scan did not attach a confident diagnosis.
@@ -762,10 +796,6 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       return 'This photo looks like ${_cropTypeLabel(predictedCropType)}, but you are scanning ${_cropTypeLabel(selectedCrop.cropType)}. Upload a photo of the selected crop or switch crops first.';
     }
 
-    if (primary.confidence < AppConstants.temporaryScannerAcceptedConfidence) {
-      return 'This photo does not clearly match a supported crop disease. Upload a clearer close-up of the affected crop leaf and try again.';
-    }
-
     return null;
   }
 
@@ -785,13 +815,64 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     final source = detection.source.toLowerCase();
     final modelName = detection.model.name.toLowerCase();
     final label = detection.primaryDetection?.label.toLowerCase() ?? '';
-    final confidence = detection.primaryDetection?.confidence ?? 0;
 
     return detection.status.toLowerCase() == 'ok' &&
-      confidence >= AppConstants.temporaryScannerAcceptedConfidence &&
+      detection.primaryDetection != null &&
       !source.contains('mock') &&
         !modelName.contains('mock') &&
         label != 'sample_disease_region';
+  }
+
+  double _minimumAcceptedConfidence(AiBackendDetectResponse? detection) {
+    final source = detection?.source.toLowerCase() ?? '';
+    if (source.contains('local')) {
+      return AppConstants.temporaryScannerMinConfidence;
+    }
+    return AppConstants.temporaryScannerAcceptedConfidence;
+  }
+
+  DiagnosisMode _diagnosisModeFor(AiBackendDetectResponse? detection) {
+    final source = detection?.source.toLowerCase() ?? '';
+    if (source.contains('local')) {
+      return DiagnosisMode.offline;
+    }
+    return DiagnosisMode.online;
+  }
+
+  Severity _inferSeverityForDetection({
+    required DiseaseKnowledgeModel? knowledge,
+    required AiBackendDetectResponse? detection,
+  }) {
+    final labelKey =
+        (detection?.primaryDetection?.labelKey ?? knowledge?.labelKey ?? '')
+            .toLowerCase();
+    final label =
+        (detection?.primaryDetection?.label ?? knowledge?.diseaseName ?? '')
+            .toLowerCase();
+    final fingerprint = '$labelKey $label';
+
+    if (fingerprint.contains('healthy')) {
+      return Severity.healthy;
+    }
+
+    if (RegExp(
+      r'late blight|yellow leaf curl|mosaic|virus|wilt|small leaf|white mold',
+    ).hasMatch(fingerprint)) {
+      return Severity.severe;
+    }
+
+    if (RegExp(
+      r'powdery mildew|leaf spot|early blight|bacterial spot|target spot|leaf mold|septoria|insect pest',
+    ).hasMatch(fingerprint)) {
+      return Severity.moderate;
+    }
+
+    final confidence = detection?.primaryDetection?.confidence ?? 0;
+    if (confidence >= 0.85) {
+      return Severity.mild;
+    }
+
+    return Severity.moderate;
   }
 
   DiseaseKnowledgeModel _buildFallbackKnowledge({

@@ -574,52 +574,55 @@ class _CropDetailScreenState extends State<CropDetailScreen>
             ),
           ),
         ],
-        body: _loading
-            ? const Center(
-                child: CircularProgressIndicator(color: AppColors.primary))
-            : TabBarView(
-                controller: _tabs,
-                children: [
-                  _OverviewTab(
-                    crop: _crop,
-                    diagnoses: _diagnoses,
-                    chatHistory: _chatHistory,
-                  ),
-                  _DailyPlanTab(
-                    crop: _crop,
-                    tasks: _tasks,
-                    treatments: _treatments,
-                    onTaskComplete: _showCheckInSheetForTask,
-                  ),
-                  SingleChildScrollView(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        CalendarTracker(
-                          tasks: _tasks,
-                          selectedDate: _selectedDate,
-                          onDateSelected: (d) =>
-                              setState(() => _selectedDate = d),
-                          onTaskToggled: _onTaskToggled,
-                        ),
-                        const SizedBox(height: 16),
-                        HealthScoreGraph(
-                          points: _healthCurve,
-                          selectedDate: _selectedDate,
-                          onPointTap: (d) =>
-                              setState(() => _selectedDate = d),
-                        ),
-                      ],
+        body: SafeArea(
+          top: false,
+          child: _loading
+              ? const Center(
+                  child: CircularProgressIndicator(color: AppColors.primary))
+              : TabBarView(
+                  controller: _tabs,
+                  children: [
+                    _OverviewTab(
+                      crop: _crop,
+                      diagnoses: _diagnoses,
+                      chatHistory: _chatHistory,
                     ),
-                  ),
-                  _DiagnosesTab(
-                    diagnoses: _diagnoses,
-                    chatHistory: _chatHistory,
-                    crop: _crop,
-                  ),
-                ],
-              ),
+                    _DailyPlanTab(
+                      crop: _crop,
+                      tasks: _tasks,
+                      treatments: _treatments,
+                      onTaskComplete: _showCheckInSheetForTask,
+                    ),
+                    SingleChildScrollView(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          CalendarTracker(
+                            tasks: _tasks,
+                            selectedDate: _selectedDate,
+                            onDateSelected: (d) =>
+                                setState(() => _selectedDate = d),
+                            onTaskToggled: _onTaskToggled,
+                          ),
+                          const SizedBox(height: 16),
+                          HealthScoreGraph(
+                            points: _healthCurve,
+                            selectedDate: _selectedDate,
+                            onPointTap: (d) =>
+                                setState(() => _selectedDate = d),
+                          ),
+                        ],
+                      ),
+                    ),
+                    _DiagnosesTab(
+                      diagnoses: _diagnoses,
+                      chatHistory: _chatHistory,
+                      crop: _crop,
+                    ),
+                  ],
+                ),
+        ),
       ),
     );
   }
@@ -638,6 +641,25 @@ class _OverviewTab extends StatelessWidget {
     required this.chatHistory,
   });
 
+  String _compactSummary(String? raw) {
+    final text = (raw ?? '').trim();
+    if (text.isEmpty) {
+      return 'No initial diagnosis summary has been saved for this crop yet.';
+    }
+
+    final collapsed = text.replaceAll(RegExp(r'\s+'), ' ');
+    final sentenceBreak = collapsed.indexOf(RegExp(r'[.!?] '));
+    final candidate = sentenceBreak != -1
+        ? collapsed.substring(0, sentenceBreak + 1)
+        : collapsed;
+
+    if (candidate.length <= 180) {
+      return candidate;
+    }
+
+    return '${candidate.substring(0, 177).trimRight()}...';
+  }
+
   @override
   Widget build(BuildContext context) {
     final latestDx = diagnoses.isNotEmpty ? diagnoses.first : null;
@@ -650,20 +672,28 @@ class _OverviewTab extends StatelessWidget {
       }
     }
     final conditionSummary = latestDx?.summary?.trim().isNotEmpty == true
-        ? latestDx!.summary!.trim()
+        ? _compactSummary(latestDx!.summary)
         : firstAssistantMessage?.content.trim().isNotEmpty == true
-            ? firstAssistantMessage!.content.trim()
+            ? _compactSummary(firstAssistantMessage!.content)
             : crop.notes?.trim().isNotEmpty == true
-                ? crop.notes!.trim()
-                : 'No initial diagnosis summary has been saved for this crop yet.';
+                ? _compactSummary(crop.notes)
+                : _compactSummary(null);
 
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.fromLTRB(
+        16,
+        16,
+        16,
+        16 + MediaQuery.of(context).padding.bottom,
+      ),
       children: [
         if (latestDx != null) ...[
-          const _SectionHeader('Latest Diagnosis'),
+          const _SectionHeader('Condition Summary'),
           const SizedBox(height: 8),
-          _DiagnosisSummaryCard(diagnosis: latestDx),
+          _DiagnosisSummaryCard(
+            diagnosis: latestDx,
+            summaryOverride: conditionSummary,
+          ),
           const SizedBox(height: 16),
         ],
         if (latestDx == null) ...[
@@ -745,7 +775,11 @@ class _OverviewTab extends StatelessWidget {
 
 class _DiagnosisSummaryCard extends StatelessWidget {
   final DiagnosisModel diagnosis;
-  const _DiagnosisSummaryCard({required this.diagnosis});
+  final String? summaryOverride;
+  const _DiagnosisSummaryCard({
+    required this.diagnosis,
+    this.summaryOverride,
+  });
 
   Color get _severityColor {
     switch (diagnosis.severity) {
@@ -792,9 +826,9 @@ class _DiagnosisSummaryCard extends StatelessWidget {
             ),
           ),
         ]),
-        if (diagnosis.summary != null && diagnosis.summary!.isNotEmpty) ...[
+        if ((summaryOverride ?? diagnosis.summary)?.isNotEmpty == true) ...[
           const SizedBox(height: 8),
-          Text(diagnosis.summary!,
+          Text(summaryOverride ?? diagnosis.summary!,
               style: const TextStyle(
                   color: AppColors.textGray, fontSize: 13, height: 1.4)),
         ],
@@ -1354,20 +1388,16 @@ class _DiagnosesTab extends StatelessWidget {
                               borderRadius: BorderRadius.circular(6),
                               border: Border.all(
                                   color: _severityColor(d.severity)
-                                      .withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(
-                                      color: _severityColor(d.severity)
-                                          .withOpacity(0.4)),
-                                ),
-                                child: Text(
-                                  d.severity.name.toUpperCase(),
-                                  style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: _severityColor(d.severity)),
-                                ),
-                              ),
+                                      .withOpacity(0.4)),
+                            ),
+                            child: Text(
+                              d.severity.name.toUpperCase(),
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: _severityColor(d.severity)),
+                            ),
+                          ),
                             ]),
                             if (d.confidenceScore != null) ...[
                               const SizedBox(height: 4),

@@ -4,6 +4,10 @@ import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../data/models/user_model.dart';
 import '../auth/providers/auth_provider.dart';
+import '../auth/screens/login_screen.dart';
+import '../chat/providers/chat_provider.dart';
+import '../crops/providers/crops_provider.dart';
+import '../notifications/providers/notifications_provider.dart';
 import 'nav_drawer.dart';
 import '../../../features/scan/diagnostic_history_screen.dart';
 import '../../../features/library/library_screen.dart';
@@ -11,6 +15,18 @@ import '../../../shared/widgets/custom_text_field.dart';
 
 class AccountScreen extends StatelessWidget {
   const AccountScreen({super.key});
+
+  Future<void> _signOut(BuildContext context) async {
+    await context.read<AuthProvider>().signOut();
+    context.read<ChatProvider>().clear();
+    context.read<CropsProvider>().clear();
+    context.read<NotificationsProvider>().clear();
+    if (!context.mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (_) => false,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -209,7 +225,7 @@ class AccountScreen extends StatelessWidget {
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
-              await context.read<AuthProvider>().signOut();
+              await _signOut(context);
             },
             child: const Text('Sign Out', style: TextStyle(color: Colors.red)),
           ),

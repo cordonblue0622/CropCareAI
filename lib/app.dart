@@ -34,6 +34,9 @@ class _CropCareAppState extends State<CropCareApp> {
       GlobalKey<NavigatorState>();
 
   StreamSubscription<String>? _tapSub;
+  StreamSubscription<bool>? _backendConnectivitySub;
+  AuthProvider? _authProvider;
+  VoidCallback? _authWarmUpListener;
 
   @override
   void initState() {
@@ -42,12 +45,17 @@ class _CropCareAppState extends State<CropCareApp> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _tapSub = NotificationService.instance.tapStream.listen(_handleTap);
       _runVideoCleanup();
+      _initializeBackendWarmUp();
     });
   }
 
   @override
   void dispose() {
     _tapSub?.cancel();
+    _backendConnectivitySub?.cancel();
+    if (_authProvider != null && _authWarmUpListener != null) {
+      _authProvider!.removeListener(_authWarmUpListener!);
+    }
     super.dispose();
   }
 
@@ -60,6 +68,42 @@ class _CropCareAppState extends State<CropCareApp> {
       // ignore: discarded_futures
       VideoCleanupService(db: db).runIfDue();
     } catch (_) {/* defensive — never break app start */}
+  }
+
+  void _initializeBackendWarmUp() {
+    final ctx = _navigatorKey.currentContext;
+    if (ctx == null) return;
+
+    final aiBackend = ctx.read<AiBackendService>();
+    final connectivity = ctx.read<ConnectivityService>();
+    final auth = ctx.read<AuthProvider>();
+
+    Future<void> warmUpIfOnline({bool force = false}) async {
+      if (!auth.isAuthenticated) {
+        return;
+      }
+      if (!await connectivity.isConnected) {
+        return;
+      }
+      await aiBackend.warmUpIfNeeded(force: force);
+    }
+
+    _authProvider = auth;
+    _authWarmUpListener = () {
+      if (auth.isAuthenticated) {
+        Future<void>.microtask(warmUpIfOnline);
+      }
+    };
+    auth.addListener(_authWarmUpListener!);
+
+    _backendConnectivitySub = connectivity.onConnectivityChanged.listen((online) {
+      if (!online || !auth.isAuthenticated) {
+        return;
+      }
+      Future<void>.microtask(() => warmUpIfOnline(force: true));
+    });
+
+    Future<void>.microtask(warmUpIfOnline);
   }
 
   Future<void> _handleTap(String payload) async {
@@ -195,15 +239,21 @@ class _CropCareAppState extends State<CropCareApp> {
         ),
 
         // Chat / AI
-        ChangeNotifierProxyProvider3<SupabaseService, DatabaseHelper,
-            AiBackendService, ChatProvider>(
+        ChangeNotifierProxyProvider4<SupabaseService, DatabaseHelper,
+            AiBackendService, ConnectivityService, ChatProvider>(
           create: (ctx) => ChatProvider(
             supabase: ctx.read<SupabaseService>(),
             db: ctx.read<DatabaseHelper>(),
             aiBackend: ctx.read<AiBackendService>(),
+            connectivity: ctx.read<ConnectivityService>(),
           ),
-          update: (_, svc, db, aiBackend, prev) =>
-              prev ?? ChatProvider(supabase: svc, db: db, aiBackend: aiBackend),
+          update: (_, svc, db, aiBackend, connectivity, prev) => prev ??
+              ChatProvider(
+                supabase: svc,
+                db: db,
+                aiBackend: aiBackend,
+                connectivity: connectivity,
+              ),
         ),
       ],
       child: MaterialApp(

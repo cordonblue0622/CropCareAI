@@ -64,9 +64,12 @@ JSON rules:
 
 _CONVERSATIONAL_PROMPT = """You are CropCare AI helping a smallholder vegetable farmer.
 
-The farmer is continuing an earlier chat (they may have already received a diagnosis). Answer their latest question directly in plain, simple English.
+The farmer is continuing an earlier chat (they may have already received a diagnosis). Answer their latest question directly in plain, simple English and keep the reply anchored to the active crop and problem already established in the chat unless the farmer clearly switches crops.
 
 Rules:
+- Stay focused on the active crop context. Do not drift to another crop unless the farmer explicitly changes crops.
+- If the farmer asks about a product, brand, spray, or active ingredient, explain whether it fits the active crop and likely problem, what it is mainly used for, and when it would not be a good fit.
+- If web search results are available, use them to verify what a named product is for or what active ingredient it contains. If reliable web results are not available, use your own crop-protection knowledge and clearly tell the farmer to verify the label, crop registration, dosage, and pre-harvest interval locally.
 - Do NOT repeat the full diagnosis template (no required "What it is / Treatment" sections) unless they explicitly ask you to restate the plan.
 - Do NOT add generic warning footers or tip lists unless the question is about safety or compliance.
 - Stay focused on the question. Under 200 words unless they ask for detail.
@@ -80,6 +83,44 @@ _SUPPORTED_TREATMENT_CARD_CROPS = {
     "pechay",
     "squash",
 }
+
+_CROP_ALIASES: dict[str, tuple[str, ...]] = {
+    "tomato": ("tomato",),
+    "pepper": ("pepper", "bell pepper", "capsicum"),
+    "squash": ("squash", "kalabasa"),
+    "eggplant": ("eggplant", "talong"),
+    "pechay": ("pechay", "bok choy", "bokchoy"),
+}
+
+_PRODUCT_QUERY_HINTS = (
+    "product",
+    "brand",
+    "spray",
+    "fungicide",
+    "bactericide",
+    "pesticide",
+    "insecticide",
+    "miticide",
+    "fertilizer",
+    "fertiliser",
+    "active ingredient",
+    "can i use",
+    "should i use",
+    "recommend",
+    "recommendation",
+    "copper",
+    "mancozeb",
+    "chlorothalonil",
+    "metalaxyl",
+    "azoxystrobin",
+    "difenoconazole",
+    "abamectin",
+    "spinosad",
+    "neem",
+    "imidacloprid",
+    "thiophanate",
+    "potassium bicarbonate",
+)
 
 
 class LlmService:
@@ -133,7 +174,13 @@ class LlmService:
         client = OpenAI(api_key=self._settings.openai_api_key)
 
         is_follow_up = len(payload.conversation_history) >= 2
-        system_prompt = _CONVERSATIONAL_PROMPT if is_follow_up else _SYSTEM_PROMPT
+        active_crop = self._resolve_active_crop(payload, knowledge_records)
+        is_product_query = self._is_product_query(payload.user_message)
+        system_prompt = self._build_system_prompt(
+            is_follow_up=is_follow_up,
+            active_crop=active_crop,
+            is_product_query=is_product_query,
+        )
 
         knowledge_text = self._format_knowledge_records(knowledge_records)
 
@@ -143,7 +190,17 @@ class LlmService:
         if conversation_text:
             user_context_lines.append(f"Recent conversation:\n{conversation_text}")
 
+        if active_crop:
+            user_context_lines.append(
+                f"Active crop focus for this chat: {active_crop}"
+            )
+
         user_context_lines.append(f"Farmer's latest message: {payload.user_message}")
+
+        if is_product_query:
+            user_context_lines.append(
+                "This is a product-fit question. If a product, spray, or active ingredient is named, evaluate whether it matches the active crop and likely crop problem before recommending it."
+            )
 
         if knowledge_text:
             user_context_lines.append(f"\nRelevant knowledge:\n{knowledge_text}")
@@ -190,15 +247,11 @@ class LlmService:
             )
 
         try:
-            response = client.responses.create(
-                model=self._settings.openai_model,
-                input=[
-                    {
-                        "role": "system",
-                        "content": [{"type": "input_text", "text": system_prompt}],
-                    },
-                    {"role": "user", "content": user_content},
-                ],
+            response, used_web_search = self._create_response(
+                client,
+                system_prompt=system_prompt,
+                user_content=user_content,
+                allow_web_search=is_product_query,
             )
 
             raw_answer = getattr(response, "output_text", None) or (
@@ -228,6 +281,7 @@ class LlmService:
                     payload,
                     knowledge_records,
                     include_openai=True,
+                    include_web_search=used_web_search,
                 ),
                 model=self._settings.openai_model,
                 in_app_crop_scope=in_scope,
@@ -236,6 +290,118 @@ class LlmService:
         except Exception:
             logger.exception("OpenAI chat response failed. Falling back to diagnosis-grounded guidance.")
             return self._fallback_response(payload, knowledge_records)
+
+    def _build_system_prompt(
+        self,
+        *,
+        is_follow_up: bool,
+        active_crop: str,
+        is_product_query: bool,
+    ) -> str:
+        base = _CONVERSATIONAL_PROMPT if is_follow_up else _SYSTEM_PROMPT
+
+        extra_rules: list[str] = []
+        if active_crop:
+            extra_rules.append(
+                f"Active crop focus for this reply: {active_crop}. Keep the answer specific to {active_crop} unless the farmer clearly switches crops."
+            )
+        if is_product_query:
+            extra_rules.append(
+                "The farmer is asking for product guidance. Prefer product-fit reasoning: identify the active ingredient or product type, explain whether it fits the active crop and likely problem, and do not claim label approval unless you can support it."
+            )
+
+        if not extra_rules:
+            return base
+        return f"{base}\n\n" + "\n".join(extra_rules)
+
+    def _create_response(
+        self,
+        client: Any,
+        *,
+        system_prompt: str,
+        user_content: list[dict[str, str]],
+        allow_web_search: bool,
+    ) -> tuple[Any, bool]:
+        payload = [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_prompt}],
+            },
+            {"role": "user", "content": user_content},
+        ]
+
+        if allow_web_search:
+            try:
+                response = client.responses.create(
+                    model=self._settings.openai_model,
+                    input=payload,
+                    tools=[{"type": "web_search_preview"}],
+                )
+                return response, self._response_used_web_search(response)
+            except Exception:
+                logger.exception(
+                    "OpenAI web search request failed. Retrying without web search."
+                )
+
+        response = client.responses.create(
+            model=self._settings.openai_model,
+            input=payload,
+        )
+        return response, False
+
+    def _response_used_web_search(self, response: Any) -> bool:
+        for item in getattr(response, "output", []) or []:
+            if getattr(item, "type", "") == "web_search_call":
+                return True
+        return False
+
+    def _resolve_active_crop(
+        self,
+        payload: ChatRequest,
+        knowledge_records: list[dict[str, Any]],
+    ) -> str:
+        if payload.diagnosis and (payload.diagnosis.crop_type or "").strip():
+            return self._normalize_verified_crop(payload.diagnosis.crop_type or "")
+
+        hint_crop = self._normalize_verified_crop(payload.hint_crop_type or "")
+        if hint_crop in _SUPPORTED_TREATMENT_CARD_CROPS:
+            return hint_crop
+
+        for record in knowledge_records:
+            crop_type = self._normalize_verified_crop(str(record.get("crop_type") or ""))
+            if crop_type in _SUPPORTED_TREATMENT_CARD_CROPS:
+                return crop_type
+
+        recent_text = " ".join(
+            [payload.user_message]
+            + [turn.content for turn in payload.conversation_history[-6:]]
+        )
+        return self._infer_crop_from_text(recent_text)
+
+    def _infer_crop_from_text(self, text: str) -> str:
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return ""
+
+        for crop, aliases in _CROP_ALIASES.items():
+            if any(alias in normalized for alias in aliases):
+                return crop
+        return ""
+
+    def _is_product_query(self, user_message: str) -> bool:
+        normalized = (user_message or "").strip().lower()
+        if not normalized:
+            return False
+
+        if any(token in normalized for token in _PRODUCT_QUERY_HINTS):
+            return True
+
+        return bool(
+            re.search(
+                r"\b(can|should|which|what)\b.{0,40}\b(use|buy|spray|apply|recommend)\b",
+                normalized,
+            )
+        )
 
     def _scope_flags_from_meta(
         self,
@@ -499,10 +665,13 @@ class LlmService:
         knowledge_records: list[dict[str, Any]],
         *,
         include_openai: bool,
+        include_web_search: bool = False,
     ) -> list[str]:
         sources: list[str] = []
         if include_openai:
             sources.append("openai-vision" if payload.image_data_url else "openai")
+        if include_web_search:
+            sources.append("openai-web-search")
         sources.extend(
             str(record.get("source", "knowledge-base")) for record in knowledge_records
         )

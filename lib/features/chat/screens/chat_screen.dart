@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../../core/theme/app_colors.dart';
@@ -16,6 +17,7 @@ import '../../auth/providers/auth_provider.dart';
 import '../../crops/providers/crops_provider.dart';
 import '../providers/chat_provider.dart';
 import '../../../services/connectivity_service.dart';
+import '../../../services/text_to_speech_service.dart';
 import '../../home/home_screen.dart';
 import '../widgets/video_player_view.dart';
 
@@ -190,6 +192,17 @@ class _ChatScreenState extends State<ChatScreen> {
               Navigator.of(ctx).pop();
               final user = context.read<AuthProvider>().currentUser;
               if (user == null) return;
+              if (context.read<ChatProvider>().currentSession?.cropId
+                      ?.isNotEmpty ==
+                  true) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('This diagnosis is already in My Crops.'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+                return;
+              }
               final cropsProvider = context.read<CropsProvider>();
               final cropId = await cropsProvider.addCropFromDiagnosis(
                     userId: user.id,
@@ -259,6 +272,17 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _effectiveHintCropType() {
     final w = (widget.hintCropType ?? '').trim().toLowerCase();
     if (w.isNotEmpty) return w;
+
+    final linkedCropId =
+        widget.cropId ?? context.read<ChatProvider>().currentSession?.cropId;
+    if (linkedCropId != null && linkedCropId.isNotEmpty) {
+      for (final crop in context.read<CropsProvider>().crops) {
+        if (crop.id == linkedCropId && !crop.isDeleted) {
+          return crop.cropType.value;
+        }
+      }
+    }
+
     final d = widget.initialDiagnosis;
     if (d == null) return null;
     return ChatProvider.resolveHintCropType(
@@ -287,25 +311,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final content = trimmed.isNotEmpty
         ? trimmed
         : 'I\'ve attached a crop photo. Please analyze it and tell me what you observe — any diseases, pests, or conditions — and what I should do.';
-
-    final hint = _effectiveHintCropType();
-    final needsOnline = _cropNeedsOnlineDiagnosis(hint);
-    if (needsOnline) {
-      final online = await context.read<ConnectivityService>().isConnected;
-      if (!online && mounted) {
-        setState(() => _sending = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Eggplant and pechay (bok choy) diagnosis needs an internet connection. '
-              'Connect to the internet and try again.',
-            ),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        return;
-      }
-    }
 
     _textCtrl.clear();
     setState(() => _sending = true);
@@ -988,6 +993,42 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 // ── Treatment checklist (assistant messages only) ──
                 if (!isUser && showTreatmentCard && actions.isNotEmpty)
                   _buildTreatmentChecklist(context, actions),
+                if (!isUser && message.content.trim().isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6, left: 2),
+                    child: ValueListenableBuilder<String?>(
+                      valueListenable:
+                          TextToSpeechService.instance.activeTextListenable,
+                      builder: (_, __, ___) {
+                        final isSpeaking = TextToSpeechService.instance
+                            .isSpeakingText(message.content);
+                        return InkWell(
+                          onTap: () => isSpeaking
+                              ? TextToSpeechService.instance.stop()
+                              : TextToSpeechService.instance
+                                  .speak(message.content),
+                          borderRadius: BorderRadius.circular(999),
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: Icon(
+                              isSpeaking
+                                  ? Icons.stop_circle_outlined
+                                  : Icons.volume_up_outlined,
+                              size: 18,
+                              color: isSpeaking
+                                  ? Colors.redAccent
+                                  : AppColors.primary,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
               ],
             ),
           ),
@@ -999,6 +1040,9 @@ class _MessageBubbleState extends State<_MessageBubble> {
 
   Widget _buildAddCropCard(
       BuildContext context, Map<String, dynamic> meta) {
+    final alreadyLinked =
+      context.watch<ChatProvider>().currentSession?.cropId?.isNotEmpty ==
+        true;
     final diseaseName = meta['disease_name'] as String? ?? '';
     final labelKey = meta['label_key'] as String? ?? '';
     final rawSeverity = meta['severity'] as String? ?? '';
@@ -1067,15 +1111,23 @@ class _MessageBubbleState extends State<_MessageBubble> {
               width: double.infinity,
               child: FilledButton.icon(
                 style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.primary,
+                  backgroundColor:
+                      alreadyLinked ? Colors.grey.shade400 : AppColors.primary,
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 10),
                 ),
-                icon: const Icon(Icons.eco, size: 16),
-                label: const Text('Add to My Crops',
-                    style: TextStyle(fontSize: 13)),
-                onPressed: () {
+                icon: Icon(
+                  alreadyLinked ? Icons.check_circle : Icons.eco,
+                  size: 16,
+                ),
+                label: Text(
+                  alreadyLinked ? 'Already Added' : 'Add to My Crops',
+                  style: const TextStyle(fontSize: 13),
+                ),
+                onPressed: alreadyLinked
+                    ? null
+                    : () {
                   final cropNameCtrl = TextEditingController(
                       text: labelKey.isNotEmpty
                           ? labelKey.split('_').first.capitalize()
@@ -1143,6 +1195,17 @@ class _MessageBubbleState extends State<_MessageBubble> {
               Navigator.of(ctx).pop();
               final user = context.read<AuthProvider>().currentUser;
               if (user == null) return;
+              if (context.read<ChatProvider>().currentSession?.cropId
+                      ?.isNotEmpty ==
+                  true) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('This diagnosis is already in My Crops.'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+                return;
+              }
               final severity = Severity.values.firstWhere(
                   (s) => s.value == rawSeverity,
                   orElse: () => Severity.moderate);
@@ -1616,7 +1679,7 @@ class _InputBar extends StatefulWidget {
 }
 
 class _InputBarState extends State<_InputBar> {
-  final stt.SpeechToText _speech = stt.SpeechToText();
+  late stt.SpeechToText _speech;
   bool _isListening = false;
   bool _speechAvailable = false;
   bool _handledCurrentMicSession = false;
@@ -1625,20 +1688,53 @@ class _InputBarState extends State<_InputBar> {
   @override
   void initState() {
     super.initState();
-    _speech.initialize(
+    _speech = stt.SpeechToText();
+    _initializeSpeechClient();
+  }
+
+  Future<bool> _initializeSpeechClient({bool recreate = false}) async {
+    if (recreate) {
+      _speech = stt.SpeechToText();
+    }
+    final ok = await _speech.initialize(
       onStatus: (status) {
         if (status == 'done' || status == 'notListening') {
           _scheduleFinishMicSession();
         }
       },
-      onError: (_) {
+      onError: (error) {
         if (!mounted) return;
+        final message = error.toString().toLowerCase();
         _handledCurrentMicSession = true;
         setState(() => _isListening = false);
+        if (message.contains('busy') ||
+            message.contains('no match') ||
+            message.contains('no_speech')) {
+          return;
+        }
       },
-    ).then((ok) {
-      if (mounted) setState(() => _speechAvailable = ok);
-    });
+    );
+    if (mounted) {
+      setState(() => _speechAvailable = ok);
+    }
+    return ok;
+  }
+
+  Future<bool> _ensureSpeechReady() async {
+    if (_speechAvailable) {
+      return true;
+    }
+    return _initializeSpeechClient(recreate: true);
+  }
+
+  Future<bool> _ensureMicrophonePermission() async {
+    final currentStatus = await Permission.microphone.status;
+    if (currentStatus.isGranted) {
+      return true;
+    }
+
+    final requestedStatus = await Permission.microphone.request();
+    return requestedStatus.isGranted;
   }
 
   void _scheduleFinishMicSession() {
@@ -1656,6 +1752,67 @@ class _InputBarState extends State<_InputBar> {
     }
   }
 
+  Future<void> _resetSpeechSession({bool recreate = false}) async {
+    try {
+      await _speech.stop();
+    } catch (_) {}
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    try {
+      await _speech.cancel();
+    } catch (_) {}
+    await Future<void>.delayed(const Duration(milliseconds: 160));
+    if (recreate) {
+      await _initializeSpeechClient(recreate: true);
+    }
+  }
+
+  Future<bool> _startListeningSession() async {
+    Future<bool> startListenAttempt({required bool onDevice}) async {
+      try {
+        return await _speech.listen(
+          onResult: (result) {
+            if (mounted) {
+              widget.controller.text = result.recognizedWords;
+              widget.controller.selection = TextSelection.fromPosition(
+                TextPosition(offset: widget.controller.text.length),
+              );
+            }
+          },
+          listenFor: const Duration(minutes: 2),
+          pauseFor: const Duration(seconds: 8),
+          listenOptions: stt.SpeechListenOptions(
+            partialResults: true,
+            autoPunctuation: true,
+            listenMode: stt.ListenMode.dictation,
+            onDevice: onDevice,
+          ),
+        );
+      } catch (_) {
+        return false;
+      }
+    }
+
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (!await _ensureSpeechReady()) {
+        return false;
+      }
+
+      final didStartOnDevice = await startListenAttempt(onDevice: true);
+      if (didStartOnDevice) {
+        return true;
+      }
+
+      final didStartDefault = await startListenAttempt(onDevice: false);
+      if (didStartDefault) {
+        return true;
+      }
+
+      await _resetSpeechSession(recreate: true);
+    }
+
+    return false;
+  }
+
   Future<void> _toggleMic() async {
     if (_startingMic) return;
 
@@ -1665,9 +1822,22 @@ class _InputBarState extends State<_InputBar> {
       return;
     }
 
-    if (!_speechAvailable) {
+    if (!await _ensureMicrophonePermission()) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Microphone not available on this device.')),
+        const SnackBar(
+          content: Text('Microphone permission is required to use voice input.'),
+        ),
+      );
+      return;
+    }
+
+    if (!await _ensureSpeechReady()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Microphone or speech recognition is unavailable right now.',
+          ),
+        ),
       );
       return;
     }
@@ -1675,30 +1845,13 @@ class _InputBarState extends State<_InputBar> {
     _startingMic = true;
     try {
       _handledCurrentMicSession = true;
-      await _speech.cancel();
-      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await _resetSpeechSession(recreate: true);
 
       if (!mounted) return;
       _handledCurrentMicSession = false;
       setState(() => _isListening = true);
 
-      final didStart = await _speech.listen(
-        onResult: (result) {
-          if (mounted) {
-            widget.controller.text = result.recognizedWords;
-            widget.controller.selection = TextSelection.fromPosition(
-              TextPosition(offset: widget.controller.text.length),
-            );
-          }
-        },
-        listenFor: const Duration(minutes: 2),
-        pauseFor: const Duration(seconds: 8),
-        listenOptions: stt.SpeechListenOptions(
-          partialResults: true,
-          autoPunctuation: true,
-          listenMode: stt.ListenMode.dictation,
-        ),
-      );
+      final didStart = await _startListeningSession();
 
       if (!didStart && mounted) {
         setState(() => _isListening = false);

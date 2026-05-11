@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../auth/providers/auth_provider.dart';
+import '../auth/screens/login_screen.dart';
+import '../chat/providers/chat_provider.dart';
+import '../crops/providers/crops_provider.dart';
+import '../notifications/providers/notifications_provider.dart';
 import '../crops/screens/crops_screen.dart';
 import '../scan/diagnostic_history_screen.dart';
 import '../library/library_screen.dart';
@@ -10,6 +14,19 @@ import '../chat/screens/chat_screen.dart';
 
 class NavDrawer extends StatelessWidget {
   const NavDrawer({super.key});
+
+  Future<void> _signOut(BuildContext context) async {
+    Navigator.pop(context);
+    await context.read<AuthProvider>().signOut();
+    context.read<ChatProvider>().clear();
+    context.read<CropsProvider>().clear();
+    context.read<NotificationsProvider>().clear();
+    if (!context.mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (_) => false,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -156,10 +173,7 @@ class NavDrawer extends StatelessWidget {
               title: const Text('Sign Out',
                   style: TextStyle(
                       color: Colors.red, fontWeight: FontWeight.w600)),
-              onTap: () async {
-                Navigator.pop(context);
-                await context.read<AuthProvider>().signOut();
-              },
+              onTap: () => _signOut(context),
             ),
 
             const SizedBox(height: 8),

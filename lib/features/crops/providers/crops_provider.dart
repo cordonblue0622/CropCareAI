@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../data/local/database_helper.dart';
+import '../../../data/local/bundled_disease_knowledge.dart';
 import '../../../data/models/crop_model.dart';
 import '../../../data/models/diagnosis_model.dart';
 import '../../../data/models/disease_knowledge_model.dart';
@@ -122,6 +123,108 @@ class CropsProvider extends ChangeNotifier {
 
   Future<bool> deleteCrop(String cropId) async {
     try {
+      final crop = _crops.cast<CropModel?>().firstWhere(
+            (item) => item?.id == cropId,
+            orElse: () => null,
+          );
+      final localDb = await _db.database;
+      final diagnosisRows = await localDb.query(
+        AppConstants.diagnosesTable,
+        where: 'crop_id = ?',
+        whereArgs: [cropId],
+      );
+      final treatmentRows = await localDb.query(
+        AppConstants.treatmentsTable,
+        where: 'crop_id = ?',
+        whereArgs: [cropId],
+      );
+      final taskRows = await localDb.query(
+        AppConstants.treatmentTasksTable,
+        where: 'crop_id = ?',
+        whereArgs: [cropId],
+      );
+      final progressRows = await localDb.query(
+        AppConstants.progressUpdatesTable,
+        where: 'crop_id = ?',
+        whereArgs: [cropId],
+      );
+      final notificationRows = await localDb.query(
+        AppConstants.notificationsTable,
+        where: 'crop_id = ?',
+        whereArgs: [cropId],
+      );
+      final sessionRows = await localDb.query(
+        AppConstants.chatSessionsTable,
+        where: 'crop_id = ?',
+        whereArgs: [cropId],
+      );
+      final sessionIds = sessionRows
+          .map((row) => row['id'] as String?)
+          .whereType<String>()
+          .toList(growable: false);
+      final chatMessageIds = <String>[];
+      for (final sessionId in sessionIds) {
+        final rows = await localDb.query(
+          AppConstants.chatMessagesTable,
+          where: 'session_id = ?',
+          whereArgs: [sessionId],
+        );
+        chatMessageIds.addAll(
+          rows.map((row) => row['id'] as String?).whereType<String>(),
+        );
+      }
+
+      if (crop != null) {
+        try {
+          final remoteDiagnosisRows = await _supabase.getDiagnosesByCrop(cropId);
+          final remoteTreatmentRows = await _supabase.getTreatmentsByCrop(cropId);
+          final remoteProgressRows = await _supabase.getProgressUpdates(cropId);
+          final remoteTaskRows = (await _supabase.getTreatmentTasksByUser(crop.userId))
+              .where((row) => row['crop_id'] == cropId)
+              .toList(growable: false);
+          final remoteNotificationIds = (await _supabase.getNotifications(crop.userId))
+              .where((row) => row['crop_id'] == cropId)
+              .map((row) => row['id'] as String?)
+              .whereType<String>()
+              .toList(growable: false);
+          final remoteSessionRows = await _supabase.getChatSessionsByCrop(cropId);
+          final remoteSessionIds = remoteSessionRows
+              .map((row) => row['id'] as String?)
+              .whereType<String>()
+              .toList(growable: false);
+          final remoteChatMessageIds = <String>[];
+          for (final sessionId in remoteSessionIds) {
+            final rows = await _supabase.getChatMessages(sessionId);
+            remoteChatMessageIds.addAll(
+              rows.map((row) => row['id'] as String?).whereType<String>(),
+            );
+          }
+
+          await _softDeleteRemoteRows(AppConstants.diagnosesTable, remoteDiagnosisRows);
+          await _softDeleteRemoteRows(AppConstants.treatmentsTable, remoteTreatmentRows);
+          await _softDeleteRemoteRows(AppConstants.treatmentTasksTable, remoteTaskRows);
+          await _softDeleteRemoteRows(AppConstants.progressUpdatesTable, remoteProgressRows);
+          await _softDeleteRemoteRows(AppConstants.chatSessionsTable, remoteSessionRows);
+          await _hardDeleteRemoteRows(AppConstants.notificationsTable, remoteNotificationIds);
+          await _hardDeleteRemoteRows(AppConstants.chatMessagesTable, remoteChatMessageIds);
+        } catch (_) {
+          // Best-effort remote cascade. Local deletion still proceeds.
+        }
+      }
+
+      await _softDeleteLocalRows(AppConstants.diagnosesTable, diagnosisRows);
+      await _softDeleteLocalRows(AppConstants.treatmentsTable, treatmentRows);
+      await _softDeleteLocalRows(AppConstants.treatmentTasksTable, taskRows);
+      await _softDeleteLocalRows(AppConstants.progressUpdatesTable, progressRows);
+      await _softDeleteLocalRows(AppConstants.chatSessionsTable, sessionRows);
+      await _hardDeleteLocalRows(
+        AppConstants.notificationsTable,
+        notificationRows
+            .map((row) => row['id'] as String?)
+            .whereType<String>(),
+      );
+      await _hardDeleteLocalRows(AppConstants.chatMessagesTable, chatMessageIds);
+
       await _supabase.softDeleteCrop(cropId);
       await _db.softDelete(AppConstants.cropsTable, cropId);
       _crops.removeWhere((c) => c.id == cropId);
@@ -131,6 +234,62 @@ class CropsProvider extends ChangeNotifier {
       _error = e.toString();
       notifyListeners();
       return false;
+    }
+  }
+
+  Future<void> _softDeleteRemoteRows(
+    String table,
+    Iterable<Map<String, dynamic>> rows,
+  ) async {
+    final now = DateTime.now().toIso8601String();
+    for (final row in rows) {
+      final id = row['id'] as String?;
+      if (id == null || id.isEmpty) {
+        continue;
+      }
+      final updated = Map<String, dynamic>.from(row)
+        ..['id'] = id
+        ..['is_deleted'] = true
+        ..['updated_at'] = now;
+      await _supabase.upsertRecord(table: table, data: updated);
+    }
+  }
+
+  Future<void> _softDeleteLocalRows(
+    String table,
+    Iterable<Map<String, dynamic>> rows,
+  ) async {
+    final now = DateTime.now().toIso8601String();
+    for (final row in rows) {
+      final id = row['id'] as String?;
+      if (id == null || id.isEmpty) {
+        continue;
+      }
+      final updated = Map<String, dynamic>.from(row)
+        ..['id'] = id
+        ..['is_deleted'] = 1;
+      if (updated.containsKey('updated_at')) {
+        updated['updated_at'] = now;
+      }
+      await _db.upsertRow(table, updated);
+    }
+  }
+
+  Future<void> _hardDeleteRemoteRows(
+    String table,
+    Iterable<String> ids,
+  ) async {
+    for (final id in ids) {
+      await _supabase.deleteRecord(table: table, id: id);
+    }
+  }
+
+  Future<void> _hardDeleteLocalRows(
+    String table,
+    Iterable<String> ids,
+  ) async {
+    for (final id in ids) {
+      await _db.hardDelete(table, id);
     }
   }
 
@@ -410,15 +569,33 @@ class CropsProvider extends ChangeNotifier {
       {String? cropType}) async {
     try {
       final rows = await _supabase.getDiseaseKnowledge(cropType: cropType);
-      _diseaseKnowledge = rows.map(DiseaseKnowledgeModel.fromMap).toList();
+      if (rows.isNotEmpty) {
+        _diseaseKnowledge = rows.map(DiseaseKnowledgeModel.fromMap).toList();
+        await _db.upsertRows(
+          AppConstants.diseaseKnowledgeTable,
+          _diseaseKnowledge.map((knowledge) => knowledge.toMap()),
+        );
+        notifyListeners();
+        return _diseaseKnowledge;
+      }
+    } catch (_) {}
+
+    final cachedRows = await _db.queryDiseaseKnowledge(cropType ?? '');
+    if (cachedRows.isNotEmpty) {
+      _diseaseKnowledge =
+          cachedRows.map(DiseaseKnowledgeModel.fromMap).toList();
+      notifyListeners();
+      return _diseaseKnowledge;
+    }
+
+    final bundledAll = BundledDiseaseKnowledge.records();
+    if (bundledAll.isNotEmpty) {
       await _db.upsertRows(
         AppConstants.diseaseKnowledgeTable,
-        _diseaseKnowledge.map((knowledge) => knowledge.toMap()),
+        bundledAll.map((knowledge) => knowledge.toMap()),
       );
-    } catch (_) {
-      final rows = await _db.queryDiseaseKnowledge(cropType ?? '');
-      _diseaseKnowledge = rows.map(DiseaseKnowledgeModel.fromMap).toList();
     }
+    _diseaseKnowledge = BundledDiseaseKnowledge.records(cropType: cropType);
     notifyListeners();
     return _diseaseKnowledge;
   }

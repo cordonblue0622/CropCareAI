@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
@@ -65,7 +66,7 @@ class TfliteClassifierCore {
     } else {
       final rawOutput = [List<double>.filled(labels.length, 0.0)];
       interpreter.run(input, rawOutput);
-      scores = rawOutput.first;
+      scores = _normalizeFloatScores(rawOutput.first);
     }
     if (scores.isEmpty) {
       throw Exception('The TFLite model returned no predictions.');
@@ -82,11 +83,41 @@ class TfliteClassifierCore {
         : 0.0;
     final scoreMargin = (score - secondaryScore).clamp(-1.0, 1.0).toDouble();
     final labelSpec = _labelSpecFor(rawLabel);
-    final isLowConfidence =
-      score < AppConstants.temporaryScannerAcceptedConfidence;
+    final requestedCropType = cropType?.trim().toLowerCase();
+    final predictedCropType = labelSpec.cropType?.value;
+    final sameCropConfidence = predictedCropType == null
+      ? score
+      : ranked.fold<double>(0.0, (sum, index) {
+        final candidateCropType = _labelSpecFor(labels[index]).cropType?.value;
+        if (candidateCropType != predictedCropType) {
+          return sum;
+        }
+        return sum + scores[index].clamp(0.0, 1.0).toDouble();
+        }).clamp(0.0, 1.0).toDouble();
+    final cropTypeAligned =
+      requestedCropType == null ||
+      requestedCropType.isEmpty ||
+      predictedCropType == null ||
+      requestedCropType == predictedCropType;
+    final isBelowMinimumConfidence =
+        score < AppConstants.temporaryScannerMinConfidence;
+    final isBelowAcceptedConfidence =
+        score < AppConstants.temporaryScannerAcceptedConfidence;
     final isAmbiguous =
       ranked.length > 1 &&
       scoreMargin < AppConstants.temporaryScannerAcceptedMargin;
+    final isProvisionalCropFamilyMatch =
+      isBelowMinimumConfidence &&
+      score >= AppConstants.temporaryScannerProvisionalConfidence &&
+      sameCropConfidence >=
+        AppConstants.temporaryScannerProvisionalCropFamilyConfidence &&
+      cropTypeAligned &&
+      predictedCropType != null;
+    final isTopPredictionFallbackMatch =
+      isBelowMinimumConfidence &&
+      cropTypeAligned &&
+      predictedCropType != null &&
+      labelSpec.supportedInKnowledgeBase;
 
     final topPredictions = ranked
         .take(3)
@@ -94,13 +125,13 @@ class TfliteClassifierCore {
             '${labels[index]} ${(scores[index] * 100).toStringAsFixed(1)}%')
         .join(' | ');
 
-    if (isLowConfidence || isAmbiguous) {
+    if (isBelowMinimumConfidence &&
+      !isProvisionalCropFamilyMatch &&
+      !isTopPredictionFallbackMatch) {
       final rejectionNotes = <String>[];
-      if (isLowConfidence) {
-        rejectionNotes.add(
-          'Top prediction confidence was ${(score * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerAcceptedConfidence * 100).toStringAsFixed(0)}% acceptance threshold.',
-        );
-      }
+      rejectionNotes.add(
+        'Top prediction confidence was ${(score * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerMinConfidence * 100).toStringAsFixed(0)}% minimum offline threshold.',
+      );
       if (isAmbiguous) {
         rejectionNotes.add(
           'Top prediction margin was ${(scoreMargin * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerAcceptedMargin * 100).toStringAsFixed(0)}% confidence-gap threshold.',
@@ -126,10 +157,19 @@ class TfliteClassifierCore {
     }
 
     final notes = <String>[
-      'Temporary TFLite model result generated on the backend.',
+      'Temporary TFLite model result generated on device.',
       'Input file: $filename',
       'Top predictions: $topPredictions',
       'Top prediction margin: ${(scoreMargin * 100).toStringAsFixed(1)}%',
+      'Predicted crop-family confidence: ${(sameCropConfidence * 100).toStringAsFixed(1)}%',
+      if (isProvisionalCropFamilyMatch)
+        'Accepted as a provisional offline match because ${(sameCropConfidence * 100).toStringAsFixed(1)}% of the model confidence stayed within the ${labelSpec.cropType!.value} label family, even though the top class was below the normal ${(AppConstants.temporaryScannerMinConfidence * 100).toStringAsFixed(0)}% threshold.',
+      if (!isProvisionalCropFamilyMatch && isTopPredictionFallbackMatch)
+        'Accepted as a low-confidence top-prediction fallback for demo use because the best class maps to a supported ${labelSpec.cropType!.value} diagnosis, even though the score stayed below the normal ${(AppConstants.temporaryScannerMinConfidence * 100).toStringAsFixed(0)}% threshold.',
+      if (isBelowAcceptedConfidence)
+        'Confidence is below the preferred ${(AppConstants.temporaryScannerAcceptedConfidence * 100).toStringAsFixed(0)}% offline acceptance threshold, so treat this as a provisional match and verify with another photo if possible.',
+      if (isAmbiguous)
+        'This prediction is close to another class. Review the affected area closely or retake the image for a stronger confirmation.',
       if (!labelSpec.supportedInKnowledgeBase)
         'This predicted class is not fully covered by the current app knowledge base yet.',
       if (score < AppConstants.temporaryScannerMinConfidence)
@@ -141,7 +181,7 @@ class TfliteClassifierCore {
     return AiBackendDetectResponse(
       status: 'ok',
       source: source,
-      cropType: labelSpec.cropType?.value ?? cropType,
+      cropType: predictedCropType ?? cropType,
       detections: [
         AiBackendDetectionItem(
           label: labelSpec.displayLabel,
@@ -218,6 +258,46 @@ class TfliteClassifierCore {
         ),
       ),
     ];
+  }
+
+  List<double> _normalizeFloatScores(List<double> rawScores) {
+    if (rawScores.isEmpty) {
+      return rawScores;
+    }
+
+    final allFinite = rawScores.every((value) => value.isFinite);
+    if (!allFinite) {
+      return List<double>.filled(rawScores.length, 0.0);
+    }
+
+    if (_looksLikeProbabilityDistribution(rawScores)) {
+      return rawScores
+          .map((value) => value.clamp(0.0, 1.0).toDouble())
+          .toList();
+    }
+
+    final maxScore = rawScores.reduce((a, b) => a > b ? a : b);
+    final exponentials = rawScores
+        .map((value) => math.exp(value - maxScore))
+        .toList(growable: false);
+    final total = exponentials.fold<double>(0.0, (sum, value) => sum + value);
+    if (!total.isFinite || total <= 0) {
+      return rawScores
+          .map((value) => value.clamp(0.0, 1.0).toDouble())
+          .toList();
+    }
+
+    return exponentials.map((value) => value / total).toList(growable: false);
+  }
+
+  bool _looksLikeProbabilityDistribution(List<double> values) {
+    final allInRange = values.every((value) => value >= 0 && value <= 1);
+    if (!allInRange) {
+      return false;
+    }
+
+    final total = values.fold<double>(0.0, (sum, value) => sum + value);
+    return total >= 0.95 && total <= 1.05;
   }
 
   _LabelSpec _labelSpecFor(String rawLabel) {

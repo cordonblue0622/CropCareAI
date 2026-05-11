@@ -374,22 +374,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   fontSize: 18,
                                   fontWeight: FontWeight.w800,
                                   color: AppColors.textDark)),
-                          if (notifs.missedTasks.isNotEmpty) ...[
-                            const SizedBox(width: 6),
-                            Flexible(
-                              child: GestureDetector(
-                                onTap: () => _pushNotifications(context),
-                                child: Text(
-                                  'Update ${notifs.missedTasks.first.title.split(' ').take(2).join(' ')}',
-                                  style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.red,
-                                      decoration: TextDecoration.underline),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ),
-                          ],
                         ]),
                       ],
                     ),
@@ -513,9 +497,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
         scrollDirection: Axis.horizontal,
         itemCount: crops.activeCrops.length,
         separatorBuilder: (_, __) => const SizedBox(width: 12),
-        itemBuilder: (_, i) => _VitalityCard(crop: crops.activeCrops[i]),
+        itemBuilder: (_, i) => _VitalityCard(
+          crop: crops.activeCrops[i],
+          onTap: () => _openCropProgress(context, crops.activeCrops[i]),
+        ),
       ),
     );
+  }
+
+  Future<void> _openCropProgress(BuildContext ctx, CropModel crop) async {
+    await Navigator.push(
+      ctx,
+      MaterialPageRoute(
+        builder: (_) => CropDetailScreen(crop: crop, initialTabIndex: 2),
+      ),
+    );
+    if (!mounted) return;
+    final user = context.read<AuthProvider>().currentUser;
+    if (user != null) {
+      await context.read<CropsProvider>().fetchCrops(user.id);
+    }
   }
 
   Widget _buildActiveCrops(BuildContext ctx, CropsProvider crops) {
@@ -717,7 +718,8 @@ class _SearchBar extends StatelessWidget {
 
 class _VitalityCard extends StatelessWidget {
   final CropModel crop;
-  const _VitalityCard({required this.crop});
+  final VoidCallback onTap;
+  const _VitalityCard({required this.crop, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -731,42 +733,45 @@ class _VitalityCard extends StatelessWidget {
       trend = '↓ Worsening';
       trendColor = Colors.red;
     }
-    return Container(
-      width: 140,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 8,
-              offset: const Offset(0, 2))
-        ],
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 140,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 8,
+                offset: const Offset(0, 2))
+          ],
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(crop.cropType.name.toUpperCase(),
+              style: const TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textGray,
+                  letterSpacing: 0.5)),
+          const SizedBox(height: 4),
+          Text('${score.toStringAsFixed(0)}%',
+              style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textDark)),
+          const Spacer(),
+          SizedBox(
+              height: 30,
+              child: CustomPaint(
+                  painter: _SparklinePainter(score: score), size: Size.infinite)),
+          const SizedBox(height: 4),
+          Text(trend,
+              style: TextStyle(
+                  fontSize: 11, color: trendColor, fontWeight: FontWeight.w600)),
+        ]),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(crop.cropType.name.toUpperCase(),
-            style: const TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textGray,
-                letterSpacing: 0.5)),
-        const SizedBox(height: 4),
-        Text('${score.toStringAsFixed(0)}%',
-            style: const TextStyle(
-                fontSize: 28,
-                fontWeight: FontWeight.w800,
-                color: AppColors.textDark)),
-        const Spacer(),
-        SizedBox(
-            height: 30,
-            child: CustomPaint(
-                painter: _SparklinePainter(score: score), size: Size.infinite)),
-        const SizedBox(height: 4),
-        Text(trend,
-            style: TextStyle(
-                fontSize: 11, color: trendColor, fontWeight: FontWeight.w600)),
-      ]),
     );
   }
 }
@@ -934,15 +939,35 @@ class _TodayTasksCard extends StatelessWidget {
   final VoidCallback onViewAll;
   const _TodayTasksCard({required this.notifs, required this.onViewAll});
 
-  /// Marks the task done and, if the affected crop can be identified, asks
-  /// CropsProvider to recompute its Farm Vitality score so the dashboard
-  /// reflects the change without requiring a photo check-in.
-  Future<void> _handleTaskDone(BuildContext context, String taskId) async {
+  Future<void> _openTask(BuildContext context, TreatmentTaskModel task) async {
     final crops = context.read<CropsProvider>();
-    final cropId = await notifs.markTaskDone(taskId);
-    if (cropId != null && cropId.isNotEmpty) {
-      await crops.recomputeHealthScoreForCrop(cropId);
+    CropModel? crop;
+
+    for (final candidate in crops.activeCrops) {
+      if (candidate.id == task.cropId) {
+        crop = candidate;
+        break;
+      }
     }
+
+    if (crop == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not find the linked crop for this task.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CropDetailScreen(
+          crop: crop!,
+          initialTabIndex: 1,
+        ),
+      ),
+    );
   }
 
   @override
@@ -1033,7 +1058,7 @@ class _TodayTasksCard extends StatelessWidget {
             ...missedTasks.map((t) => _DashboardTaskRow(
                   task: t,
                   isMissed: true,
-                  onDone: () => _handleTaskDone(context, t.id),
+              onDone: () => _openTask(context, t),
                 )),
             if (todayTasks.isNotEmpty) const SizedBox(height: 8),
           ],
@@ -1057,7 +1082,7 @@ class _TodayTasksCard extends StatelessWidget {
             ...todayTasks.map((t) => _DashboardTaskRow(
                   task: t,
                   isMissed: false,
-                  onDone: () => _handleTaskDone(context, t.id),
+              onDone: () => _openTask(context, t),
                 )),
           ],
         ],
@@ -1130,7 +1155,7 @@ class _DashboardTaskRow extends StatelessWidget {
                 color: isMissed ? Colors.orange : AppColors.primary,
                 borderRadius: BorderRadius.circular(8)),
             child: Text(
-              isMissed ? 'RESOLVE' : 'DONE',
+              'OPEN',
               style: const TextStyle(
                   fontSize: 11,
                   color: Colors.white,

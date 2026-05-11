@@ -59,6 +59,7 @@ dependencies:
   # Voice
   speech_to_text: ^7.0.0
   record: ^5.2.1
+  flutter_tts: ^4.2.2
 
   # Local Notifications
   flutter_local_notifications: ^17.2.3

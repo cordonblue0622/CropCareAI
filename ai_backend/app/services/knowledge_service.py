@@ -274,6 +274,9 @@ class KnowledgeService:
         label_key = payload.diagnosis.label_key if payload.diagnosis else None
         hint = (payload.hint_crop_type or "").strip().lower() or None
 
+        if (crop_type or "").strip() == "" and hint:
+            crop_type = hint
+
         # 1. Try Supabase first (authoritative source when populated)
         if self._settings.supabase_url and self._settings.supabase_service_role_key:
             rows = await self._supabase.fetch_knowledge(
@@ -284,12 +287,8 @@ class KnowledgeService:
             if rows:
                 return rows
 
-            # Vision-only: no TFLite diagnosis but farmer selected a crop (eggplant / pechay, etc.)
-            if (
-                payload.image_data_url
-                and not payload.diagnosis
-                and hint
-            ):
+            # No direct disease match, but the chat is still scoped to a crop.
+            if not payload.diagnosis and hint:
                 overview = await self._supabase.fetch_knowledge_for_crop_overview(hint)
                 if overview:
                     return overview

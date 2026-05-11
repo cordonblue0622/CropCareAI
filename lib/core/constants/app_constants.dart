@@ -33,14 +33,16 @@ class AppConstants {
     defaultValue: '',
   );
 
-  // Shipped on-device classifier (cropcare_v2_subset_100, 13 labels).
-  // The accepted crop types are inferred from labels_v2.txt at runtime.
+    // Shipped on-device classifier (PlantVillage EfficientNetV2S, 38 labels).
+    // The accepted crop types are inferred from the bundled label file at runtime.
   static const String temporaryScannerModelAsset =
-      'assets/models/cropcare_efficientnet_v2.tflite';
+      'assets/models/plant_disease_efficientnetv2s.tflite';
   static const String temporaryScannerLabelsAsset =
-      'assets/models/labels_v2.txt';
+      'assets/models/plant_disease_efficientnetv2s_labels.txt';
 
   static const double temporaryScannerMinConfidence = 0.45;
+  static const double temporaryScannerProvisionalConfidence = 0.35;
+  static const double temporaryScannerProvisionalCropFamilyConfidence = 0.55;
   static const double temporaryScannerAcceptedConfidence = 0.60;
   static const double temporaryScannerAcceptedMargin = 0.15;
 

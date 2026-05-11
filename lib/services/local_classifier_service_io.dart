@@ -7,13 +7,12 @@ import 'tflite_classifier_core.dart';
 
 /// Loads the shipped on-device TFLite model.
 ///
-/// The current runtime model only supports tomato, pepper, and squash labels.
-/// If a caller explicitly asks to scan an unsupported crop such as eggplant or
-/// pechay, the service returns a `no_match` response so the UI can reject the
-/// scan cleanly instead of forcing it through the wrong label set.
+/// The shipped PlantVillage model covers tomato, bell pepper, squash, and many
+/// other crops, but the app still rejects explicitly selected crops that are
+/// not present in the bundled label file, such as eggplant or pechay.
 class LocalClassifierService {
-  static const String _modelName = 'cropcare_efficientnet_v2';
-  static const String _modelVersion = 'v2-subset-100';
+  static const String _modelName = 'plant_disease_efficientnetv2s';
+  static const String _modelVersion = 'plantvillage-38-float16';
 
   Interpreter? _interpreter;
   List<String>? _labels;

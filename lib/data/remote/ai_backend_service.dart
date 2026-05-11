@@ -12,8 +12,13 @@ import 'supabase_service.dart';
 export '../models/ai_backend_models.dart';
 
 class AiBackendService {
+  static const Duration _warmUpCacheDuration = Duration(minutes: 3);
+
   final SupabaseService _supabase;
   final http.Client _client;
+
+  Future<void>? _warmUpInFlight;
+  DateTime? _lastWarmUpAt;
 
   AiBackendService({
     required SupabaseService supabase,
@@ -36,7 +41,7 @@ class AiBackendService {
     required bool isWeb,
     required TargetPlatform platform,
   }) {
-    final configured = configuredBaseUrl.trim();
+    final configured = _sanitizeConfiguredBaseUrl(configuredBaseUrl);
     if (configured.isNotEmpty) {
       return _withoutTrailingSlash(configured);
     }
@@ -47,7 +52,8 @@ class AiBackendService {
 
     switch (platform) {
       case TargetPlatform.android:
-        final androidConfigured = configuredAndroidBaseUrl.trim();
+        final androidConfigured =
+            _sanitizeConfiguredBaseUrl(configuredAndroidBaseUrl);
         if (androidConfigured.isNotEmpty) {
           return _withoutTrailingSlash(androidConfigured);
         }
@@ -61,6 +67,48 @@ class AiBackendService {
     return value.endsWith('/') ? value.substring(0, value.length - 1) : value;
   }
 
+  static String _sanitizeConfiguredBaseUrl(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      return '';
+    }
+
+    var sanitized = trimmed;
+    while (sanitized.startsWith('"') || sanitized.startsWith("'")) {
+      sanitized = sanitized.substring(1).trimLeft();
+    }
+    while (sanitized.endsWith('"') || sanitized.endsWith("'")) {
+      sanitized = sanitized.substring(0, sanitized.length - 1).trimRight();
+    }
+    return sanitized;
+  }
+
+  Future<void> warmUpIfNeeded({bool force = false}) async {
+    if (!_shouldWarmUpHostedBackend()) {
+      return;
+    }
+
+    final now = DateTime.now();
+    if (!force &&
+        _lastWarmUpAt != null &&
+        now.difference(_lastWarmUpAt!) < _warmUpCacheDuration) {
+      return;
+    }
+
+    if (_warmUpInFlight != null) {
+      await _warmUpInFlight;
+      return;
+    }
+
+    final future = _performWarmUp();
+    _warmUpInFlight = future;
+    try {
+      await future;
+    } finally {
+      _warmUpInFlight = null;
+    }
+  }
+
   Future<AiBackendChatResponse> sendChatMessage({
     required String userMessage,
     String? cropId,
@@ -71,34 +119,33 @@ class AiBackendService {
     String? locale,
     String? hintCropType,
   }) async {
-    final response = await _client
-        .post(
-          Uri.parse('$baseUrl/v1/chat'),
-          headers: _headers(json: true),
-          body: jsonEncode({
-            'user_message': userMessage,
-            if (cropId != null && cropId.isNotEmpty) 'crop_id': cropId,
-            if (diagnosis != null)
-              'diagnosis': {
-                'crop_type': _inferDiagnosisCropType(diagnosis),
-                'label_key': diagnosis.labelKey,
-                'disease_name': diagnosis.diseaseName,
-                'confidence': diagnosis.confidenceScore,
-                'severity': diagnosis.severity.value,
-              },
-            if (imageBytes != null && imageBytes.isNotEmpty)
-              'image_data_url': _buildImageDataUrl(
-                imageBytes,
-                mimeType: imageMimeType,
-              ),
-            if (conversationHistory.isNotEmpty)
-              'conversation_history': conversationHistory,
-            if (locale != null && locale.isNotEmpty) 'locale': locale,
-            if (hintCropType != null && hintCropType.trim().isNotEmpty)
-              'hint_crop_type': hintCropType.trim().toLowerCase(),
-          }),
-        )
-        .timeout(const Duration(seconds: 20));
+    final payload = {
+      'user_message': userMessage,
+      if (cropId != null && cropId.isNotEmpty) 'crop_id': cropId,
+      if (diagnosis != null)
+        'diagnosis': {
+          'crop_type': _inferDiagnosisCropType(diagnosis),
+          'label_key': diagnosis.labelKey,
+          'disease_name': diagnosis.diseaseName,
+          'confidence': diagnosis.confidenceScore,
+          'severity': diagnosis.severity.value,
+        },
+      if (imageBytes != null && imageBytes.isNotEmpty)
+        'image_data_url': _buildImageDataUrl(
+          imageBytes,
+          mimeType: imageMimeType,
+        ),
+      if (conversationHistory.isNotEmpty)
+        'conversation_history': conversationHistory,
+      if (locale != null && locale.isNotEmpty) 'locale': locale,
+      if (hintCropType != null && hintCropType.trim().isNotEmpty)
+        'hint_crop_type': hintCropType.trim().toLowerCase(),
+    };
+    final response = await _postJsonWithWarmup(
+      path: '/v1/chat',
+      payload: payload,
+      timeout: const Duration(seconds: 20),
+    );
 
     _throwIfError(response);
 
@@ -112,25 +159,29 @@ class AiBackendService {
     required String filename,
     String? cropType,
   }) async {
-    final request = http.MultipartRequest(
-      'POST',
-      Uri.parse('$baseUrl/v1/detect'),
-    )
-      ..headers.addAll(_headers())
-      ..files.add(
-        http.MultipartFile.fromBytes(
-          'image',
-          imageBytes,
-          filename: filename,
-        ),
-      );
+    final response = await _sendMultipartWithWarmup(
+      path: '/v1/detect',
+      timeout: const Duration(seconds: 45),
+      buildRequest: () {
+        final request = http.MultipartRequest(
+          'POST',
+          Uri.parse('$baseUrl/v1/detect'),
+        )
+          ..headers.addAll(_headers())
+          ..files.add(
+            http.MultipartFile.fromBytes(
+              'image',
+              imageBytes,
+              filename: filename,
+            ),
+          );
 
-    if (cropType != null && cropType.isNotEmpty) {
-      request.fields['crop_type'] = cropType;
-    }
-
-    final streamed = await request.send().timeout(const Duration(seconds: 45));
-    final response = await http.Response.fromStream(streamed);
+        if (cropType != null && cropType.isNotEmpty) {
+          request.fields['crop_type'] = cropType;
+        }
+        return request;
+      },
+    );
 
     _throwIfError(response);
 
@@ -143,21 +194,22 @@ class AiBackendService {
     required List<int> audioBytes,
     required String filename,
   }) async {
-    final request = http.MultipartRequest(
-      'POST',
-      Uri.parse('$baseUrl/v1/transcribe'),
-    )
-      ..headers.addAll(_headers())
-      ..files.add(
-        http.MultipartFile.fromBytes(
-          'audio',
-          audioBytes,
-          filename: filename,
+    final response = await _sendMultipartWithWarmup(
+      path: '/v1/transcribe',
+      timeout: const Duration(seconds: 60),
+      buildRequest: () => http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/v1/transcribe'),
+      )
+        ..headers.addAll(_headers())
+        ..files.add(
+          http.MultipartFile.fromBytes(
+            'audio',
+            audioBytes,
+            filename: filename,
+          ),
         ),
-      );
-
-    final streamed = await request.send().timeout(const Duration(seconds: 60));
-    final response = await http.Response.fromStream(streamed);
+    );
 
     _throwIfError(response);
 
@@ -176,28 +228,123 @@ class AiBackendService {
     String? note,
     double? currentHealthScore,
   }) async {
-    final response = await _client
-        .post(
-          Uri.parse('$baseUrl/v1/progress'),
-          headers: _headers(json: true),
-          body: jsonEncode({
-            'crop_type': cropType,
-            'disease_name': diseaseName,
-            'days_since_treatment': daysSinceTreatment,
-            if (imageBytes != null && imageBytes.isNotEmpty)
-              'image_data_url':
-                  _buildImageDataUrl(imageBytes, mimeType: imageMimeType),
-            'completed_tasks': completedTasks,
-            if (note != null && note.isNotEmpty) 'note': note,
-            if (currentHealthScore != null)
-              'current_health_score': currentHealthScore,
-          }),
-        )
-        .timeout(const Duration(seconds: 45));
+    final response = await _postJsonWithWarmup(
+      path: '/v1/progress',
+      payload: {
+        'crop_type': cropType,
+        'disease_name': diseaseName,
+        'days_since_treatment': daysSinceTreatment,
+        if (imageBytes != null && imageBytes.isNotEmpty)
+          'image_data_url':
+              _buildImageDataUrl(imageBytes, mimeType: imageMimeType),
+        'completed_tasks': completedTasks,
+        if (note != null && note.isNotEmpty) 'note': note,
+        if (currentHealthScore != null)
+          'current_health_score': currentHealthScore,
+      },
+      timeout: const Duration(seconds: 45),
+    );
 
     _throwIfError(response);
     return AiBackendProgressResponse.fromMap(
         jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<http.Response> _postJsonWithWarmup({
+    required String path,
+    required Object payload,
+    required Duration timeout,
+  }) async {
+    await warmUpIfNeeded();
+    var response = await _client
+        .post(
+          Uri.parse('$baseUrl$path'),
+          headers: _headers(json: true),
+          body: jsonEncode(payload),
+        )
+        .timeout(timeout);
+
+    if (_isRetryableStatusCode(response.statusCode)) {
+      await warmUpIfNeeded(force: true);
+      response = await _client
+          .post(
+            Uri.parse('$baseUrl$path'),
+            headers: _headers(json: true),
+            body: jsonEncode(payload),
+          )
+          .timeout(timeout);
+    }
+
+    return response;
+  }
+
+  Future<http.Response> _sendMultipartWithWarmup({
+    required String path,
+    required Duration timeout,
+    required http.MultipartRequest Function() buildRequest,
+  }) async {
+    await warmUpIfNeeded();
+
+    var request = buildRequest();
+    var streamed = await request.send().timeout(timeout);
+    var response = await http.Response.fromStream(streamed);
+
+    if (_isRetryableStatusCode(response.statusCode)) {
+      await warmUpIfNeeded(force: true);
+      request = buildRequest();
+      streamed = await request.send().timeout(timeout);
+      response = await http.Response.fromStream(streamed);
+    }
+
+    return response;
+  }
+
+  Future<void> _performWarmUp() async {
+    try {
+      final response = await _client
+          .get(Uri.parse('$baseUrl/health'), headers: _headers())
+          .timeout(const Duration(seconds: 45));
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        _lastWarmUpAt = DateTime.now();
+        return;
+      }
+    } catch (_) {
+      // Fall through to the root endpoint.
+    }
+
+    try {
+      final response = await _client
+          .get(Uri.parse('$baseUrl/'), headers: _headers())
+          .timeout(const Duration(seconds: 45));
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        _lastWarmUpAt = DateTime.now();
+      }
+    } catch (_) {
+      // Best effort only — actual requests may still succeed.
+    }
+  }
+
+  bool _shouldWarmUpHostedBackend() {
+    final uri = Uri.tryParse(baseUrl);
+    if (uri == null) {
+      return false;
+    }
+    final host = uri.host.toLowerCase();
+    return uri.scheme == 'https' &&
+        host.isNotEmpty &&
+        host != '127.0.0.1' &&
+        host != 'localhost' &&
+        host != '10.0.2.2';
+  }
+
+  bool _isRetryableStatusCode(int statusCode) {
+    return statusCode == 408 ||
+        statusCode == 425 ||
+        statusCode == 429 ||
+        statusCode == 500 ||
+        statusCode == 502 ||
+        statusCode == 503 ||
+        statusCode == 504;
   }
 
   Map<String, String> _headers({bool json = false}) {

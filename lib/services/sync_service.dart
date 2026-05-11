@@ -21,6 +21,14 @@ class SyncService {
     required this.dbHelper,
   }) {
     _listenForConnectivity();
+    supabaseService.authStateChanges.listen((state) {
+      if (state.session != null) {
+        syncAll();
+      }
+    });
+    if (supabaseService.isSignedIn) {
+      Future<void>.microtask(syncAll);
+    }
   }
 
   // ─── Connectivity Listener ────────────────────────────────────────────────
@@ -85,8 +93,39 @@ class SyncService {
       await dbHelper.upsertUser(profile);
     }
 
-    // TODO: pull additional tables (diagnoses, treatments, etc.) here
-    // using supabaseService.fetchRecordsUpdatedSince(...)
+    final crops = await supabaseService.getCrops(userId);
+    final diagnoses = await supabaseService.getDiagnoses(userId);
+    final treatments = await supabaseService.getTreatments(userId);
+    final tasks = await supabaseService.getTreatmentTasksByUser(userId);
+    final notifications = await supabaseService.getNotifications(userId);
+    final sessions = await supabaseService.getChatSessions(userId);
+
+    await dbHelper.upsertRows(AppConstants.cropsTable, crops);
+    await dbHelper.upsertRows(AppConstants.diagnosesTable, diagnoses);
+    await dbHelper.upsertRows(AppConstants.treatmentsTable, treatments);
+    await dbHelper.upsertRows(AppConstants.treatmentTasksTable, tasks);
+    await dbHelper.upsertRows(AppConstants.notificationsTable, notifications);
+    await dbHelper.upsertRows(AppConstants.chatSessionsTable, sessions);
+
+    final progressRows = <Map<String, dynamic>>[];
+    for (final crop in crops) {
+      final cropId = crop['id'] as String?;
+      if (cropId == null || cropId.isEmpty) {
+        continue;
+      }
+      progressRows.addAll(await supabaseService.getProgressUpdates(cropId));
+    }
+    await dbHelper.upsertRows(AppConstants.progressUpdatesTable, progressRows);
+
+    final messageRows = <Map<String, dynamic>>[];
+    for (final session in sessions) {
+      final sessionId = session['id'] as String?;
+      if (sessionId == null || sessionId.isEmpty) {
+        continue;
+      }
+      messageRows.addAll(await supabaseService.getChatMessages(sessionId));
+    }
+    await dbHelper.upsertRows(AppConstants.chatMessagesTable, messageRows);
 
     await prefs.setString(
       AppConstants.keyLastSyncedAt,

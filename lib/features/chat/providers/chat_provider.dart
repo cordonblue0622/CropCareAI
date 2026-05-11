@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../data/local/bundled_disease_knowledge.dart';
 import '../../../data/local/database_helper.dart';
 import '../../../data/models/chat_message_model.dart';
 import '../../../data/models/chat_session_model.dart';
@@ -11,6 +12,7 @@ import '../../../data/models/diagnosis_model.dart';
 import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/models/disease_knowledge_model.dart';
 import '../../../data/remote/supabase_service.dart';
+import '../../../services/connectivity_service.dart';
 
 class ChatProvider extends ChangeNotifier {
   static const Set<String> _supportedTreatmentCardCrops = {
@@ -24,6 +26,7 @@ class ChatProvider extends ChangeNotifier {
   final SupabaseService _supabase;
   final DatabaseHelper _db;
   final AiBackendService _aiBackend;
+  final ConnectivityService _connectivity;
 
   List<ChatSessionModel> _sessions = [];
   List<ChatMessageModel> _currentMessages = [];
@@ -36,9 +39,11 @@ class ChatProvider extends ChangeNotifier {
     required SupabaseService supabase,
     required DatabaseHelper db,
     required AiBackendService aiBackend,
+    required ConnectivityService connectivity,
   })  : _supabase = supabase,
         _db = db,
-        _aiBackend = aiBackend;
+        _aiBackend = aiBackend,
+        _connectivity = connectivity;
 
   List<ChatSessionModel> get sessions => _sessions;
   List<ChatMessageModel> get currentMessages => _currentMessages;
@@ -51,16 +56,31 @@ class ChatProvider extends ChangeNotifier {
   Future<void> loadKnowledgeBase() async {
     try {
       final rows = await _supabase.getDiseaseKnowledge();
-      _knowledgeBase = rows.map(DiseaseKnowledgeModel.fromMap).toList();
-      await _db.upsertRows(
-        AppConstants.diseaseKnowledgeTable,
-        _knowledgeBase.map((knowledge) => knowledge.toMap()),
-      );
-    } catch (_) {
-      final rows = await _db.queryDiseaseKnowledge('');
       if (rows.isNotEmpty) {
         _knowledgeBase = rows.map(DiseaseKnowledgeModel.fromMap).toList();
+        await _db.upsertRows(
+          AppConstants.diseaseKnowledgeTable,
+          _knowledgeBase.map((knowledge) => knowledge.toMap()),
+        );
+        notifyListeners();
+        return;
       }
+    } catch (_) {}
+
+    final cachedRows = await _db.queryDiseaseKnowledge('');
+    if (cachedRows.isNotEmpty) {
+      _knowledgeBase = cachedRows.map(DiseaseKnowledgeModel.fromMap).toList();
+      notifyListeners();
+      return;
+    }
+
+    final bundled = BundledDiseaseKnowledge.records();
+    if (bundled.isNotEmpty) {
+      _knowledgeBase = bundled;
+      await _db.upsertRows(
+        AppConstants.diseaseKnowledgeTable,
+        bundled.map((knowledge) => knowledge.toMap()),
+      );
     }
 
     notifyListeners();
@@ -185,15 +205,32 @@ class ChatProvider extends ChangeNotifier {
       await startNewSession(userId);
     }
 
+    if (_knowledgeBase.isEmpty) {
+      await loadKnowledgeBase();
+    }
+
+    final online = await _connectivity.isConnected;
+    if (!online) {
+      await _markCurrentSessionOffline();
+    }
+
     final hadAssistantBefore =
-        _currentMessages.any((m) => m.role == MessageRole.assistant);
+      _currentMessages.any((m) => m.role == MessageRole.assistant);
+    final hasAttachedImage =
+      attachedImageBytes != null && attachedImageBytes.isNotEmpty;
+    final resolvedHintCropType = _resolveConversationCropHint(
+      attachedDiagnosis: attachedDiagnosis,
+      explicitHint: hintCropType,
+    );
+    final requiresFreshImage =
+      attachedDiagnosis == null && !hasAttachedImage && resolvedHintCropType == null;
 
     final conversationHistory = _recentConversationHistory();
 
     // Upload image to Supabase Storage so it survives history loads
     final msgId = const Uuid().v4();
     String? uploadedImageUrl;
-    if (attachedImageBytes != null && attachedImageBytes.isNotEmpty) {
+    if (online && hasAttachedImage) {
       uploadedImageUrl = await _supabase.uploadChatImage(
         userId: userId,
         messageId: msgId,
@@ -210,7 +247,7 @@ class ChatProvider extends ChangeNotifier {
       createdAt: DateTime.now(),
       metadata:
           uploadedImageUrl != null ? {'image_url': uploadedImageUrl} : null,
-      imageBytes: attachedImageBytes != null
+        imageBytes: hasAttachedImage
           ? Uint8List.fromList(attachedImageBytes)
           : null,
       isVideoFrame: isVideoFrame,
@@ -227,89 +264,143 @@ class ChatProvider extends ChangeNotifier {
     late final String aiContent;
     Map<String, dynamic>? aiMetadata;
 
-    try {
-      final backendResponse = await _aiBackend.sendChatMessage(
-        userMessage: content,
-        cropId: attachedDiagnosis?.cropId.isNotEmpty == true
-            ? attachedDiagnosis!.cropId
-            : _currentSession?.cropId,
-        diagnosis: attachedDiagnosis,
-        imageBytes: attachedImageBytes,
-        imageMimeType: attachedImageMimeType,
-        conversationHistory: conversationHistory,
-        hintCropType: ChatProvider.resolveHintCropType(
-          attachedDiagnosis: attachedDiagnosis,
-          explicitHint: hintCropType,
-        ),
-      );
-      final inferredDiseaseName =
-          (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
-              ? attachedDiagnosis!.diseaseName.trim()
-              : _inferDiseaseName(backendResponse.answer);
-      final inferredCropType = _inferCropType(
-        labelKey: attachedDiagnosis?.labelKey,
-        diseaseName: inferredDiseaseName,
-        aiContent: backendResponse.answer,
-      );
-      final inferredLabelKey =
-          (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
-              ? attachedDiagnosis!.labelKey!.trim()
-              : _inferLabelKey(
-                  diseaseName: inferredDiseaseName,
-                  cropType: inferredCropType,
-                );
-      final normalizedActions = backendResponse.recommendedActions.isNotEmpty
-          ? backendResponse.recommendedActions
-          : _extractTreatmentActionsFromContent(
-              backendResponse.answer,
-              inferredCropType: inferredCropType,
-              inferredDiseaseName: inferredDiseaseName,
-            );
-      // Store recommended_actions in metadata but DON'T append them to text
-      // — they are rendered as an interactive checklist in the UI.
-      aiContent = _formatBackendResponse(backendResponse);
-      final backendWantsTreatmentUi = backendResponse.showTreatmentUi &&
-          backendResponse.inAppCropScope &&
-          !hadAssistantBefore;
+    if (requiresFreshImage) {
+      aiContent = _buildImageRequiredResponse();
       aiMetadata = {
-        'model': backendResponse.model,
-        'sources': backendResponse.sources,
-        'recommended_actions':
-            backendWantsTreatmentUi ? normalizedActions : const <String>[],
-        'warnings': backendWantsTreatmentUi
-            ? backendResponse.warnings
-            : const <String>[],
-        'disease_name': inferredDiseaseName,
-        'crop_type': inferredCropType,
-        'label_key': inferredLabelKey,
-        'in_app_crop_scope': backendResponse.inAppCropScope,
-        'show_treatment_card': backendWantsTreatmentUi &&
+        'model': 'local-request-photo',
+        'sources': const <String>[],
+        'recommended_actions': const <String>[],
+        'warnings': const <String>[],
+        'in_app_crop_scope': false,
+        'show_treatment_card': false,
+      };
+    } else {
+      try {
+        if (!online) {
+          throw Exception('offline');
+        }
+        final backendResponse = await _aiBackend.sendChatMessage(
+          userMessage: content,
+          cropId: attachedDiagnosis?.cropId.isNotEmpty == true
+              ? attachedDiagnosis!.cropId
+              : _currentSession?.cropId,
+          diagnosis: attachedDiagnosis,
+          imageBytes: attachedImageBytes,
+          imageMimeType: attachedImageMimeType,
+          conversationHistory: conversationHistory,
+          hintCropType: resolvedHintCropType,
+        );
+        final inferredDiseaseName =
+            (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
+                ? attachedDiagnosis!.diseaseName.trim()
+                : _inferDiseaseName(backendResponse.answer);
+        final inferredCropType = _inferCropType(
+          labelKey: attachedDiagnosis?.labelKey,
+          diseaseName: inferredDiseaseName,
+          aiContent: backendResponse.answer,
+        );
+        final inferredLabelKey =
+            (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
+                ? attachedDiagnosis!.labelKey!.trim()
+                : _inferLabelKey(
+                    diseaseName: inferredDiseaseName,
+                    cropType: inferredCropType,
+                  );
+        final normalizedActions = backendResponse.recommendedActions.isNotEmpty
+            ? backendResponse.recommendedActions
+            : _extractTreatmentActionsFromContent(
+                backendResponse.answer,
+                inferredCropType: inferredCropType,
+                inferredDiseaseName: inferredDiseaseName,
+              );
+        // Store recommended_actions in metadata but DON'T append them to text
+        // — they are rendered as an interactive checklist in the UI.
+        aiContent = _formatBackendResponse(backendResponse);
+        final showTreatmentCard =
+            !hadAssistantBefore &&
             _shouldShowTreatmentCard(
               attachedDiagnosis: attachedDiagnosis,
               recommendedActions: normalizedActions,
               inferredDiseaseName: inferredDiseaseName,
               inferredCropType: inferredCropType,
-            ),
-      };
-    } catch (error) {
-      await Future.delayed(const Duration(milliseconds: 500));
-      aiContent = _buildBackendUnavailableResponse(
-        content,
-        attachedDiagnosis: attachedDiagnosis,
-        error: error,
-      );
-      aiMetadata = {
-        'model': 'local-fallback',
-        'sources': const <String>[],
-        'recommended_actions': const <String>[],
-        'warnings': [
-          'Online AI backend unavailable; answer generated from local fallback rules.'
-        ],
-        'backend_error': error.toString(),
-        'backend_base_url': _aiBackend.baseUrl,
-        'in_app_crop_scope': true,
-        'show_treatment_card': false,
-      };
+            );
+        aiMetadata = {
+          'model': backendResponse.model,
+          'sources': backendResponse.sources,
+          'recommended_actions':
+              showTreatmentCard ? normalizedActions : const <String>[],
+          'warnings': showTreatmentCard
+              ? backendResponse.warnings
+              : const <String>[],
+          'disease_name': inferredDiseaseName,
+          'crop_type': inferredCropType,
+          'label_key': inferredLabelKey,
+          'severity': attachedDiagnosis?.severity.value ?? 'moderate',
+          'in_app_crop_scope': backendResponse.inAppCropScope ||
+              attachedDiagnosis != null ||
+              _supportedTreatmentCardCrops.contains(inferredCropType),
+          'show_treatment_card': showTreatmentCard,
+        };
+      } catch (error) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        final fallbackDiseaseName =
+            (attachedDiagnosis?.diseaseName ?? '').trim();
+        final fallbackCropType = attachedDiagnosis != null
+            ? _inferCropType(
+                labelKey: attachedDiagnosis.labelKey,
+                diseaseName: fallbackDiseaseName,
+                aiContent: '',
+              )
+            : (resolvedHintCropType ?? '');
+        final fallbackLabelKey =
+            (attachedDiagnosis?.labelKey ?? '').trim().isNotEmpty
+                ? attachedDiagnosis!.labelKey!.trim()
+                : (fallbackDiseaseName.isNotEmpty && fallbackCropType.isNotEmpty
+                    ? _inferLabelKey(
+                        diseaseName: fallbackDiseaseName,
+                        cropType: fallbackCropType,
+                      )
+                    : '');
+        final fallbackActions = _fallbackRecommendedActions(
+          attachedDiagnosis: attachedDiagnosis,
+          inferredDiseaseName: fallbackDiseaseName,
+          inferredCropType: fallbackCropType,
+        );
+        final showTreatmentCard =
+            !hadAssistantBefore &&
+            _shouldShowTreatmentCard(
+              attachedDiagnosis: attachedDiagnosis,
+              recommendedActions: fallbackActions,
+              inferredDiseaseName: fallbackDiseaseName,
+              inferredCropType: fallbackCropType,
+            );
+        aiContent = _buildBackendUnavailableResponse(
+          content,
+          attachedDiagnosis: attachedDiagnosis,
+          hasAttachedImage: hasAttachedImage,
+          hintCropType: resolvedHintCropType,
+          error: error,
+        );
+        aiMetadata = {
+          'model': 'local-fallback',
+          'sources': const <String>[],
+          'recommended_actions':
+              showTreatmentCard ? fallbackActions : const <String>[],
+          'warnings': [
+            hasAttachedImage
+                ? 'Online AI backend unavailable; limited offline guidance was used for this image.'
+                : 'Upload a crop photo to get a diagnosis when online AI is unavailable.'
+          ],
+          'backend_error': error.toString(),
+          'backend_base_url': _aiBackend.baseUrl,
+          'disease_name': fallbackDiseaseName,
+          'crop_type': fallbackCropType,
+          'label_key': fallbackLabelKey,
+          'severity': attachedDiagnosis?.severity.value ?? 'moderate',
+          'in_app_crop_scope': attachedDiagnosis != null || hasAttachedImage,
+          'show_treatment_card': showTreatmentCard,
+        };
+      }
     }
 
     final aiMsg = ChatMessageModel(
@@ -446,9 +537,14 @@ class ChatProvider extends ChangeNotifier {
 
   // ─── AI Response Builder ─────────────────────────────────────────────────
 
-  String _buildAIResponse(String userMessage,
-      {DiagnosisModel? attachedDiagnosis}) {
+  String _buildAIResponse(
+    String userMessage, {
+    DiagnosisModel? attachedDiagnosis,
+    bool hasAttachedImage = false,
+    String? hintCropType,
+  }) {
     final lower = userMessage.toLowerCase();
+    final normalizedHint = (hintCropType ?? '').trim().toLowerCase();
 
     // If there's an attached diagnosis, provide treatment advice
     if (attachedDiagnosis != null) {
@@ -478,6 +574,35 @@ class ChatProvider extends ChangeNotifier {
       );
       return _formatDiagnosisResponse(attachedDiagnosis, kb);
     }
+
+    if (!hasAttachedImage) {
+      if (normalizedHint.isNotEmpty) {
+        final cropKnowledge = _knowledgeBase
+            .where((kb) => kb.cropType.value == normalizedHint)
+            .toList();
+
+        for (final kb in cropKnowledge) {
+          final diseaseName = kb.diseaseName.toLowerCase();
+          if (diseaseName.isNotEmpty && lower.contains(diseaseName)) {
+            return _formatKbResponse(kb);
+          }
+        }
+
+        if (_looksLikeProductQuestion(lower)) {
+          return _buildProductFallbackResponse(normalizedHint, cropKnowledge);
+        }
+
+        if (cropKnowledge.isNotEmpty) {
+          return _buildCropFollowUpResponse(normalizedHint, cropKnowledge);
+        }
+      }
+
+      return _buildImageRequiredResponse();
+    }
+
+    return _buildUncertainImageResponse();
+
+    // Search knowledge base for disease mentions
 
     // Search knowledge base for disease mentions
     for (final kb in _knowledgeBase) {
@@ -556,17 +681,109 @@ class ChatProvider extends ChangeNotifier {
   String _buildBackendUnavailableResponse(
     String userMessage, {
     DiagnosisModel? attachedDiagnosis,
+    required bool hasAttachedImage,
+    String? hintCropType,
     Object? error,
   }) {
     final fallback = _buildAIResponse(
       userMessage,
       attachedDiagnosis: attachedDiagnosis,
+      hasAttachedImage: hasAttachedImage,
+      hintCropType: hintCropType,
     );
     final detail = kDebugMode && error != null
         ? '\n\nDebug: ${_aiBackend.baseUrl} failed with $error'
         : '';
     return 'Online AI is unavailable right now, so I am using offline crop guidance only.\n\n'
         '$fallback$detail';
+  }
+
+  String _buildImageRequiredResponse() {
+    return 'Please upload or capture a clear photo of the affected crop first before I give a diagnosis or treatment plan.\n\n'
+        'For the best result:\n'
+        '1. Show the affected leaf or fruit up close\n'
+        '2. Keep the image bright and in focus\n'
+        '3. Add a short note about what changed\n\n'
+        'Once the model has an image to analyze, I can give a more accurate diagnosis and next steps.';
+  }
+
+  String _buildUncertainImageResponse() {
+    return 'I could not confidently confirm a diagnosis from this image offline.\n\n'
+        'Please try one of these next steps:\n'
+        '1. Retake the photo with a closer, sharper view of the affected area\n'
+        '2. Capture the front and back of the leaf in good lighting\n'
+        '3. If you are online, try again for a more comprehensive AI review\n\n'
+        'I will avoid guessing a disease or treatment until the model can identify the crop more reliably.';
+  }
+
+  String _buildCropFollowUpResponse(
+    String cropType,
+    List<DiseaseKnowledgeModel> cropKnowledge,
+  ) {
+    final diseaseNames = cropKnowledge
+        .map((kb) => kb.diseaseName.trim())
+        .where((name) => name.isNotEmpty)
+        .take(3)
+        .join(', ');
+
+    return 'We are still focused on your $cropType crop. Ask about symptoms, treatment timing, or a product you want to check, and I will keep the advice specific to $cropType.\n\n'
+        '${diseaseNames.isNotEmpty ? 'Common $cropType issues in my offline guide include $diseaseNames.' : 'Share the symptom, disease name, or product label and I will help you narrow it down.'}';
+  }
+
+  String _buildProductFallbackResponse(
+    String cropType,
+    List<DiseaseKnowledgeModel> cropKnowledge,
+  ) {
+    final exampleSteps = <String>[];
+    for (final knowledge in cropKnowledge) {
+      for (final step in [...?knowledge.treatmentSteps, ...?knowledge.preventionSteps]) {
+        final normalized = step.trim();
+        if (normalized.isNotEmpty && !exampleSteps.contains(normalized)) {
+          exampleSteps.add(normalized);
+        }
+        if (exampleSteps.length == 3) {
+          break;
+        }
+      }
+      if (exampleSteps.length == 3) {
+        break;
+      }
+    }
+
+    final examplesText = exampleSteps.isNotEmpty
+        ? exampleSteps.asMap().entries.map((entry) => '${entry.key + 1}. ${entry.value}').join('\n')
+        : 'Tell me the product name or active ingredient and I will compare it against the offline crop guidance I have for $cropType.';
+
+    return 'I can still help review a product for your $cropType crop offline, but I cannot verify live web listings right now.\n\n'
+        'Share the product name or active ingredient and I will compare it against the crop guidance I already have.\n\n'
+        'Examples from my $cropType knowledge base:\n$examplesText\n\n'
+        'Please still verify the label for crop registration, dosage, and pre-harvest interval before applying it.';
+  }
+
+  bool _looksLikeProductQuestion(String text) {
+    final lower = text.trim().toLowerCase();
+    if (lower.isEmpty) {
+      return false;
+    }
+
+    return lower.contains('product') ||
+        lower.contains('brand') ||
+        lower.contains('spray') ||
+        lower.contains('fungicide') ||
+        lower.contains('bactericide') ||
+        lower.contains('pesticide') ||
+        lower.contains('insecticide') ||
+        lower.contains('miticide') ||
+        lower.contains('fertilizer') ||
+        lower.contains('fertiliser') ||
+        lower.contains('active ingredient') ||
+        lower.contains('can i use') ||
+        lower.contains('should i use') ||
+        lower.contains('recommend') ||
+        lower.contains('copper') ||
+        lower.contains('mancozeb') ||
+        lower.contains('abamectin') ||
+        lower.contains('neem');
   }
 
   // ─── Save ────────────────────────────────────────────────────────────────
@@ -584,6 +801,26 @@ class ChatProvider extends ChangeNotifier {
       });
     } catch (_) {}
     await _db.upsertRow(AppConstants.chatMessagesTable, msg.toMap());
+  }
+
+  Future<void> _markCurrentSessionOffline() async {
+    final current = _currentSession;
+    if (current == null || current.isOfflineSession) {
+      return;
+    }
+
+    final updated = current.copyWith(
+      isOfflineSession: true,
+      updatedAt: DateTime.now(),
+    );
+    _currentSession = updated;
+
+    final index = _sessions.indexWhere((session) => session.id == updated.id);
+    if (index != -1) {
+      _sessions[index] = updated;
+    }
+
+    await _db.upsertRow(AppConstants.chatSessionsTable, updated.toMap());
   }
 
   Map<String, dynamic> _sessionRemoteMap(ChatSessionModel s) {
@@ -633,6 +870,28 @@ class ChatProvider extends ChangeNotifier {
     final sections = [
       _extractSection(
         aiContent,
+        'What to do now',
+        const [
+          'Next steps',
+          'Immediate action',
+          'Treatment',
+          'Prevention tip',
+          'Prevention',
+          'Warnings',
+        ],
+      ),
+      _extractSection(
+        aiContent,
+        'Next steps',
+        const ['Immediate action', 'Treatment', 'Prevention tip', 'Prevention'],
+      ),
+      _extractSection(
+        aiContent,
+        'Recommended actions',
+        const ['Next steps', 'Immediate action', 'Treatment', 'Prevention'],
+      ),
+      _extractSection(
+        aiContent,
         'Immediate action',
         const ['Treatment', 'Prevention tip', 'Prevention'],
       ),
@@ -657,7 +916,144 @@ class ChatProvider extends ChangeNotifier {
         deduped.add(normalized);
       }
     }
+    if (deduped.isNotEmpty) {
+      return deduped.take(7).toList();
+    }
+
+    final fallbackActions = _splitIntoActionSentences(aiContent)
+        .where(_looksLikeActionSentence)
+        .where((sentence) => !_looksLikeObservationSentence(sentence))
+        .toList();
+    final fallbackDeduped = <String>[];
+    for (final action in fallbackActions) {
+      if (!fallbackDeduped.contains(action)) {
+        fallbackDeduped.add(action);
+      }
+    }
+    return fallbackDeduped.take(7).toList();
+  }
+
+  List<String> _fallbackRecommendedActions({
+    DiagnosisModel? attachedDiagnosis,
+    required String inferredDiseaseName,
+    required String inferredCropType,
+  }) {
+    if (attachedDiagnosis == null &&
+        inferredDiseaseName.trim().isEmpty &&
+        inferredCropType.trim().isEmpty) {
+      return const [];
+    }
+
+    DiseaseKnowledgeModel? knowledge;
+    if (attachedDiagnosis != null) {
+      knowledge = _knowledgeForDiagnosis(attachedDiagnosis);
+    }
+    knowledge ??= _knowledgeForDisease(
+      labelKey: attachedDiagnosis?.labelKey,
+      diseaseName: inferredDiseaseName,
+      cropType: inferredCropType,
+    );
+    if (knowledge == null) {
+      return const [];
+    }
+
+    final steps = <String>[
+      ...?knowledge.treatmentSteps,
+      ...?knowledge.preventionSteps,
+    ];
+    final deduped = <String>[];
+    for (final step in steps) {
+      final normalized = step.trim();
+      if (normalized.isNotEmpty && !deduped.contains(normalized)) {
+        deduped.add(normalized);
+      }
+    }
     return deduped.take(7).toList();
+  }
+
+  DiseaseKnowledgeModel? _knowledgeForDiagnosis(DiagnosisModel diagnosis) {
+    return _knowledgeForDisease(
+      labelKey: diagnosis.labelKey,
+      diseaseName: diagnosis.diseaseName,
+      cropType: _inferCropType(
+        labelKey: diagnosis.labelKey,
+        diseaseName: diagnosis.diseaseName,
+        aiContent: '',
+      ),
+    );
+  }
+
+  DiseaseKnowledgeModel? _knowledgeForDisease({
+    String? labelKey,
+    required String diseaseName,
+    required String cropType,
+  }) {
+    final normalizedLabelKey = (labelKey ?? '').trim();
+    if (normalizedLabelKey.isNotEmpty) {
+      for (final knowledge in _knowledgeBase) {
+        if ((knowledge.labelKey ?? '').trim() == normalizedLabelKey) {
+          return knowledge;
+        }
+      }
+    }
+
+    final normalizedDiseaseName = diseaseName.trim().toLowerCase();
+    final normalizedCropType = cropType.trim().toLowerCase();
+    for (final knowledge in _knowledgeBase) {
+      final matchesDisease =
+          knowledge.diseaseName.trim().toLowerCase() == normalizedDiseaseName;
+      final matchesCrop = normalizedCropType.isEmpty ||
+          knowledge.cropType.value == normalizedCropType;
+      if (matchesDisease && matchesCrop) {
+        return knowledge;
+      }
+    }
+
+    if (normalizedDiseaseName.isEmpty) {
+      return null;
+    }
+
+    for (final knowledge in _knowledgeBase) {
+      if (knowledge.diseaseName.trim().toLowerCase() == normalizedDiseaseName) {
+        return knowledge;
+      }
+    }
+    return null;
+  }
+
+  bool _looksLikeObservationSentence(String text) {
+    final lower = text.trim().toLowerCase();
+    return lower.startsWith('i see ') ||
+        lower.startsWith('this looks') ||
+        lower.startsWith('it looks') ||
+        lower.startsWith('the image') ||
+        lower.startsWith('this image') ||
+        lower.startsWith('i could') ||
+        lower.startsWith('it could') ||
+        lower.contains(' most like ');
+  }
+
+  bool _looksLikeActionSentence(String text) {
+    final lower = text.trim().toLowerCase();
+    return lower.startsWith('remove ') ||
+        lower.startsWith('water ') ||
+        lower.startsWith('avoid ') ||
+        lower.startsWith('clear ') ||
+        lower.startsWith('check ') ||
+        lower.startsWith('apply ') ||
+        lower.startsWith('use ') ||
+        lower.startsWith('keep ') ||
+        lower.startsWith('monitor ') ||
+        lower.startsWith('prune ') ||
+        lower.startsWith('improve ') ||
+        lower.startsWith('spray ') ||
+        lower.startsWith('isolate ') ||
+        lower.startsWith('destroy ') ||
+        lower.startsWith('disinfect ') ||
+        lower.startsWith('retake ') ||
+        lower.startsWith('capture ') ||
+        lower.startsWith('upload ') ||
+        lower.startsWith('if ');
   }
 
   String _extractSection(String text, String label, List<String> nextLabels) {
@@ -756,5 +1152,32 @@ class ChatProvider extends ChangeNotifier {
       aiContent: '',
     );
     return fromDx.isEmpty ? null : fromDx;
+  }
+
+  String? _resolveConversationCropHint({
+    DiagnosisModel? attachedDiagnosis,
+    String? explicitHint,
+  }) {
+    final direct = resolveHintCropType(
+      attachedDiagnosis: attachedDiagnosis,
+      explicitHint: explicitHint,
+    );
+    if (direct != null) {
+      return direct;
+    }
+
+    for (final message in _currentMessages.reversed) {
+      final metadata = message.metadata;
+      if (metadata == null) {
+        continue;
+      }
+
+      final cropType = (metadata['crop_type'] as String? ?? '').trim().toLowerCase();
+      if (cropType.isNotEmpty) {
+        return cropType;
+      }
+    }
+
+    return null;
   }
 }

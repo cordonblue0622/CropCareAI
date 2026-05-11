@@ -95,6 +95,111 @@ At that point, set `ENABLE_MOCK_SERVICES=false` in `.env` and run the backend fr
 
 Open `http://127.0.0.1:8000/docs` for Swagger UI.
 
+## Render deployment
+
+Use Render only for the online augmentation endpoints.
+
+- Keep scan classification inside the Flutter app with on-device TFLite.
+- Host `POST /v1/chat`, `POST /v1/transcribe`, `POST /v1/progress`, and auth-backed knowledge access on Render.
+- Do not depend on Render for the app's core offline path.
+
+### What Render will handle
+
+- GPT-backed chat using the uploaded image plus TFLite diagnosis context
+- OpenAI Whisper transcription if you keep `OPENAI_API_KEY` set
+- progress/assessment endpoints
+
+### What stays inside the APK
+
+- local TFLite scan and crop detection
+- bundled disease knowledge and SQLite cache
+- offline structured treatment replies when internet is unavailable
+
+### Step-by-step Render guide
+
+1. Push the latest repo to GitHub.
+
+2. In Render, choose `New +` -> `Blueprint`.
+
+3. Select this GitHub repository.
+
+4. Render will detect the repository `render.yaml` file and create the `cropcare-ai-backend` web service from the `ai_backend` folder.
+
+5. In the Render service dashboard, add these environment variables:
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL=gpt-5.4-mini`
+- `ENABLE_MOCK_SERVICES=false`
+- `REQUIRE_AUTH=true`
+- `APP_ENV=production`
+- `LOG_LEVEL=INFO`
+- `CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080`
+
+If you will also call the backend from a hosted web frontend later, append that origin to `CORS_ORIGINS`.
+
+6. Deploy the service.
+
+7. After deploy finishes, open:
+
+- `https://<your-render-service>.onrender.com/health`
+- `https://<your-render-service>.onrender.com/docs`
+
+8. Confirm `/health` reports:
+
+- `status: ok`
+- `mockServices: false`
+- `openaiConfigured: true`
+
+9. Keep in mind that Render will not run the Flutter-based TFLite helper path used by `/v1/detect` in local development. The mobile app should keep using the on-device TFLite classifier for scan detection.
+
+### APK configuration after Render deploy
+
+Build the APK with the hosted backend URL injected at compile time:
+
+```powershell
+flutter build apk --release --dart-define=AI_BACKEND_BASE_URL=https://<your-render-service>.onrender.com
+```
+
+That gives you this runtime behavior:
+
+- online: the app uses Render for GPT chat, transcription, and progress features
+- offline: the app falls back to on-device TFLite, bundled disease knowledge, and local structured replies
+
+### APK verification checklist
+
+After the Render deploy is live, test the APK in two passes.
+
+Online pass:
+
+1. Install the APK built with `AI_BACKEND_BASE_URL` pointing to Render.
+2. Sign in.
+3. Upload a crop photo.
+4. Confirm TFLite still performs the initial scan locally.
+5. Confirm the chat response is conversational and image-aware.
+6. Confirm `/v1/chat` requests appear in Render logs.
+
+Offline pass:
+
+1. Turn on airplane mode.
+2. Reopen the app.
+3. Upload a supported crop photo.
+4. Confirm the local TFLite scan still works.
+5. Confirm the app returns a structured offline answer from bundled knowledge instead of failing.
+6. Confirm no hosted-backend dependency blocks the core scan flow.
+
+### If you use Render without Blueprint
+
+You can also create the service manually with these settings:
+
+- Runtime: `Python 3`
+- Root Directory: `ai_backend`
+- Build Command: `pip install --upgrade pip && pip install -r requirements.txt`
+- Start Command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Health Check Path: `/health`
+
 ## Environment variables
 
 Fill these in as your stack becomes available:
