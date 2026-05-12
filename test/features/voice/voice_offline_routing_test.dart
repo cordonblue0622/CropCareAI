@@ -2,8 +2,12 @@ import 'package:cropcare_ai/data/remote/ai_backend_service.dart';
 import 'package:cropcare_ai/features/voice/voice_screen.dart';
 import 'package:cropcare_ai/services/connectivity_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
+
+const MethodChannel _permissionChannel =
+  MethodChannel('flutter.baseflow.com/permissions/methods');
 
 // ---------------------------------------------------------------------------
 // Fake ConnectivityService
@@ -34,6 +38,9 @@ class _FakeConnectivityService extends ConnectivityService {
 
 class _FakeAiBackendService implements AiBackendService {
   bool transcribeCalled = false;
+
+  @override
+  Future<void> warmUpIfNeeded({bool force = false}) async {}
 
   @override
   Future<AiBackendTranscribeResponse> transcribeAudio({
@@ -92,6 +99,30 @@ void main() {
   testWidgets(
     'offline mic tap does not invoke backend transcribeAudio',
     (tester) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_permissionChannel, (call) async {
+        switch (call.method) {
+          case 'checkPermissionStatus':
+            return 1;
+          case 'requestPermissions':
+            final permissions = (call.arguments as List<dynamic>? ?? const []);
+            return {
+              for (final permission in permissions) permission.toString(): 1,
+            };
+          case 'shouldShowRequestPermissionRationale':
+            return false;
+          case 'checkServiceStatus':
+            return 1;
+          case 'openAppSettings':
+            return true;
+        }
+        return null;
+      });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(_permissionChannel, null);
+      });
+
       final fakeAi = _FakeAiBackendService();
       final fakeConnectivity = _FakeConnectivityService(false);
 

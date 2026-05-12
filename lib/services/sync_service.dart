@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/constants/app_constants.dart';
+import '../core/utils/image_reference.dart';
 import '../data/local/database_helper.dart';
 import '../data/remote/supabase_service.dart';
 
@@ -68,10 +69,19 @@ class SyncService {
         try {
           switch (op) {
             case 'UPSERT':
-              await supabaseService.upsertRecord(table: table, data: payload);
+              final preparedPayload = await _preparePayloadForSync(
+                table: table,
+                payload: payload,
+              );
+              await supabaseService.upsertRecord(
+                table: table,
+                data: preparedPayload,
+              );
+              break;
             case 'DELETE':
               await supabaseService.deleteRecord(
                   table: table, id: payload['id'] as String);
+              break;
           }
           await dbHelper.markSyncItemDone(itemId);
         } catch (e) {
@@ -131,6 +141,87 @@ class SyncService {
       AppConstants.keyLastSyncedAt,
       DateTime.now().toIso8601String(),
     );
+  }
+
+  Future<Map<String, dynamic>> _preparePayloadForSync({
+    required String table,
+    required Map<String, dynamic> payload,
+  }) async {
+    final prepared = Map<String, dynamic>.from(payload);
+
+    if (table == AppConstants.chatMessagesTable) {
+      final metadata = _parseMetadata(prepared['metadata']);
+      if (metadata != null) {
+        await _replaceInlineImageReference(
+          container: metadata,
+          key: 'image_url',
+          userId: prepared['user_id'] as String?,
+          recordId: prepared['id'] as String?,
+        );
+        prepared['metadata'] = metadata;
+      }
+      return prepared;
+    }
+
+    if (table == AppConstants.diagnosesTable ||
+        table == AppConstants.progressUpdatesTable) {
+      await _replaceInlineImageReference(
+        container: prepared,
+        key: 'image_url',
+        userId: prepared['user_id'] as String?,
+        recordId: prepared['id'] as String?,
+      );
+      final videoUrl = normalizeImageReference(prepared['video_url']);
+      if (videoUrl != null && !isRemoteImageReference(videoUrl)) {
+        prepared.remove('video_url');
+      }
+    }
+
+    return prepared;
+  }
+
+  Map<String, dynamic>? _parseMetadata(dynamic raw) {
+    if (raw is Map) {
+      return Map<String, dynamic>.from(raw);
+    }
+    if (raw is String && raw.isNotEmpty) {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return Map<String, dynamic>.from(decoded);
+      }
+    }
+    return null;
+  }
+
+  Future<void> _replaceInlineImageReference({
+    required Map<String, dynamic> container,
+    required String key,
+    required String? userId,
+    required String? recordId,
+  }) async {
+    final imageRef = normalizeImageReference(container[key]);
+    final imageBytes = decodeInlineImageDataUrl(imageRef);
+    if (imageBytes == null) {
+      return;
+    }
+
+    if (userId == null ||
+        userId.trim().isEmpty ||
+        recordId == null ||
+        recordId.trim().isEmpty) {
+      throw StateError('Missing identifiers for queued image upload.');
+    }
+
+    final uploadedUrl = await supabaseService.uploadChatImage(
+      userId: userId,
+      messageId: recordId,
+      bytes: imageBytes,
+    );
+    if (uploadedUrl == null || uploadedUrl.trim().isEmpty) {
+      throw StateError('Could not upload queued image for $recordId.');
+    }
+
+    container[key] = uploadedUrl;
   }
 
   // ─── Queue Helpers (call before DB write when offline) ────────────────────

@@ -12,7 +12,17 @@ import '../../../services/video_cleanup_service.dart';
 /// Pops with `true` if the user deleted the video, `null` otherwise.
 class VideoPlayerView extends StatefulWidget {
   final String videoSource; // local path OR http(s) url
-  const VideoPlayerView({super.key, required this.videoSource});
+  final bool autoplay;
+  final bool showDeleteAction;
+  final bool inline;
+
+  const VideoPlayerView({
+    super.key,
+    required this.videoSource,
+    this.autoplay = false,
+    this.showDeleteAction = true,
+    this.inline = false,
+  });
 
   @override
   State<VideoPlayerView> createState() => _VideoPlayerViewState();
@@ -21,6 +31,7 @@ class VideoPlayerView extends StatefulWidget {
 class _VideoPlayerViewState extends State<VideoPlayerView> {
   VideoPlayerController? _controller;
   bool _initError = false;
+  bool _showControls = true;
 
   bool get _isLocal =>
       !widget.videoSource.startsWith('http://') &&
@@ -38,19 +49,31 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
           ? VideoPlayerController.file(File(widget.videoSource))
           : VideoPlayerController.networkUrl(Uri.parse(widget.videoSource));
       await c.initialize();
+      await c.setLooping(false);
       if (!mounted) {
         c.dispose();
         return;
       }
+      c.addListener(_onVideoTick);
       setState(() => _controller = c);
-      await c.play();
+      if (widget.autoplay) {
+        await c.play();
+      }
     } catch (_) {
       if (mounted) setState(() => _initError = true);
     }
   }
 
+  void _onVideoTick() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+  }
+
   @override
   void dispose() {
+    _controller?.removeListener(_onVideoTick);
     _controller?.dispose();
     super.dispose();
   }
@@ -86,6 +109,10 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.inline) {
+      return _body();
+    }
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -93,7 +120,7 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
         foregroundColor: Colors.white,
         title: const Text('Video', style: TextStyle(fontSize: 16)),
         actions: [
-          if (_isLocal)
+          if (_isLocal && widget.showDeleteAction)
             IconButton(
               tooltip: 'Delete video',
               icon: const Icon(Icons.delete_outline),
@@ -120,34 +147,112 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
     if (c == null || !c.value.isInitialized) {
       return const CircularProgressIndicator(color: AppColors.primary);
     }
+    final duration = c.value.duration;
+    final position = c.value.position > duration ? duration : c.value.position;
+
     return GestureDetector(
-      onTap: () {
-        if (c.value.isPlaying) {
-          c.pause();
-        } else {
-          c.play();
-        }
-        setState(() {});
-      },
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          AspectRatio(
-            aspectRatio: c.value.aspectRatio,
-            child: VideoPlayer(c),
-          ),
-          if (!c.value.isPlaying)
-            Container(
-              decoration: const BoxDecoration(
-                color: Colors.black54,
-                shape: BoxShape.circle,
+      onTap: () => setState(() => _showControls = !_showControls),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(widget.inline ? 18 : 0),
+        child: Container(
+          color: Colors.black,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              AspectRatio(
+                aspectRatio: c.value.aspectRatio == 0 ? 16 / 9 : c.value.aspectRatio,
+                child: VideoPlayer(c),
               ),
-              padding: const EdgeInsets.all(20),
-              child: const Icon(Icons.play_arrow,
-                  color: Colors.white, size: 44),
-            ),
-        ],
+              if (_showControls)
+                Positioned.fill(
+                  child: Container(
+                    color: Colors.black26,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const SizedBox(height: 12),
+                        Container(
+                          decoration: const BoxDecoration(
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
+                          child: IconButton(
+                            iconSize: 44,
+                            color: Colors.white,
+                            icon: Icon(
+                              c.value.isPlaying ? Icons.pause : Icons.play_arrow,
+                            ),
+                            onPressed: () async {
+                              if (c.value.isPlaying) {
+                                await c.pause();
+                              } else {
+                                await c.play();
+                              }
+                              if (mounted) {
+                                setState(() {});
+                              }
+                            },
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+                          color: Colors.black54,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              VideoProgressIndicator(
+                                c,
+                                allowScrubbing: true,
+                                colors: const VideoProgressColors(
+                                  playedColor: AppColors.primary,
+                                  bufferedColor: Colors.white38,
+                                  backgroundColor: Colors.white24,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    '${_formatDuration(position)} / ${_formatDuration(duration)}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  if (!widget.inline && _isLocal && widget.showDeleteAction)
+                                    IconButton(
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                      tooltip: 'Delete video',
+                                      icon: const Icon(
+                                        Icons.delete_outline,
+                                        color: Colors.white,
+                                        size: 20,
+                                      ),
+                                      onPressed: _confirmDelete,
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
+  }
+
+  String _formatDuration(Duration value) {
+    final totalSeconds = value.inSeconds;
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 }

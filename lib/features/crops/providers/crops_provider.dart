@@ -9,23 +9,30 @@ import '../../../data/local/bundled_disease_knowledge.dart';
 import '../../../data/models/crop_model.dart';
 import '../../../data/models/diagnosis_model.dart';
 import '../../../data/models/disease_knowledge_model.dart';
+import '../../../data/models/progress_update_model.dart';
 import '../../../data/models/treatment_model.dart';
 import '../../../data/models/treatment_task_model.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../services/health_score_service.dart';
+import '../../../services/sync_service.dart';
 
 class CropsProvider extends ChangeNotifier {
   final SupabaseService _supabase;
   final DatabaseHelper _db;
+  final SyncService _sync;
 
   List<CropModel> _crops = [];
   List<DiseaseKnowledgeModel> _diseaseKnowledge = [];
   bool _isLoading = false;
   String? _error;
 
-  CropsProvider({required SupabaseService supabase, required DatabaseHelper db})
-      : _supabase = supabase,
-        _db = db;
+  CropsProvider({
+    required SupabaseService supabase,
+    required DatabaseHelper db,
+    required SyncService sync,
+  })  : _supabase = supabase,
+        _db = db,
+        _sync = sync;
 
   List<CropModel> get crops => _crops;
   List<DiseaseKnowledgeModel> get diseaseKnowledge => _diseaseKnowledge;
@@ -44,13 +51,17 @@ class CropsProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Try remote first
-      final rows = await _supabase.getCrops(userId);
-      _crops = rows.map(CropModel.fromMap).toList();
-      await _db.upsertRows(
-        AppConstants.cropsTable,
-        _crops.map((crop) => crop.toMap()),
-      );
+      final localRows = await _db.queryByUserId(AppConstants.cropsTable, userId);
+      if (localRows.isNotEmpty) {
+        _crops = localRows.map(CropModel.fromMap).toList();
+        notifyListeners();
+      }
+
+      final remoteRows = await _supabase.getCrops(userId);
+      await _db.upsertRows(AppConstants.cropsTable, remoteRows);
+
+      final mergedRows = await _db.queryByUserId(AppConstants.cropsTable, userId);
+      _crops = mergedRows.map(CropModel.fromMap).toList();
     } catch (_) {
       // Fall back to local cache
       final rows = await _db.queryByUserId(AppConstants.cropsTable, userId);
@@ -73,6 +84,7 @@ class CropsProvider extends ChangeNotifier {
     DateTime? plantedAt,
   }) async {
     try {
+      _error = null;
       final now = DateTime.now();
       final crop = CropModel(
         id: const Uuid().v4(),
@@ -89,10 +101,15 @@ class CropsProvider extends ChangeNotifier {
         updatedAt: now,
       );
 
-      await _supabase.upsertCrop(_remoteMap(crop));
-      await _db.upsertRow(AppConstants.cropsTable, crop.toMap());
+      await _upsertLocallyAndQueue(
+        table: AppConstants.cropsTable,
+        recordId: crop.id,
+        localData: crop.toMap(),
+        remoteData: _remoteMap(crop),
+      );
       _crops.insert(0, crop);
       notifyListeners();
+      await _attemptSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -105,12 +122,18 @@ class CropsProvider extends ChangeNotifier {
 
   Future<bool> updateCrop(CropModel crop) async {
     try {
+      _error = null;
       final updated = crop.copyWith(updatedAt: DateTime.now());
-      await _supabase.upsertCrop(_remoteMap(updated));
-      await _db.upsertRow(AppConstants.cropsTable, updated.toMap());
+      await _upsertLocallyAndQueue(
+        table: AppConstants.cropsTable,
+        recordId: updated.id,
+        localData: updated.toMap(),
+        remoteData: _remoteMap(updated),
+      );
       final idx = _crops.indexWhere((c) => c.id == updated.id);
       if (idx != -1) _crops[idx] = updated;
       notifyListeners();
+      await _attemptSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -176,18 +199,23 @@ class CropsProvider extends ChangeNotifier {
 
       if (crop != null) {
         try {
-          final remoteDiagnosisRows = await _supabase.getDiagnosesByCrop(cropId);
-          final remoteTreatmentRows = await _supabase.getTreatmentsByCrop(cropId);
+          final remoteDiagnosisRows =
+              await _supabase.getDiagnosesByCrop(cropId);
+          final remoteTreatmentRows =
+              await _supabase.getTreatmentsByCrop(cropId);
           final remoteProgressRows = await _supabase.getProgressUpdates(cropId);
-          final remoteTaskRows = (await _supabase.getTreatmentTasksByUser(crop.userId))
-              .where((row) => row['crop_id'] == cropId)
-              .toList(growable: false);
-          final remoteNotificationIds = (await _supabase.getNotifications(crop.userId))
-              .where((row) => row['crop_id'] == cropId)
-              .map((row) => row['id'] as String?)
-              .whereType<String>()
-              .toList(growable: false);
-          final remoteSessionRows = await _supabase.getChatSessionsByCrop(cropId);
+          final remoteTaskRows =
+              (await _supabase.getTreatmentTasksByUser(crop.userId))
+                  .where((row) => row['crop_id'] == cropId)
+                  .toList(growable: false);
+          final remoteNotificationIds =
+              (await _supabase.getNotifications(crop.userId))
+                  .where((row) => row['crop_id'] == cropId)
+                  .map((row) => row['id'] as String?)
+                  .whereType<String>()
+                  .toList(growable: false);
+          final remoteSessionRows =
+              await _supabase.getChatSessionsByCrop(cropId);
           final remoteSessionIds = remoteSessionRows
               .map((row) => row['id'] as String?)
               .whereType<String>()
@@ -200,13 +228,20 @@ class CropsProvider extends ChangeNotifier {
             );
           }
 
-          await _softDeleteRemoteRows(AppConstants.diagnosesTable, remoteDiagnosisRows);
-          await _softDeleteRemoteRows(AppConstants.treatmentsTable, remoteTreatmentRows);
-          await _softDeleteRemoteRows(AppConstants.treatmentTasksTable, remoteTaskRows);
-          await _softDeleteRemoteRows(AppConstants.progressUpdatesTable, remoteProgressRows);
-          await _softDeleteRemoteRows(AppConstants.chatSessionsTable, remoteSessionRows);
-          await _hardDeleteRemoteRows(AppConstants.notificationsTable, remoteNotificationIds);
-          await _hardDeleteRemoteRows(AppConstants.chatMessagesTable, remoteChatMessageIds);
+          await _softDeleteRemoteRows(
+              AppConstants.diagnosesTable, remoteDiagnosisRows);
+          await _softDeleteRemoteRows(
+              AppConstants.treatmentsTable, remoteTreatmentRows);
+          await _softDeleteRemoteRows(
+              AppConstants.treatmentTasksTable, remoteTaskRows);
+          await _softDeleteRemoteRows(
+              AppConstants.progressUpdatesTable, remoteProgressRows);
+          await _softDeleteRemoteRows(
+              AppConstants.chatSessionsTable, remoteSessionRows);
+          await _hardDeleteRemoteRows(
+              AppConstants.notificationsTable, remoteNotificationIds);
+          await _hardDeleteRemoteRows(
+              AppConstants.chatMessagesTable, remoteChatMessageIds);
         } catch (_) {
           // Best-effort remote cascade. Local deletion still proceeds.
         }
@@ -215,15 +250,15 @@ class CropsProvider extends ChangeNotifier {
       await _softDeleteLocalRows(AppConstants.diagnosesTable, diagnosisRows);
       await _softDeleteLocalRows(AppConstants.treatmentsTable, treatmentRows);
       await _softDeleteLocalRows(AppConstants.treatmentTasksTable, taskRows);
-      await _softDeleteLocalRows(AppConstants.progressUpdatesTable, progressRows);
+      await _softDeleteLocalRows(
+          AppConstants.progressUpdatesTable, progressRows);
       await _softDeleteLocalRows(AppConstants.chatSessionsTable, sessionRows);
       await _hardDeleteLocalRows(
         AppConstants.notificationsTable,
-        notificationRows
-            .map((row) => row['id'] as String?)
-            .whereType<String>(),
+        notificationRows.map((row) => row['id'] as String?).whereType<String>(),
       );
-      await _hardDeleteLocalRows(AppConstants.chatMessagesTable, chatMessageIds);
+      await _hardDeleteLocalRows(
+          AppConstants.chatMessagesTable, chatMessageIds);
 
       await _supabase.softDeleteCrop(cropId);
       await _db.softDelete(AppConstants.cropsTable, cropId);
@@ -342,6 +377,31 @@ class CropsProvider extends ChangeNotifier {
     return map;
   }
 
+  Future<void> _upsertLocallyAndQueue({
+    required String table,
+    required String recordId,
+    required Map<String, dynamic> localData,
+    required Map<String, dynamic> remoteData,
+  }) async {
+    await _db.upsertRow(table, localData);
+    await _sync.queueUpsert(
+      tableName: table,
+      recordId: recordId,
+      data: remoteData,
+    );
+  }
+
+  Future<void> _attemptSync() async {
+    if (!_supabase.isSignedIn) {
+      return;
+    }
+    try {
+      await _sync.syncAll();
+    } catch (_) {
+      // Local state is already committed; the queue will retry later.
+    }
+  }
+
   void clear() {
     _crops = [];
     _diseaseKnowledge = [];
@@ -365,12 +425,14 @@ class CropsProvider extends ChangeNotifier {
     String? resultLabel,
     String? modelName,
     String? modelVersion,
+    String? imageUrl,
     DiagnosisMode diagnosisMode = DiagnosisMode.online,
     String? locationLabel,
     String? notes,
     DateTime? plantedAt,
   }) async {
     try {
+      _error = null;
       final now = DateTime.now();
       final cropId = const Uuid().v4();
 
@@ -397,8 +459,12 @@ class CropsProvider extends ChangeNotifier {
         updatedAt: now,
       );
 
-      await _supabase.upsertCrop(_remoteMap(crop));
-      await _db.upsertRow(AppConstants.cropsTable, crop.toMap());
+      await _upsertLocallyAndQueue(
+        table: AppConstants.cropsTable,
+        recordId: crop.id,
+        localData: crop.toMap(),
+        remoteData: _remoteMap(crop),
+      );
       _crops.insert(0, crop);
 
       final normalizedDiseaseName = diseaseName.trim().isEmpty
@@ -417,6 +483,7 @@ class CropsProvider extends ChangeNotifier {
         summary: initialSummary?.trim().isEmpty == true
             ? null
             : initialSummary?.trim(),
+        imageUrl: imageUrl,
         modelName: modelName,
         modelVersion: modelVersion,
         diagnosedAt: now,
@@ -424,8 +491,12 @@ class CropsProvider extends ChangeNotifier {
         updatedAt: now,
       );
 
-      await _supabase.upsertDiagnosis(_diagnosisRemoteMap(diagnosis));
-      await _db.upsertRow(AppConstants.diagnosesTable, diagnosis.toMap());
+      await _upsertLocallyAndQueue(
+        table: AppConstants.diagnosesTable,
+        recordId: diagnosis.id,
+        localData: diagnosis.toMap(),
+        remoteData: _diagnosisRemoteMap(diagnosis),
+      );
 
       // Create treatment
       if (treatmentSteps.isNotEmpty) {
@@ -446,8 +517,12 @@ class CropsProvider extends ChangeNotifier {
           updatedAt: now,
         );
 
-        await _supabase.upsertTreatment(_treatmentRemoteMap(treatment));
-        await _db.upsertRow(AppConstants.treatmentsTable, treatment.toMap());
+        await _upsertLocallyAndQueue(
+          table: AppConstants.treatmentsTable,
+          recordId: treatment.id,
+          localData: treatment.toMap(),
+          remoteData: _treatmentRemoteMap(treatment),
+        );
 
         // Create one task per treatment step
         for (var i = 0; i < treatmentSteps.length; i++) {
@@ -463,12 +538,17 @@ class CropsProvider extends ChangeNotifier {
             createdAt: now,
             updatedAt: now,
           );
-          await _supabase.upsertTreatmentTask(_treatmentTaskRemoteMap(task));
-          await _db.upsertRow(AppConstants.treatmentTasksTable, task.toMap());
+          await _upsertLocallyAndQueue(
+            table: AppConstants.treatmentTasksTable,
+            recordId: task.id,
+            localData: task.toMap(),
+            remoteData: _treatmentTaskRemoteMap(task),
+          );
         }
       }
 
       notifyListeners();
+      await _attemptSync();
       return cropId;
     } catch (e) {
       _error = e.toString();
@@ -496,18 +576,13 @@ class CropsProvider extends ChangeNotifier {
   /// call fails.
   ///
   /// Returns the updated task on success, or `null` on full failure.
-  Future<TreatmentTaskModel?> markTaskDone(String taskId) async {
+  Future<TreatmentTaskModel?> markTaskDone(
+    String taskId, {
+    bool recomputeHealthScore = true,
+  }) async {
     final now = DateTime.now();
     try {
-      await _supabase.markTreatmentTaskCompleted(taskId, completedAt: now);
-    } catch (_) {
-      // Continue with local update even if remote fails — sync_service
-      // will push it later.
-    }
-
-    // Update local cache. DatabaseHelper exposes its underlying Database
-    // via the `database` getter (see database_helper.dart:16).
-    try {
+      _error = null;
       final database = await _db.database;
       final rows = await database.query(
         AppConstants.treatmentTasksTable,
@@ -522,13 +597,45 @@ class CropsProvider extends ChangeNotifier {
         completedAt: now,
         updatedAt: now,
       );
-      await _db.upsertRow(AppConstants.treatmentTasksTable, updated.toMap());
-      await recomputeHealthScoreForCrop(updated.cropId);
+      await _upsertLocallyAndQueue(
+        table: AppConstants.treatmentTasksTable,
+        recordId: updated.id,
+        localData: updated.toMap(),
+        remoteData: _treatmentTaskRemoteMap(updated),
+      );
+      if (recomputeHealthScore) {
+        await recomputeHealthScoreForCrop(updated.cropId);
+      }
       notifyListeners();
+      await _attemptSync();
       return updated;
-    } catch (_) {
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
       return null;
     }
+  }
+
+  Future<void> saveProgressUpdate(ProgressUpdateModel update) async {
+    _error = null;
+    await _upsertLocallyAndQueue(
+      table: AppConstants.progressUpdatesTable,
+      recordId: update.id,
+      localData: update.toMap(),
+      remoteData: update.toMap()..['is_deleted'] = update.isDeleted,
+    );
+    await _attemptSync();
+  }
+
+  Future<void> saveDiagnosis(DiagnosisModel diagnosis) async {
+    _error = null;
+    await _upsertLocallyAndQueue(
+      table: AppConstants.diagnosesTable,
+      recordId: diagnosis.id,
+      localData: diagnosis.toMap(),
+      remoteData: _diagnosisRemoteMap(diagnosis),
+    );
+    await _attemptSync();
   }
 
   /// Recomputes [latestHealthScore] for [cropId] from the local DB without
@@ -691,7 +798,8 @@ class CropsProvider extends ChangeNotifier {
       return _decodeCsvRows(content);
     }
 
-    throw const FormatException('Unsupported file type. Choose a JSON or CSV file.');
+    throw const FormatException(
+        'Unsupported file type. Choose a JSON or CSV file.');
   }
 
   List<Map<String, dynamic>> _decodeJsonRows(String content) {

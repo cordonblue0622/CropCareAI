@@ -1,15 +1,17 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../core/utils/label_formatter.dart';
+import '../../../data/local/database_helper.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/models/crop_model.dart';
 import '../../../data/models/disease_knowledge_model.dart';
 import '../../../data/models/treatment_task_model.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../data/remote/weather_service.dart';
+import '../../../shared/widgets/app_image_reference.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../crops/providers/crops_provider.dart';
 import '../../notifications/providers/notifications_provider.dart';
@@ -30,7 +32,6 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   final WeatherService _weatherService = WeatherService();
-  final Map<String, Future<String?>> _cropImageFutures = {};
   List<DiseaseKnowledgeModel> _diseases = [];
   FarmWeatherSnapshot? _weather;
   String? _weatherLocationQuery;
@@ -106,11 +107,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  Future<String?> _previewImageFor(String cropId) {
-    return _cropImageFutures.putIfAbsent(
-      cropId,
-      () => context.read<SupabaseService>().getLatestCropImageUrl(cropId),
-    );
+  Future<String?> _previewImageFor(String cropId) async {
+    final localImage =
+        await context.read<DatabaseHelper>().getLatestCropImageUrl(cropId);
+    if (localImage != null) {
+      return localImage;
+    }
+    return context.read<SupabaseService>().getLatestCropImageUrl(cropId);
   }
 
   List<DiseaseKnowledgeModel> _dashboardDiseases(CropsProvider crops) {
@@ -542,10 +545,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               if (user != null) {
                 await context.read<CropsProvider>().fetchCrops(user.id);
               }
-              if (!mounted) return;
-              setState(() {
-                _cropImageFutures.remove(crop.id);
-              });
             },
             child: _ActiveCropCard(
               crop: crop,
@@ -765,11 +764,14 @@ class _VitalityCard extends StatelessWidget {
           SizedBox(
               height: 30,
               child: CustomPaint(
-                  painter: _SparklinePainter(score: score), size: Size.infinite)),
+                  painter: _SparklinePainter(score: score),
+                  size: Size.infinite)),
           const SizedBox(height: 4),
           Text(trend,
               style: TextStyle(
-                  fontSize: 11, color: trendColor, fontWeight: FontWeight.w600)),
+                  fontSize: 11,
+                  color: trendColor,
+                  fontWeight: FontWeight.w600)),
         ]),
       ),
     );
@@ -860,13 +862,11 @@ class _ActiveCropCard extends StatelessWidget {
                 builder: (context, snapshot) {
                   final imageUrl = snapshot.data?.trim();
                   if (imageUrl != null && imageUrl.isNotEmpty) {
-                    return CachedNetworkImage(
-                      imageUrl: imageUrl,
+                    return AppImageReference(
+                      imageRef: imageUrl,
                       fit: BoxFit.cover,
-                      placeholder: (_, __) =>
-                          _DashboardCropPlaceholder(crop: crop),
-                      errorWidget: (_, __, ___) =>
-                          _DashboardCropPlaceholder(crop: crop),
+                      placeholder: _DashboardCropPlaceholder(crop: crop),
+                      errorWidget: _DashboardCropPlaceholder(crop: crop),
                     );
                   }
                   return _DashboardCropPlaceholder(crop: crop);
@@ -1058,7 +1058,7 @@ class _TodayTasksCard extends StatelessWidget {
             ...missedTasks.map((t) => _DashboardTaskRow(
                   task: t,
                   isMissed: true,
-              onDone: () => _openTask(context, t),
+                  onDone: () => _openTask(context, t),
                 )),
             if (todayTasks.isNotEmpty) const SizedBox(height: 8),
           ],
@@ -1082,7 +1082,7 @@ class _TodayTasksCard extends StatelessWidget {
             ...todayTasks.map((t) => _DashboardTaskRow(
                   task: t,
                   isMissed: false,
-              onDone: () => _openTask(context, t),
+                  onDone: () => _openTask(context, t),
                 )),
           ],
         ],
@@ -1112,39 +1112,37 @@ class _DashboardTaskRow extends StatelessWidget {
       ),
       child: Row(children: [
         Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(task.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textDark)),
-                const SizedBox(height: 2),
-                Row(children: [
-                  Icon(
-                    isMissed ? Icons.warning_amber : Icons.schedule,
-                    size: 11,
-                    color: isMissed ? Colors.red : AppColors.textGray,
-                  ),
-                  const SizedBox(width: 3),
-                  Flexible(
-                    child: Text(
-                      isMissed
-                          ? 'Overdue — ${_dueDateLabel(task.dueAt)}'
-                          : 'Due ${_dueTimeLabel(task.dueAt)}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 11,
-                          color:
-                              isMissed ? Colors.red : AppColors.textGray),
-                    ),
-                  ),
-                ]),
-              ]),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(task.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textDark)),
+            const SizedBox(height: 2),
+            Row(children: [
+              Icon(
+                isMissed ? Icons.warning_amber : Icons.schedule,
+                size: 11,
+                color: isMissed ? Colors.red : AppColors.textGray,
+              ),
+              const SizedBox(width: 3),
+              Flexible(
+                child: Text(
+                  isMissed
+                      ? 'Overdue — ${_dueDateLabel(task.dueAt)}'
+                      : 'Due ${_dueTimeLabel(task.dueAt)}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: isMissed ? Colors.red : AppColors.textGray),
+                ),
+              ),
+            ]),
+          ]),
         ),
         const SizedBox(width: 8),
         GestureDetector(
@@ -1154,9 +1152,9 @@ class _DashboardTaskRow extends StatelessWidget {
             decoration: BoxDecoration(
                 color: isMissed ? Colors.orange : AppColors.primary,
                 borderRadius: BorderRadius.circular(8)),
-            child: Text(
+            child: const Text(
               'OPEN',
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 11,
                   color: Colors.white,
                   fontWeight: FontWeight.w700),

@@ -96,7 +96,8 @@ class _CropCareAppState extends State<CropCareApp> {
     };
     auth.addListener(_authWarmUpListener!);
 
-    _backendConnectivitySub = connectivity.onConnectivityChanged.listen((online) {
+    _backendConnectivitySub =
+        connectivity.onConnectivityChanged.listen((online) {
       if (!online || !auth.isAuthenticated) {
         return;
       }
@@ -170,8 +171,8 @@ class _CropCareAppState extends State<CropCareApp> {
         builder: (_) => CropDetailScreen(
           crop: crop,
           initialTabIndex: 1, // Progress tab
-          initialSelectedDate: DateTime(
-              task.dueAt.year, task.dueAt.month, task.dueAt.day),
+          initialSelectedDate:
+              DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day),
         ),
       ),
     );
@@ -217,14 +218,20 @@ class _CropCareAppState extends State<CropCareApp> {
         ),
 
         // Crops
-        ChangeNotifierProxyProvider2<SupabaseService, DatabaseHelper,
-            CropsProvider>(
+        ChangeNotifierProxyProvider3<SupabaseService, DatabaseHelper,
+            SyncService, CropsProvider>(
           create: (ctx) => CropsProvider(
             supabase: ctx.read<SupabaseService>(),
             db: ctx.read<DatabaseHelper>(),
+            sync: ctx.read<SyncService>(),
           ),
-          update: (_, svc, db, prev) =>
-              prev ?? CropsProvider(supabase: svc, db: db),
+          update: (_, svc, db, sync, prev) =>
+              prev ??
+              CropsProvider(
+                supabase: svc,
+                db: db,
+                sync: sync,
+              ),
         ),
 
         // Notifications
@@ -247,7 +254,8 @@ class _CropCareAppState extends State<CropCareApp> {
             aiBackend: ctx.read<AiBackendService>(),
             connectivity: ctx.read<ConnectivityService>(),
           ),
-          update: (_, svc, db, aiBackend, connectivity, prev) => prev ??
+          update: (_, svc, db, aiBackend, connectivity, prev) =>
+              prev ??
               ChatProvider(
                 supabase: svc,
                 db: db,

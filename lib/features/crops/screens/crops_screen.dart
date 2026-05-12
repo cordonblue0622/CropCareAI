@@ -1,11 +1,12 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../data/local/database_helper.dart';
 import '../../../data/models/crop_model.dart';
 import '../../../data/remote/supabase_service.dart';
+import '../../../shared/widgets/app_image_reference.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../providers/crops_provider.dart';
 import 'crop_detail_screen.dart';
@@ -22,7 +23,6 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
   CropType? _filterType;
   String _searchQuery = '';
   final _searchCtrl = TextEditingController();
-  final Map<String, Future<String?>> _previewImageFutures = {};
 
   @override
   void dispose() {
@@ -41,11 +41,13 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
     }).toList();
   }
 
-  Future<String?> _previewImageFor(String cropId) {
-    return _previewImageFutures.putIfAbsent(
-      cropId,
-      () => context.read<SupabaseService>().getLatestCropImageUrl(cropId),
-    );
+  Future<String?> _previewImageFor(String cropId) async {
+    final localImage =
+        await context.read<DatabaseHelper>().getLatestCropImageUrl(cropId);
+    if (localImage != null) {
+      return localImage;
+    }
+    return context.read<SupabaseService>().getLatestCropImageUrl(cropId);
   }
 
   @override
@@ -77,7 +79,6 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
       body: RefreshIndicator(
         color: AppColors.primary,
         onRefresh: () async {
-          setState(() => _previewImageFutures.clear());
           if (user != null) await crops.fetchCrops(user.id);
         },
         child: Column(children: [
@@ -140,17 +141,15 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
                             await Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (_) => CropDetailScreen(crop: filtered[i]),
+                                builder: (_) =>
+                                    CropDetailScreen(crop: filtered[i]),
                               ),
                             );
-                            if (!mounted) return;
-                            setState(() {
-                              _previewImageFutures.remove(filtered[i].id);
-                            });
                           },
                           child: _CropCard(
                             crop: filtered[i],
-                            previewImageFuture: _previewImageFor(filtered[i].id),
+                            previewImageFuture:
+                                _previewImageFor(filtered[i].id),
                           ),
                         ),
                       ),
@@ -333,11 +332,11 @@ class _CropCard extends StatelessWidget {
                 builder: (context, snapshot) {
                   final imageUrl = snapshot.data?.trim();
                   if (imageUrl != null && imageUrl.isNotEmpty) {
-                    return CachedNetworkImage(
-                      imageUrl: imageUrl,
+                    return AppImageReference(
+                      imageRef: imageUrl,
                       fit: BoxFit.cover,
-                      placeholder: (_, __) => _CropImagePlaceholder(crop: crop),
-                      errorWidget: (_, __, ___) => _CropImagePlaceholder(crop: crop),
+                      placeholder: _CropImagePlaceholder(crop: crop),
+                      errorWidget: _CropImagePlaceholder(crop: crop),
                     );
                   }
                   return _CropImagePlaceholder(crop: crop);

@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../core/utils/image_reference.dart';
 import '../../../data/local/bundled_disease_knowledge.dart';
 import '../../../data/local/database_helper.dart';
 import '../../../data/models/chat_message_model.dart';
@@ -195,6 +196,7 @@ class ChatProvider extends ChangeNotifier {
   Future<void> sendMessage({
     required String userId,
     required String content,
+    bool hideMessageTextInUi = false,
     DiagnosisModel? attachedDiagnosis,
     List<int>? attachedImageBytes,
     String? attachedImageMimeType,
@@ -214,16 +216,20 @@ class ChatProvider extends ChangeNotifier {
       await _markCurrentSessionOffline();
     }
 
-    final hadAssistantBefore =
-      _currentMessages.any((m) => m.role == MessageRole.assistant);
+    final hasShownAddCropSuggestion = _currentMessages.any(
+      (m) =>
+          m.role == MessageRole.system &&
+          m.metadata?['type'] == 'add_crop_suggestion',
+    );
     final hasAttachedImage =
-      attachedImageBytes != null && attachedImageBytes.isNotEmpty;
+        attachedImageBytes != null && attachedImageBytes.isNotEmpty;
     final resolvedHintCropType = _resolveConversationCropHint(
       attachedDiagnosis: attachedDiagnosis,
       explicitHint: hintCropType,
     );
-    final requiresFreshImage =
-      attachedDiagnosis == null && !hasAttachedImage && resolvedHintCropType == null;
+    final requiresFreshImage = attachedDiagnosis == null &&
+        !hasAttachedImage &&
+        resolvedHintCropType == null;
 
     final conversationHistory = _recentConversationHistory();
 
@@ -237,6 +243,13 @@ class ChatProvider extends ChangeNotifier {
         bytes: attachedImageBytes,
       );
     }
+    final localImageReference =
+        hasAttachedImage ? buildInlineImageDataUrl(attachedImageBytes) : null;
+    final persistedImageReference = uploadedImageUrl ?? localImageReference;
+    final userMetadata = <String, dynamic>{
+      if (persistedImageReference != null) 'image_url': persistedImageReference,
+      if (hideMessageTextInUi) 'hide_text': true,
+    };
 
     final userMsg = ChatMessageModel(
       id: msgId,
@@ -245,11 +258,9 @@ class ChatProvider extends ChangeNotifier {
       role: MessageRole.user,
       content: content,
       createdAt: DateTime.now(),
-      metadata:
-          uploadedImageUrl != null ? {'image_url': uploadedImageUrl} : null,
-        imageBytes: hasAttachedImage
-          ? Uint8List.fromList(attachedImageBytes)
-          : null,
+        metadata: userMetadata.isEmpty ? null : userMetadata,
+      imageBytes:
+          hasAttachedImage ? Uint8List.fromList(attachedImageBytes) : null,
       isVideoFrame: isVideoFrame,
     );
     _currentMessages.add(userMsg);
@@ -290,17 +301,25 @@ class ChatProvider extends ChangeNotifier {
           conversationHistory: conversationHistory,
           hintCropType: resolvedHintCropType,
         );
-        final inferredDiseaseName =
-            (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
+        final backendDiseaseName = _inferDiseaseName(backendResponse.answer);
+        final inferredDiseaseName = backendDiseaseName.isNotEmpty
+            ? backendDiseaseName
+            : (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
                 ? attachedDiagnosis!.diseaseName.trim()
-                : _inferDiseaseName(backendResponse.answer);
+                : '';
         final inferredCropType = _inferCropType(
-          labelKey: attachedDiagnosis?.labelKey,
+          labelKey: backendDiseaseName.isNotEmpty
+              ? null
+              : attachedDiagnosis?.labelKey,
           diseaseName: inferredDiseaseName,
           aiContent: backendResponse.answer,
         );
-        final inferredLabelKey =
-            (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
+        final inferredLabelKey = backendDiseaseName.isNotEmpty
+            ? _inferLabelKey(
+                diseaseName: inferredDiseaseName,
+                cropType: inferredCropType,
+              )
+            : (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
                 ? attachedDiagnosis!.labelKey!.trim()
                 : _inferLabelKey(
                     diseaseName: inferredDiseaseName,
@@ -316,8 +335,8 @@ class ChatProvider extends ChangeNotifier {
         // Store recommended_actions in metadata but DON'T append them to text
         // — they are rendered as an interactive checklist in the UI.
         aiContent = _formatBackendResponse(backendResponse);
-        final showTreatmentCard =
-            !hadAssistantBefore &&
+        final showTreatmentCard = backendResponse.inAppCropScope &&
+          !hasShownAddCropSuggestion &&
             _shouldShowTreatmentCard(
               attachedDiagnosis: attachedDiagnosis,
               recommendedActions: normalizedActions,
@@ -329,16 +348,13 @@ class ChatProvider extends ChangeNotifier {
           'sources': backendResponse.sources,
           'recommended_actions':
               showTreatmentCard ? normalizedActions : const <String>[],
-          'warnings': showTreatmentCard
-              ? backendResponse.warnings
-              : const <String>[],
+          'warnings':
+              showTreatmentCard ? backendResponse.warnings : const <String>[],
           'disease_name': inferredDiseaseName,
           'crop_type': inferredCropType,
           'label_key': inferredLabelKey,
           'severity': attachedDiagnosis?.severity.value ?? 'moderate',
-          'in_app_crop_scope': backendResponse.inAppCropScope ||
-              attachedDiagnosis != null ||
-              _supportedTreatmentCardCrops.contains(inferredCropType),
+          'in_app_crop_scope': backendResponse.inAppCropScope,
           'show_treatment_card': showTreatmentCard,
         };
       } catch (error) {
@@ -366,8 +382,7 @@ class ChatProvider extends ChangeNotifier {
           inferredDiseaseName: fallbackDiseaseName,
           inferredCropType: fallbackCropType,
         );
-        final showTreatmentCard =
-            !hadAssistantBefore &&
+        final showTreatmentCard = !hasShownAddCropSuggestion &&
             _shouldShowTreatmentCard(
               attachedDiagnosis: attachedDiagnosis,
               recommendedActions: fallbackActions,
@@ -424,22 +439,40 @@ class ChatProvider extends ChangeNotifier {
     // Treatment checklist + "Add to My Crops" only on first diagnosis turn with backend consent
     final showTreatmentCard = aiMetadata['show_treatment_card'] == true;
     if (showTreatmentCard) {
-      final inferredDiseaseName =
-          (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
+      final inAppCropScope = aiMetadata['in_app_crop_scope'] == true;
+      if (!inAppCropScope) {
+        notifyListeners();
+        return;
+      }
+      final assistantDiseaseName =
+          (aiMetadata['disease_name'] as String? ?? '').trim();
+      final preferAssistantDiagnosis = assistantDiseaseName.isNotEmpty &&
+          (aiMetadata['model'] as String? ?? '').trim() != 'local-fallback';
+      final inferredDiseaseName = preferAssistantDiagnosis
+          ? assistantDiseaseName
+          : (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
               ? attachedDiagnosis!.diseaseName.trim()
-              : (aiMetadata['disease_name'] as String? ?? '').trim();
+              : assistantDiseaseName;
       final inferredCropType = _inferCropType(
-        labelKey: attachedDiagnosis?.labelKey,
+        labelKey: preferAssistantDiagnosis ? null : attachedDiagnosis?.labelKey,
         diseaseName: inferredDiseaseName,
         aiContent: (aiMetadata['crop_type'] as String? ?? aiContent),
       );
       final isSupportedCrop =
           _supportedTreatmentCardCrops.contains(inferredCropType);
-      final inferredLabelKey =
-          (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
+      final metadataLabelKey =
+          (aiMetadata['label_key'] as String? ?? '').trim();
+      final inferredLabelKey = preferAssistantDiagnosis
+          ? (metadataLabelKey.isNotEmpty
+              ? metadataLabelKey
+              : _inferLabelKey(
+                  diseaseName: inferredDiseaseName,
+                  cropType: inferredCropType,
+                ))
+          : (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
               ? attachedDiagnosis!.labelKey!.trim()
-              : ((aiMetadata['label_key'] as String? ?? '').trim().isNotEmpty
-                  ? (aiMetadata['label_key'] as String).trim()
+              : (metadataLabelKey.isNotEmpty
+                  ? metadataLabelKey
                   : _inferLabelKey(
                       diseaseName: inferredDiseaseName,
                       cropType: inferredCropType,
@@ -459,10 +492,16 @@ class ChatProvider extends ChangeNotifier {
           'disease_name': inferredDiseaseName,
           'label_key': inferredLabelKey,
           'severity': attachedDiagnosis?.severity.value ?? 'moderate',
+          'diagnosis_mode': preferAssistantDiagnosis
+              ? DiagnosisMode.online.value
+              : attachedDiagnosis?.diagnosisMode.value ??
+                  ((aiMetadata['model'] as String?) == 'local-fallback'
+                      ? DiagnosisMode.offline.value
+                      : DiagnosisMode.online.value),
           'crop_type': inferredCropType,
           'summary': aiContent,
           'model_name': aiMetadata['model'],
-          'image_url': uploadedImageUrl,
+          'image_url': persistedImageReference,
           'recommended_actions':
               (aiMetadata['recommended_actions'] as List<dynamic>? ?? []),
         },
@@ -519,19 +558,22 @@ class ChatProvider extends ChangeNotifier {
       return false;
     }
 
-    final diseaseName =
-        attachedDiagnosis?.diseaseName.trim() ?? inferredDiseaseName;
+    final diseaseName = inferredDiseaseName.trim().isNotEmpty
+        ? inferredDiseaseName.trim()
+        : (attachedDiagnosis?.diseaseName.trim() ?? '');
     if (diseaseName.isEmpty) {
       return false;
     }
 
-    final cropType = attachedDiagnosis != null
-        ? _inferCropType(
-            labelKey: attachedDiagnosis.labelKey,
-            diseaseName: attachedDiagnosis.diseaseName,
-            aiContent: '',
-          )
-        : inferredCropType;
+    final cropType = inferredCropType.trim().isNotEmpty
+        ? inferredCropType.trim()
+        : attachedDiagnosis != null
+            ? _inferCropType(
+                labelKey: attachedDiagnosis.labelKey,
+                diseaseName: attachedDiagnosis.diseaseName,
+                aiContent: '',
+              )
+            : '';
     return _supportedTreatmentCardCrops.contains(cropType);
   }
 
@@ -736,7 +778,10 @@ class ChatProvider extends ChangeNotifier {
   ) {
     final exampleSteps = <String>[];
     for (final knowledge in cropKnowledge) {
-      for (final step in [...?knowledge.treatmentSteps, ...?knowledge.preventionSteps]) {
+      for (final step in [
+        ...?knowledge.treatmentSteps,
+        ...?knowledge.preventionSteps
+      ]) {
         final normalized = step.trim();
         if (normalized.isNotEmpty && !exampleSteps.contains(normalized)) {
           exampleSteps.add(normalized);
@@ -751,7 +796,11 @@ class ChatProvider extends ChangeNotifier {
     }
 
     final examplesText = exampleSteps.isNotEmpty
-        ? exampleSteps.asMap().entries.map((entry) => '${entry.key + 1}. ${entry.value}').join('\n')
+        ? exampleSteps
+            .asMap()
+            .entries
+            .map((entry) => '${entry.key + 1}. ${entry.value}')
+            .join('\n')
         : 'Tell me the product name or active ingredient and I will compare it against the offline crop guidance I have for $cropType.';
 
     return 'I can still help review a product for your $cropType crop offline, but I cannot verify live web listings right now.\n\n'
@@ -1172,7 +1221,8 @@ class ChatProvider extends ChangeNotifier {
         continue;
       }
 
-      final cropType = (metadata['crop_type'] as String? ?? '').trim().toLowerCase();
+      final cropType =
+          (metadata['crop_type'] as String? ?? '').trim().toLowerCase();
       if (cropType.isNotEmpty) {
         return cropType;
       }

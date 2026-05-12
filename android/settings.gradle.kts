@@ -1,10 +1,36 @@
+import java.io.File
+
 pluginManagement {
     val flutterSdkPath =
         run {
             val properties = java.util.Properties()
-            file("local.properties").inputStream().use { properties.load(it) }
+            var searchDir: File? = settingsDir
+            var localPropertiesFile: File? = null
+
+            repeat(5) {
+                val directCandidate = searchDir?.resolve("local.properties")
+                if (directCandidate?.isFile == true) {
+                    localPropertiesFile = directCandidate
+                    return@repeat
+                }
+
+                val androidCandidate = searchDir?.resolve("android/local.properties")
+                if (androidCandidate?.isFile == true) {
+                    localPropertiesFile = androidCandidate
+                    return@repeat
+                }
+
+                searchDir = searchDir?.parentFile
+            }
+
+            localPropertiesFile?.inputStream()?.use { properties.load(it) }
+
             val flutterSdkPath = properties.getProperty("flutter.sdk")
-            require(flutterSdkPath != null) { "flutter.sdk not set in local.properties" }
+                ?: System.getenv("FLUTTER_ROOT")
+                ?: System.getenv("FLUTTER_HOME")
+            require(flutterSdkPath != null) {
+                "Flutter SDK not found. Set flutter.sdk in android/local.properties or FLUTTER_ROOT."
+            }
             flutterSdkPath
         }
 

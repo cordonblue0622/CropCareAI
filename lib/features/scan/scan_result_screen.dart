@@ -8,11 +8,11 @@ import 'package:uuid/uuid.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../core/utils/image_reference.dart';
 import '../../../data/models/crop_model.dart';
 import '../../../data/models/diagnosis_model.dart';
 import '../../../data/models/disease_knowledge_model.dart';
 import '../../../data/remote/ai_backend_service.dart';
-import '../../../data/remote/supabase_service.dart';
 import '../../../services/local_classifier_service.dart';
 import '../../../services/video_diagnosis_service.dart';
 import '../../../core/utils/label_formatter.dart';
@@ -72,17 +72,18 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       }
 
       final selectedCrop = _resolveSelectedCrop(cropsProvider);
-      final imageBytes = widget.imageBytes ?? await widget.imageFile.readAsBytes();
+      final imageBytes =
+          widget.imageBytes ?? await widget.imageFile.readAsBytes();
       _resolvedImageBytes = imageBytes;
 
       AiBackendDetectResponse detection;
       if (widget.isFromVideo && widget.videoFile != null) {
         try {
-          final videoResult = await VideoDiagnosisService(
-                  localClassifier: localClassifier)
-              .analyzeVideo(
-                  videoFilePath: widget.videoFile!.path,
-                  cropTypeHint: selectedCrop?.cropType.value);
+          final videoResult =
+              await VideoDiagnosisService(localClassifier: localClassifier)
+                  .analyzeVideo(
+                      videoFilePath: widget.videoFile!.path,
+                      cropTypeHint: selectedCrop?.cropType.value);
           if (videoResult.bestDetection != null) {
             detection = videoResult.bestDetection!;
           } else {
@@ -134,10 +135,10 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       );
       final infoMessage = rejectionMessage ??
           (match == null
-            ? 'We could not confidently identify a supported crop disease from this photo. Upload a clearer close-up of the affected leaf and try again.'
-            : detection.source.toLowerCase().contains('local')
-                ? 'Analyzed on device using ${detection.model.name} ${detection.model.version}.'
-                : 'Analyzed using ${detection.model.name} ${detection.model.version} via the CropCare AI backend.');
+              ? 'We could not confidently identify a supported crop disease from this photo. Upload a clearer close-up of the affected leaf and try again.'
+              : detection.source.toLowerCase().contains('local')
+                  ? 'Analyzed on device using ${detection.model.name} ${detection.model.version}.'
+                  : 'Analyzed using ${detection.model.name} ${detection.model.version} via the CropCare AI backend.');
       final analysisMessage = infoMessage;
       final diagnosis = match != null && _shouldAttachDiagnosisToChat(detection)
           ? _matchToDiagnosis(
@@ -188,14 +189,15 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
     final normalizedInitialQuery = widget.initialQuery?.trim();
     String? initialQuery;
+    var hideInitialPromptText = false;
 
     if (normalizedInitialQuery != null && normalizedInitialQuery.isNotEmpty) {
       initialQuery = normalizedInitialQuery;
     } else if (diagnosis == null) {
       initialQuery = _buildUncertainScanPrompt();
+      hideInitialPromptText = true;
     }
     // else: diagnosis != null with no custom query — ChatScreen builds its own prompt
-
 
     final cropsProvider = context.read<CropsProvider>();
     final hintCropType = _resolveChatHintCropType(
@@ -210,6 +212,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         builder: (_) => ChatScreen(
           startFreshSession: true,
           initialQuery: initialQuery,
+          hideInitialPromptText: hideInitialPromptText,
           initialDiagnosis: diagnosis,
           initialImageBytes: _resolvedImageBytes ?? widget.imageBytes,
           initialIsVideoFrame: widget.isFromVideo,
@@ -218,7 +221,6 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       ),
     );
   }
-
 
   Future<void> _trackDiagnosis() async {
     final user = context.read<AuthProvider>().currentUser;
@@ -236,6 +238,10 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     setState(() => _saving = true);
     try {
       final now = DateTime.now();
+      final imageUrl =
+          _resolvedImageBytes != null && _resolvedImageBytes!.isNotEmpty
+              ? buildInlineImageDataUrl(_resolvedImageBytes!)
+              : null;
       final diagnosis = DiagnosisModel(
         id: const Uuid().v4(),
         cropId: cropId,
@@ -248,6 +254,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
           knowledge: _match,
           detection: _detection,
         ),
+        imageUrl: imageUrl,
         resultLabel: _primaryDetection?.label,
         summary: _match!.description ?? _analysisMessage,
         detectedRegionsJson: _detection?.toDetectedRegionsJson(),
@@ -258,7 +265,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         createdAt: now,
         updatedAt: now,
       );
-      await context.read<SupabaseService>().upsertDiagnosis(diagnosis.toMap());
+      await context.read<CropsProvider>().saveDiagnosis(diagnosis);
       if (mounted) setState(() => _tracked = true);
     } catch (e) {
       if (mounted) {
@@ -383,23 +390,24 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                     OutlinedButton.icon(
                       onPressed: () {
                         final crops = context.read<CropsProvider>();
-                        final hint = _resolveSelectedCrop(crops)?.cropType.value;
+                        final hint =
+                            _resolveSelectedCrop(crops)?.cropType.value;
                         Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => ChatScreen(
-                            startFreshSession: true,
-                            initialDiagnosis: _match != null
-                                ? _matchToDiagnosis(_match!)
-                                : null,
-                            initialImageBytes: _resolvedImageBytes,
-                            initialQuery: _match == null
-                                ? _buildUncertainScanPrompt()
-                                : null,
-                            hintCropType: hint,
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ChatScreen(
+                              startFreshSession: true,
+                              initialDiagnosis: _match != null
+                                  ? _matchToDiagnosis(_match!)
+                                  : null,
+                              initialImageBytes: _resolvedImageBytes,
+                              initialQuery: _match == null
+                                  ? _buildUncertainScanPrompt()
+                                  : null,
+                              hintCropType: hint,
+                            ),
                           ),
-                        ),
-                      );
+                        );
                       },
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: AppColors.primary),
@@ -410,11 +418,11 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                       ),
                       icon: const Icon(Icons.chat_bubble_outline),
                       label: Text(
-                        _match == null
-                            ? 'Ask AI to analyze this photo'
-                            : 'Ask AI for more info',
-                        style: const TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.w700)),
+                          _match == null
+                              ? 'Ask AI to analyze this photo'
+                              : 'Ask AI for more info',
+                          style: const TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.w700)),
                     ),
                   ],
                 ),
@@ -789,6 +797,14 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       return 'This photo does not clearly match a supported crop disease. Upload a clear crop-leaf photo and try again.';
     }
 
+    final isLocalDetection = detection.source.toLowerCase().contains('local');
+    final confidence = primary.confidence;
+    if (selectedCrop == null &&
+        isLocalDetection &&
+        confidence < AppConstants.temporaryScannerAcceptedConfidence) {
+      return 'This photo could not be confidently verified as a supported crop image. Upload a clear close-up of the affected crop leaf and try again.';
+    }
+
     final predictedCropType = _tryParseCropType(detection.cropType);
     if (selectedCrop != null &&
         predictedCropType != null &&
@@ -817,8 +833,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     final label = detection.primaryDetection?.label.toLowerCase() ?? '';
 
     return detection.status.toLowerCase() == 'ok' &&
-      detection.primaryDetection != null &&
-      !source.contains('mock') &&
+        detection.primaryDetection != null &&
+        !source.contains('mock') &&
         !modelName.contains('mock') &&
         label != 'sample_disease_region';
   }

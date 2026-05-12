@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
@@ -408,6 +410,83 @@ class DatabaseHelper {
     );
   }
 
+  Future<String?> getLatestCropImageUrl(String cropId) async {
+    if (_isDisabledOnPlatform) return null;
+    final db = await database;
+
+    Future<String?> firstImageFromTable({
+      required String table,
+      required String where,
+      required List<Object?> whereArgs,
+    }) async {
+      final rows = await db.query(
+        table,
+        columns: const ['image_url'],
+        where: where,
+        whereArgs: whereArgs,
+        orderBy: 'created_at DESC',
+      );
+      for (final row in rows) {
+        final imageUrl = _normalizeOptionalString(row['image_url']);
+        if (imageUrl != null) {
+          return imageUrl;
+        }
+      }
+      return null;
+    }
+
+    final progressImage = await firstImageFromTable(
+      table: AppConstants.progressUpdatesTable,
+      where: 'crop_id = ? AND is_deleted = 0',
+      whereArgs: [cropId],
+    );
+    if (progressImage != null) {
+      return progressImage;
+    }
+
+    final diagnosisImage = await firstImageFromTable(
+      table: AppConstants.diagnosesTable,
+      where: 'crop_id = ? AND is_deleted = 0',
+      whereArgs: [cropId],
+    );
+    if (diagnosisImage != null) {
+      return diagnosisImage;
+    }
+
+    final sessionRows = await db.query(
+      AppConstants.chatSessionsTable,
+      columns: const ['id'],
+      where: 'crop_id = ? AND is_deleted = 0',
+      whereArgs: [cropId],
+      orderBy: 'last_message_at DESC',
+    );
+
+    for (final session in sessionRows) {
+      final sessionId = session['id'] as String?;
+      if (sessionId == null || sessionId.isEmpty) {
+        continue;
+      }
+
+      final messageRows = await db.query(
+        AppConstants.chatMessagesTable,
+        columns: const ['metadata'],
+        where: 'session_id = ?',
+        whereArgs: [sessionId],
+        orderBy: 'created_at DESC',
+      );
+
+      for (final message in messageRows) {
+        final metadata = _parseMetadata(message['metadata']);
+        final imageUrl = _normalizeOptionalString(metadata?['image_url']);
+        if (imageUrl != null) {
+          return imageUrl;
+        }
+      }
+    }
+
+    return null;
+  }
+
   Future<void> closeDatabase() async {
     if (_isDisabledOnPlatform) return;
     final db = _database;
@@ -423,6 +502,31 @@ class DatabaseHelper {
     if (_isDisabledOnPlatform) return;
     final db = await database;
     await db.insert(table, data, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Map<String, dynamic>? _parseMetadata(dynamic raw) {
+    if (raw is String && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {
+        return null;
+      }
+    }
+    if (raw is Map) {
+      return Map<String, dynamic>.from(raw);
+    }
+    return null;
+  }
+
+  String? _normalizeOptionalString(dynamic raw) {
+    if (raw is! String) {
+      return null;
+    }
+    final value = raw.trim();
+    return value.isEmpty ? null : value;
   }
 
   Future<void> upsertRows(

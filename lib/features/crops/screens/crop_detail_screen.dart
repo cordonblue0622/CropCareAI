@@ -1,14 +1,15 @@
 import 'dart:typed_data';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/image_reference.dart';
 import '../../../core/utils/label_formatter.dart';
 import '../../../data/models/chat_message_model.dart';
 import '../../../data/models/chat_session_model.dart';
@@ -20,18 +21,21 @@ import '../../../data/models/treatment_task_model.dart';
 import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../services/health_score_service.dart';
+import '../../../services/local_classifier_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../chat/screens/chat_screen.dart';
 import '../providers/crops_provider.dart';
 import 'add_crop_screen.dart';
 import '../../../services/notification_service.dart';
+import '../../../shared/widgets/app_image_reference.dart';
 import '../widgets/calendar_tracker.dart';
 import '../widgets/health_score_graph.dart';
 
 class CropDetailScreen extends StatefulWidget {
   final CropModel crop;
-  final int? initialTabIndex;          // 0..3 to override default tab
-  final DateTime? initialSelectedDate; // for calendar deep-linking from notifications
+  final int? initialTabIndex; // 0..3 to override default tab
+  final DateTime?
+      initialSelectedDate; // for calendar deep-linking from notifications
 
   const CropDetailScreen({
     super.key,
@@ -63,7 +67,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     return DateTime(now.year, now.month, now.day);
   }
 
-  List<HealthScorePoint> get _healthCurve => HealthScoreService.compute14DayCurve(
+  List<HealthScorePoint> get _healthCurve =>
+      HealthScoreService.compute14DayCurve(
         tasks: _tasks,
         diagnoses: _diagnoses,
         now: DateTime.now(),
@@ -222,7 +227,6 @@ class _CropDetailScreenState extends State<CropDetailScreen>
 
   Future<void> _showCheckInSheetForTask(TreatmentTaskModel task) async {
     final cropsProvider = context.read<CropsProvider>();
-    final supabaseService = context.read<SupabaseService>();
     final didSubmit = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -235,9 +239,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         latestDiagnosis: _diagnosisForTask(task),
         onSubmitted: (newScore, newStatus, update) async {
           final completedAt = update.createdAt;
+          await cropsProvider.saveProgressUpdate(update);
           await cropsProvider.updateCropHealthScore(
               _crop.id, newScore, newStatus);
-          await supabaseService.insertProgressUpdate(update.toMap());
           if (!mounted) return;
           setState(() {
             _crop = _crop.copyWith(
@@ -382,10 +386,10 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                 fit: StackFit.expand,
                 children: [
                   if (headerImageUrl != null)
-                    CachedNetworkImage(
-                      imageUrl: headerImageUrl,
+                    AppImageReference(
+                      imageRef: headerImageUrl,
                       fit: BoxFit.cover,
-                      placeholder: (_, __) => Container(
+                      placeholder: Container(
                         decoration: const BoxDecoration(
                           gradient: LinearGradient(
                             colors: [AppColors.primaryDark, AppColors.primary],
@@ -394,7 +398,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                           ),
                         ),
                       ),
-                      errorWidget: (_, __, ___) => Container(
+                      errorWidget: Container(
                         decoration: const BoxDecoration(
                           gradient: LinearGradient(
                             colors: [AppColors.primaryDark, AppColors.primary],
@@ -807,8 +811,8 @@ class _DiagnosisSummaryCard extends StatelessWidget {
         Row(children: [
           Expanded(
             child: Text(humanizeDiseaseLabel(diagnosis.diseaseName),
-                style: const TextStyle(
-                    fontWeight: FontWeight.w700, fontSize: 15)),
+                style:
+                    const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1219,17 +1223,17 @@ class _ProgressCard extends StatelessWidget {
         if (update.imageUrl != null && update.imageUrl!.isNotEmpty)
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: CachedNetworkImage(
-              imageUrl: update.imageUrl!,
+            child: AppImageReference(
+              imageRef: update.imageUrl!,
               width: 64,
               height: 64,
               fit: BoxFit.cover,
-              placeholder: (_, __) => Container(
+              placeholder: Container(
                   width: 64,
                   height: 64,
                   color: Colors.grey[200],
                   child: const Icon(Icons.image, color: Colors.grey)),
-              errorWidget: (_, __, ___) => Container(
+              errorWidget: Container(
                   width: 64,
                   height: 64,
                   color: Colors.grey[200],
@@ -1360,44 +1364,44 @@ class _DiagnosesTab extends StatelessWidget {
                 const _SectionHeader('AI Diagnoses'),
                 const SizedBox(height: 8),
                 ...diagnoses.map((d) => Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border(
-                        left: BorderSide(
-                            color: _severityColor(d.severity), width: 4)),
-                  ),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(children: [
-                          Expanded(
-                            child: Text(humanizeDiseaseLabel(d.diseaseName),
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 15)),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: _severityColor(d.severity)
-                                  .withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border(
+                            left: BorderSide(
+                                color: _severityColor(d.severity), width: 4)),
+                      ),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Expanded(
+                                child: Text(humanizeDiseaseLabel(d.diseaseName),
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 15)),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
                                   color: _severityColor(d.severity)
-                                      .withOpacity(0.4)),
-                            ),
-                            child: Text(
-                              d.severity.name.toUpperCase(),
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  color: _severityColor(d.severity)),
-                            ),
-                          ),
+                                      .withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: _severityColor(d.severity)
+                                          .withOpacity(0.4)),
+                                ),
+                                child: Text(
+                                  d.severity.name.toUpperCase(),
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: _severityColor(d.severity)),
+                                ),
+                              ),
                             ]),
                             if (d.confidenceScore != null) ...[
                               const SizedBox(height: 4),
@@ -1525,8 +1529,8 @@ class _ChatBubble extends StatelessWidget {
                   if (message.imageUrl != null)
                     ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child: CachedNetworkImage(
-                        imageUrl: message.imageUrl!,
+                      child: AppImageReference(
+                        imageRef: message.imageUrl!,
                         width: 180,
                         fit: BoxFit.cover,
                       ),
@@ -1699,16 +1703,18 @@ class _CheckInSheetState extends State<_CheckInSheet> {
     setState(() => _submitting = true);
     try {
       final user = context.read<AuthProvider>().currentUser;
-      final supabase = context.read<SupabaseService>();
       final aiBackend = context.read<AiBackendService>();
+      final cropsProvider = context.read<CropsProvider>();
       final submittedAt = DateTime.now();
+      final imageUrl = buildInlineImageDataUrl(_photoBytes!);
 
-      final imageUrl = await supabase.uploadChatImage(
-        userId: user?.id ?? 'unknown',
-        messageId:
-            'progress-${widget.crop.id}-${submittedAt.millisecondsSinceEpoch}',
-        bytes: _photoBytes!.toList(),
-      );
+      final validationDetection = await _validateCheckInPhoto();
+      if (validationDetection == null) {
+        if (mounted) {
+          setState(() => _submitting = false);
+        }
+        return;
+      }
 
       final days = widget.activeTreatment?.startedAt != null
           ? DateTime.now().difference(widget.activeTreatment!.startedAt!).inDays
@@ -1759,9 +1765,9 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       }
 
       for (final task in widget.checkedTasks) {
-        await supabase.markTreatmentTaskCompleted(
+        await cropsProvider.markTaskDone(
           task.id,
-          completedAt: submittedAt,
+          recomputeHealthScore: false,
         );
       }
 
@@ -1774,8 +1780,9 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         updateSource: UpdateSource.image,
         healthScore: newScore,
         progressStatus: newStatus,
-        detectedDiseaseName: widget.latestDiagnosis?.diseaseName ??
-            widget.activeTreatment?.diseaseName,
+        detectedDiseaseName: validationDetection.primaryDetection?.label ??
+          widget.latestDiagnosis?.diseaseName ??
+          widget.activeTreatment?.diseaseName,
         detectedSeverity: widget.latestDiagnosis?.severity,
         note: _noteCtrl.text.trim().isNotEmpty
             ? _noteCtrl.text.trim()
@@ -1799,6 +1806,101 @@ class _CheckInSheetState extends State<_CheckInSheet> {
             .showSnackBar(SnackBar(content: Text('Error: $e')));
       }
     }
+  }
+
+  Future<AiBackendDetectResponse?> _validateCheckInPhoto() async {
+    final imageBytes = _photoBytes;
+    if (imageBytes == null || imageBytes.isEmpty) {
+      return null;
+    }
+
+    final localClassifier = context.read<LocalClassifierService>();
+    final aiBackend = context.read<AiBackendService>();
+    final expectedCropType = widget.crop.cropType.value;
+    AiBackendDetectResponse? lastDetection;
+
+    final detectionAttempts = <Future<AiBackendDetectResponse> Function()>[
+      () => localClassifier.classifyImage(
+            imageBytes: imageBytes,
+            filename: 'progress-checkin.jpg',
+            cropType: expectedCropType,
+          ),
+      () => aiBackend.detectImage(
+            imageBytes: imageBytes,
+            filename: 'progress-checkin.jpg',
+            cropType: expectedCropType,
+          ),
+    ];
+
+    for (final attempt in detectionAttempts) {
+      try {
+        final detection = await attempt();
+        lastDetection = detection;
+        final validationError = _validationErrorForDetection(detection);
+        if (validationError == null) {
+          return detection;
+        }
+      } catch (_) {
+        // Try the next detector before failing the check-in entirely.
+      }
+    }
+
+    if (!mounted) {
+      return null;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          lastDetection != null
+              ? (_validationErrorForDetection(lastDetection) ??
+                  'This photo could not be validated for today\'s check-in.')
+              : 'This photo could not be validated for today\'s check-in.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    return null;
+  }
+
+  String? _validationErrorForDetection(AiBackendDetectResponse detection) {
+    if (detection.status.toLowerCase() != 'ok' ||
+        detection.primaryDetection == null) {
+      return detection.notes.isNotEmpty
+          ? detection.notes.first
+          : 'This photo does not clearly show the crop you are tracking. Use a close-up of the crop leaf and try again.';
+    }
+
+    final detectedCropType = _tryParseCropType(detection.cropType);
+    if (detectedCropType != null && detectedCropType != widget.crop.cropType) {
+      return 'This photo looks like ${_cropTypeLabel(detectedCropType)}, not ${_cropTypeLabel(widget.crop.cropType)}. Upload a photo of the tracked crop and try again.';
+    }
+
+    final confidence = detection.primaryDetection?.confidence ?? 0;
+    if (confidence < AppConstants.temporaryScannerAcceptedConfidence) {
+      return 'This photo is too unclear to validate today\'s check-in. Use a clearer close-up of the affected crop leaf and try again.';
+    }
+
+    return null;
+  }
+
+  CropType? _tryParseCropType(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return null;
+    }
+
+    for (final cropType in CropType.values) {
+      if (cropType.value == value.trim()) {
+        return cropType;
+      }
+    }
+
+    return null;
+  }
+
+  String _cropTypeLabel(CropType cropType) {
+    final name = cropType.name;
+    return '${name[0].toUpperCase()}${name.substring(1)}';
   }
 
   ProgressStatus _progressStatusFromBackend(String raw) {

@@ -8,7 +8,7 @@ void main() {
   group('HealthScoreService.compute14DayCurve', () {
     final today = DateTime(2026, 5, 8);
 
-    TreatmentTaskModel _task({
+    TreatmentTaskModel task({
       required String id,
       required DateTime dueAt,
       DateTime? completedAt,
@@ -26,7 +26,7 @@ void main() {
           updatedAt: completedAt ?? dueAt,
         );
 
-    DiagnosisModel _diagnosis({
+    DiagnosisModel diagnosis({
       required String id,
       required Severity severity,
       required DateTime diagnosedAt,
@@ -61,7 +61,7 @@ void main() {
       final curve = HealthScoreService.compute14DayCurve(
         tasks: const [],
         diagnoses: [
-          _diagnosis(
+          diagnosis(
               id: 'dx', severity: Severity.severe, diagnosedAt: today.subtract(const Duration(days: 13))),
         ],
         now: today,
@@ -72,17 +72,17 @@ void main() {
 
     test('100% completion, mild diagnosis → score climbs from 90 to 90', () {
       final tasks = [
-        _task(
+        task(
             id: 't1',
             dueAt: today.subtract(const Duration(days: 10)),
             completedAt: today.subtract(const Duration(days: 10))),
-        _task(
+        task(
             id: 't2',
             dueAt: today.subtract(const Duration(days: 5)),
             completedAt: today.subtract(const Duration(days: 5))),
       ];
       final diagnoses = [
-        _diagnosis(
+        diagnosis(
             id: 'dx', severity: Severity.mild, diagnosedAt: today.subtract(const Duration(days: 13))),
       ];
       final curve = HealthScoreService.compute14DayCurve(
@@ -97,17 +97,17 @@ void main() {
 
     test('mix of completed and missed → score reflects ratio', () {
       final tasks = [
-        _task(
+        task(
             id: 't1',
             dueAt: today.subtract(const Duration(days: 5)),
             completedAt: today.subtract(const Duration(days: 5))),
-        _task(
+        task(
             id: 't2',
             dueAt: today.subtract(const Duration(days: 5))),
-        _task(
+        task(
             id: 't3',
             dueAt: today.subtract(const Duration(days: 5))),
-        _task(
+        task(
             id: 't4',
             dueAt: today.subtract(const Duration(days: 5))),
       ];
@@ -126,12 +126,12 @@ void main() {
     test('score is clamped to [0, 100]', () {
       // Severe diagnosis (-45) + 0% completion (-100 from base = 0) cannot go negative.
       final tasks = [
-        _task(id: 't', dueAt: DateTime(2026, 5, 1)),
+        task(id: 't', dueAt: DateTime(2026, 5, 1)),
       ];
       final curve = HealthScoreService.compute14DayCurve(
         tasks: tasks,
         diagnoses: [
-          _diagnosis(
+          diagnosis(
               id: 'dx', severity: Severity.severe, diagnosedAt: DateTime(2026, 4, 26)),
         ],
         now: today,
@@ -143,7 +143,7 @@ void main() {
       // 4 tasks all completed by day -3, then no new tasks. Curve should be flat → stable.
       final tasks = List.generate(
           4,
-          (i) => _task(
+          (i) => task(
               id: 't$i',
               dueAt: today.subtract(const Duration(days: 5)),
               completedAt: today.subtract(const Duration(days: 5))));

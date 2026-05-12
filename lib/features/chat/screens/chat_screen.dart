@@ -1,40 +1,48 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:record/record.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../core/utils/label_formatter.dart';
+import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/models/chat_message_model.dart';
 import '../../../data/models/chat_session_model.dart';
 import '../../../data/models/diagnosis_model.dart';
+import '../../../services/connectivity_service.dart';
+import '../../../services/speech_recognition_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../crops/providers/crops_provider.dart';
 import '../providers/chat_provider.dart';
-import '../../../services/connectivity_service.dart';
 import '../../../services/text_to_speech_service.dart';
 import '../../home/home_screen.dart';
 import '../widgets/video_player_view.dart';
 
 class ChatScreen extends StatefulWidget {
   final String? initialQuery;
+  final bool hideInitialPromptText;
   final DiagnosisModel? initialDiagnosis;
   final Uint8List? initialImageBytes;
   final bool startFreshSession;
   final bool initialIsVideoFrame;
   final String? cropId;
   final String? cropName;
+
   /// Guides GPT + Supabase when TFLite did not attach a diagnosis (eggplant / pechay).
   final String? hintCropType;
 
   const ChatScreen({
     super.key,
     this.initialQuery,
+    this.hideInitialPromptText = false,
     this.initialDiagnosis,
     this.initialImageBytes,
     this.startFreshSession = false,
@@ -83,11 +91,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if (widget.initialQuery != null && widget.initialQuery!.isNotEmpty) {
       await _sendMessage(
         widget.initialQuery!,
+        hideMessageTextInUi: widget.hideInitialPromptText,
         attachedDiagnosis: widget.initialDiagnosis,
         attachedImageBytes: widget.initialImageBytes,
         isVideoFrame: widget.initialIsVideoFrame,
       );
-    } else if (widget.initialDiagnosis != null || widget.initialImageBytes != null) {
+    } else if (widget.initialDiagnosis != null ||
+        widget.initialImageBytes != null) {
       final diagnosis = widget.initialDiagnosis;
       final confidenceText = diagnosis?.confidenceScore != null
           ? ' at ${(diagnosis!.confidenceScore! * 100).toStringAsFixed(0)}% confidence'
@@ -96,6 +106,7 @@ class _ChatScreenState extends State<ChatScreen> {
         diagnosis != null
             ? 'The TFLite scanner\'s current best match is ${diagnosis.diseaseName}$confidenceText. Please verify that scan against the attached photo before answering. If the image suggests a different crop or condition, correct the scan result first, then explain the diagnosis and what the farmer should do.'
             : 'Please analyze this crop photo and tell me what to do next.',
+        hideMessageTextInUi: true,
         attachedDiagnosis: widget.initialDiagnosis,
         attachedImageBytes: widget.initialImageBytes,
         isVideoFrame: widget.initialIsVideoFrame,
@@ -125,8 +136,9 @@ class _ChatScreenState extends State<ChatScreen> {
         createdAt: DateTime.now(),
       ),
     );
-    final List<String> steps =
-        actions is List ? List<String>.from(actions.map((e) => e.toString())) : [];
+    final List<String> steps = actions is List
+        ? List<String>.from(actions.map((e) => e.toString()))
+        : [];
 
     showDialog(
       context: context,
@@ -192,7 +204,10 @@ class _ChatScreenState extends State<ChatScreen> {
               Navigator.of(ctx).pop();
               final user = context.read<AuthProvider>().currentUser;
               if (user == null) return;
-              if (context.read<ChatProvider>().currentSession?.cropId
+              if (context
+                      .read<ChatProvider>()
+                      .currentSession
+                      ?.cropId
                       ?.isNotEmpty ==
                   true) {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -205,24 +220,28 @@ class _ChatScreenState extends State<ChatScreen> {
               }
               final cropsProvider = context.read<CropsProvider>();
               final cropId = await cropsProvider.addCropFromDiagnosis(
-                    userId: user.id,
-                    diseaseName: diagnosis.diseaseName,
-                    labelKey: diagnosis.labelKey ?? '',
-                    cropName: cropNameCtrl.text.trim().isNotEmpty
-                        ? cropNameCtrl.text.trim()
-                        : (diagnosis.labelKey?.split('_').first ?? ''),
-                    cropType: _cropTypeFromLabel(diagnosis.labelKey),
-                    severity: diagnosis.severity,
-                    treatmentSteps: steps,
-                    initialSummary: diagnosis.summary ?? latestAssistant.content,
-                    confidenceScore: diagnosis.confidenceScore,
-                    resultLabel: diagnosis.resultLabel,
-                    modelName: diagnosis.modelName,
-                    modelVersion: diagnosis.modelVersion,
-                  );
+                userId: user.id,
+                diseaseName: diagnosis.diseaseName,
+                labelKey: diagnosis.labelKey ?? '',
+                cropName: cropNameCtrl.text.trim().isNotEmpty
+                    ? cropNameCtrl.text.trim()
+                    : (diagnosis.labelKey?.split('_').first ?? ''),
+                cropType: _cropTypeFromLabel(diagnosis.labelKey),
+                severity: diagnosis.severity,
+                treatmentSteps: steps,
+                initialSummary: diagnosis.summary ?? latestAssistant.content,
+                confidenceScore: diagnosis.confidenceScore,
+                resultLabel: diagnosis.resultLabel,
+                modelName: diagnosis.modelName,
+                modelVersion: diagnosis.modelVersion,
+                imageUrl: diagnosis.imageUrl,
+                diagnosisMode: diagnosis.diagnosisMode,
+              );
               if (!mounted) return;
               if (cropId != null) {
-                await context.read<ChatProvider>().linkCurrentSessionToCrop(cropId);
+                await context
+                    .read<ChatProvider>()
+                    .linkCurrentSessionToCrop(cropId);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: const Text('Crop added to My Crops!'),
@@ -259,7 +278,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (key.contains('pepper') || key.contains('capsicum')) {
       return CropType.pepper;
     }
-    if (key.contains('pechay') || key.contains('bok choy') || key.contains('bokchoy')) {
+    if (key.contains('pechay') ||
+        key.contains('bok choy') ||
+        key.contains('bokchoy')) {
       return CropType.pechay;
     }
     if (key.contains('squash') || key.contains('kalabasa')) {
@@ -298,12 +319,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _sendMessage(
     String text, {
+    bool hideMessageTextInUi = false,
     DiagnosisModel? attachedDiagnosis,
     List<int>? attachedImageBytes,
     bool isVideoFrame = false,
   }) async {
     final trimmed = text.trim();
-    final hasImage = attachedImageBytes != null && attachedImageBytes.isNotEmpty;
+    final hasImage =
+        attachedImageBytes != null && attachedImageBytes.isNotEmpty;
     if (trimmed.isEmpty && !hasImage) return;
     final user = context.read<AuthProvider>().currentUser;
     if (user == null) return;
@@ -317,6 +340,7 @@ class _ChatScreenState extends State<ChatScreen> {
     await context.read<ChatProvider>().sendMessage(
           userId: user.id,
           content: content,
+          hideMessageTextInUi: hideMessageTextInUi,
           attachedDiagnosis: attachedDiagnosis,
           attachedImageBytes: attachedImageBytes,
           isVideoFrame: isVideoFrame,
@@ -399,17 +423,16 @@ class _ChatScreenState extends State<ChatScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              widget.cropName != null
-                  ? '${widget.cropName} — AI Chat'
-                  : 'CropCare AI',
-              style: const TextStyle(
-                  fontWeight: FontWeight.w800, fontSize: 17)),
+                widget.cropName != null
+                    ? '${widget.cropName} — AI Chat'
+                    : 'CropCare AI',
+                style:
+                    const TextStyle(fontWeight: FontWeight.w800, fontSize: 17)),
             Text(
-              widget.cropName != null
-                  ? 'Crop-specific advice'
-                  : 'Vegetable Doctor',
-              style: const TextStyle(
-                  fontSize: 12, color: Colors.white70)),
+                widget.cropName != null
+                    ? 'Crop-specific advice'
+                    : 'Vegetable Doctor',
+                style: const TextStyle(fontSize: 12, color: Colors.white70)),
           ],
         ),
         actions: [
@@ -442,8 +465,10 @@ class _ChatScreenState extends State<ChatScreen> {
                         // _ScanImageCard removed — the image is already shown
                         // as a bubble inside the first user message.
                         if (widget.initialDiagnosis != null)
-                          _DiagnosisSummaryCard(diagnosis: widget.initialDiagnosis!),
-                        ...messages.map((message) => _MessageBubble(message: message)),
+                          _DiagnosisSummaryCard(
+                              diagnosis: widget.initialDiagnosis!),
+                        ...messages
+                            .map((message) => _MessageBubble(message: message)),
                         if (chat.isTyping) const _TypingIndicator(),
                       ],
                     ),
@@ -454,7 +479,8 @@ class _ChatScreenState extends State<ChatScreen> {
           controller: _textCtrl,
           sending: _sending,
           onSend: () => _sendMessage(_textCtrl.text),
-          onSendWithImage: (bytes) => _sendMessage('', attachedImageBytes: bytes),
+          onSendWithImage: (bytes) =>
+              _sendMessage('', attachedImageBytes: bytes),
         ),
       ]),
     );
@@ -540,7 +566,8 @@ class _DiagnosisSummaryCard extends StatelessWidget {
                   shape: BoxShape.circle,
                   color: AppColors.backgroundGreenLight,
                 ),
-                child: const Icon(Icons.eco, color: AppColors.primary, size: 18),
+                child:
+                    const Icon(Icons.eco, color: AppColors.primary, size: 18),
               ),
               const SizedBox(width: 10),
               const Expanded(
@@ -555,7 +582,8 @@ class _DiagnosisSummaryCard extends StatelessWidget {
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: AppColors.backgroundGreenLight,
                   borderRadius: BorderRadius.circular(999),
@@ -580,7 +608,8 @@ class _DiagnosisSummaryCard extends StatelessWidget {
               color: AppColors.textDark,
             ),
           ),
-          if (diagnosis.summary != null && diagnosis.summary!.trim().isNotEmpty) ...[
+          if (diagnosis.summary != null &&
+              diagnosis.summary!.trim().isNotEmpty) ...[
             const SizedBox(height: 10),
             Text(
               diagnosis.summary!,
@@ -600,15 +629,19 @@ class _DiagnosisSummaryCard extends StatelessWidget {
                 icon: Icons.flag_outlined,
                 label: diagnosis.severity.name.toUpperCase(),
               ),
-              if (diagnosis.resultLabel != null && diagnosis.resultLabel!.isNotEmpty)
+              if (diagnosis.resultLabel != null &&
+                  diagnosis.resultLabel!.isNotEmpty)
                 _DiagnosisChip(
                   icon: Icons.label_outline,
                   label: diagnosis.resultLabel!,
                 ),
-              if (diagnosis.modelName != null && diagnosis.modelName!.isNotEmpty)
+              if (diagnosis.modelName != null &&
+                  diagnosis.modelName!.isNotEmpty)
                 _DiagnosisChip(
                   icon: Icons.memory,
-                  label: '${diagnosis.modelName} ${diagnosis.modelVersion ?? ''}'.trim(),
+                  label:
+                      '${diagnosis.modelName} ${diagnosis.modelVersion ?? ''}'
+                          .trim(),
                 ),
             ],
           ),
@@ -695,8 +728,8 @@ class _WelcomeView extends StatelessWidget {
           const Text(
             'Ask about crop diseases, treatments, and care tips. I use real data from our disease knowledge base.',
             textAlign: TextAlign.center,
-            style: TextStyle(
-                color: AppColors.textGray, fontSize: 14, height: 1.5),
+            style:
+                TextStyle(color: AppColors.textGray, fontSize: 14, height: 1.5),
           ),
           const SizedBox(height: 28),
           const Text('Try asking:',
@@ -751,7 +784,9 @@ class _MessageBubbleState extends State<_MessageBubble> {
     }
 
     final isUser = message.role == MessageRole.user;
-    final hasImage = message.imageBytes != null && message.imageBytes!.isNotEmpty;
+    final hasImage =
+        message.imageBytes != null && message.imageBytes!.isNotEmpty;
+    final hideText = message.metadata?['hide_text'] == true;
     final videoUrl = message.metadata?['video_url'] as String?;
     final posterUrl = message.metadata?['video_poster_url'] as String?;
 
@@ -788,70 +823,57 @@ class _MessageBubbleState extends State<_MessageBubble> {
               children: [
                 // ── Video bubble ──
                 if (videoUrl != null)
-                  GestureDetector(
-                    onTap: () {
-                      final isExpired = videoUrl.startsWith('expired:');
-                      if (isExpired) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content:
-                                  Text('This video is no longer available.')),
-                        );
-                      } else {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                VideoPlayerView(videoSource: videoUrl),
-                          ),
-                        );
-                      }
-                    },
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        if (posterUrl != null)
-                          _renderPoster(posterUrl)
-                        else
-                          Container(
-                            width: 200,
-                            height: 140,
-                            color: Colors.black26,
-                          ),
-                        Container(
-                          decoration: const BoxDecoration(
-                            color: Colors.black54,
-                            shape: BoxShape.circle,
-                          ),
-                          padding: const EdgeInsets.all(10),
-                          child: Icon(
-                            videoUrl.startsWith('expired:')
-                                ? Icons.error_outline
-                                : Icons.play_arrow,
-                            color: Colors.white,
-                            size: 28,
-                          ),
-                        ),
-                        if (videoUrl.startsWith('expired:'))
-                          Positioned(
-                            bottom: 8,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: Colors.black87,
-                                borderRadius: BorderRadius.circular(6),
+                  videoUrl.startsWith('expired:')
+                      ? Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            if (posterUrl != null)
+                              _renderPoster(posterUrl)
+                            else
+                              Container(
+                                width: 220,
+                                height: 150,
+                                color: Colors.black26,
                               ),
-                              child: const Text(
-                                'Video expired',
-                                style: TextStyle(
-                                    color: Colors.white, fontSize: 11),
+                            Container(
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              padding: const EdgeInsets.all(10),
+                              child: const Icon(
+                                Icons.error_outline,
+                                color: Colors.white,
+                                size: 28,
                               ),
                             ),
+                            Positioned(
+                              bottom: 8,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.black87,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text(
+                                  'Video expired',
+                                  style: TextStyle(
+                                      color: Colors.white, fontSize: 11),
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : SizedBox(
+                          width: 260,
+                          child: VideoPlayerView(
+                            videoSource: videoUrl,
+                            inline: true,
+                            autoplay: false,
+                            showDeleteAction: false,
                           ),
-                      ],
-                    ),
-                  ),
+                        ),
                 // ── Image bubble (above text, like Messenger) ──
                 if (hasImage)
                   GestureDetector(
@@ -928,14 +950,15 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     ),
                   ),
                 // ── Text bubble ──
-                if (message.content.isNotEmpty &&
+                if (!hideText &&
+                  message.content.isNotEmpty &&
                     message.content !=
                         'I\'ve attached a crop photo. Please analyze it and tell me what you observe — any diseases, pests, or conditions — and what I should do.')
                   Container(
                     constraints: BoxConstraints(
                         maxWidth: MediaQuery.of(context).size.width * 0.78),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: isUser ? AppColors.primary : Colors.white,
                       borderRadius: BorderRadius.only(
@@ -960,12 +983,12 @@ class _MessageBubbleState extends State<_MessageBubble> {
                       ),
                     ),
                   )
-                else if (!hasImage)
+                else if (!hasImage && !hideText)
                   Container(
                     constraints: BoxConstraints(
                         maxWidth: MediaQuery.of(context).size.width * 0.78),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: isUser ? AppColors.primary : Colors.white,
                       borderRadius: BorderRadius.only(
@@ -1038,27 +1061,33 @@ class _MessageBubbleState extends State<_MessageBubble> {
     );
   }
 
-  Widget _buildAddCropCard(
-      BuildContext context, Map<String, dynamic> meta) {
+  Widget _buildAddCropCard(BuildContext context, Map<String, dynamic> meta) {
     final alreadyLinked =
-      context.watch<ChatProvider>().currentSession?.cropId?.isNotEmpty ==
-        true;
+        context.watch<ChatProvider>().currentSession?.cropId?.isNotEmpty ==
+            true;
     final diseaseName = meta['disease_name'] as String? ?? '';
     final labelKey = meta['label_key'] as String? ?? '';
     final rawSeverity = meta['severity'] as String? ?? '';
+    final rawDiagnosisMode =
+        meta['diagnosis_mode'] as String? ?? DiagnosisMode.online.value;
     final rawCropType = meta['crop_type'] as String? ?? '';
     final summary = meta['summary'] as String? ?? '';
     final modelName = meta['model_name'] as String? ?? '';
+    final imageUrl = (meta['image_url'] as String?)?.trim();
     final rawActions = meta['recommended_actions'];
     final List<String> steps = rawActions is List
         ? List<String>.from(rawActions.map((e) => e.toString()))
         : [];
+    final diagnosisMode = DiagnosisMode.values.firstWhere(
+      (mode) => mode.value == rawDiagnosisMode,
+      orElse: () => DiagnosisMode.online,
+    );
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12, right: 4),
       child: Container(
-        constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.85),
+        constraints:
+            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
@@ -1098,13 +1127,12 @@ class _MessageBubbleState extends State<_MessageBubble> {
             if (diseaseName.isNotEmpty) ...[
               const SizedBox(height: 6),
               Text('Detected: ${humanizeDiseaseLabel(diseaseName)}',
-                  style: const TextStyle(
-                      fontSize: 12, color: AppColors.textGray)),
+                  style:
+                      const TextStyle(fontSize: 12, color: AppColors.textGray)),
             ] else ...[
               const SizedBox(height: 6),
               const Text('Track this crop and follow the treatment plan above.',
-                  style: TextStyle(
-                      fontSize: 12, color: AppColors.textGray)),
+                  style: TextStyle(fontSize: 12, color: AppColors.textGray)),
             ],
             const SizedBox(height: 10),
             SizedBox(
@@ -1128,22 +1156,24 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 onPressed: alreadyLinked
                     ? null
                     : () {
-                  final cropNameCtrl = TextEditingController(
-                      text: labelKey.isNotEmpty
-                          ? labelKey.split('_').first.capitalize()
-                          : rawCropType.isNotEmpty
-                              ? rawCropType.capitalize()
-                              : diseaseName.split(' ').first);
-                  _showAddCropFromCardDialog(context,
-                      diseaseName: diseaseName,
-                      labelKey: labelKey,
-                      rawSeverity: rawSeverity,
-                      rawCropType: rawCropType,
-                      summary: summary,
-                      modelName: modelName,
-                      steps: steps,
-                      cropNameCtrl: cropNameCtrl);
-                },
+                        final cropNameCtrl = TextEditingController(
+                            text: labelKey.isNotEmpty
+                                ? labelKey.split('_').first.capitalize()
+                                : rawCropType.isNotEmpty
+                                    ? rawCropType.capitalize()
+                                    : diseaseName.split(' ').first);
+                        _showAddCropFromCardDialog(context,
+                            diseaseName: diseaseName,
+                            labelKey: labelKey,
+                            rawSeverity: rawSeverity,
+                            diagnosisMode: diagnosisMode,
+                            rawCropType: rawCropType,
+                            summary: summary,
+                            modelName: modelName,
+                            imageUrl: imageUrl,
+                            steps: steps,
+                            cropNameCtrl: cropNameCtrl);
+                      },
               ),
             ),
           ],
@@ -1157,9 +1187,11 @@ class _MessageBubbleState extends State<_MessageBubble> {
     required String diseaseName,
     required String labelKey,
     required String rawSeverity,
+    required DiagnosisMode diagnosisMode,
     required String rawCropType,
     required String summary,
     required String modelName,
+    required String? imageUrl,
     required List<String> steps,
     required TextEditingController cropNameCtrl,
   }) {
@@ -1195,7 +1227,10 @@ class _MessageBubbleState extends State<_MessageBubble> {
               Navigator.of(ctx).pop();
               final user = context.read<AuthProvider>().currentUser;
               if (user == null) return;
-              if (context.read<ChatProvider>().currentSession?.cropId
+              if (context
+                      .read<ChatProvider>()
+                      .currentSession
+                      ?.cropId
                       ?.isNotEmpty ==
                   true) {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -1211,27 +1246,31 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   orElse: () => Severity.moderate);
               final cropsProvider = context.read<CropsProvider>();
               final cropId = await cropsProvider.addCropFromDiagnosis(
-                    userId: user.id,
-                    diseaseName: diseaseName,
-                    labelKey: labelKey,
-                    cropName: cropNameCtrl.text.trim().isNotEmpty
-                        ? cropNameCtrl.text.trim()
-                        : labelKey.isNotEmpty
-                            ? labelKey.split('_').first
-                            : rawCropType.isNotEmpty
-                                ? rawCropType
-                                : 'My Crop',
-                    cropType: rawCropType.isNotEmpty
-                        ? _ChatScreenState._cropTypeFromLabel(rawCropType)
-                        : _ChatScreenState._cropTypeFromLabel(labelKey),
-                    severity: severity,
-                    treatmentSteps: steps,
-                    initialSummary: summary,
-                    modelName: modelName,
-                  );
+                userId: user.id,
+                diseaseName: diseaseName,
+                labelKey: labelKey,
+                cropName: cropNameCtrl.text.trim().isNotEmpty
+                    ? cropNameCtrl.text.trim()
+                    : labelKey.isNotEmpty
+                        ? labelKey.split('_').first
+                        : rawCropType.isNotEmpty
+                            ? rawCropType
+                            : 'My Crop',
+                cropType: rawCropType.isNotEmpty
+                    ? _ChatScreenState._cropTypeFromLabel(rawCropType)
+                    : _ChatScreenState._cropTypeFromLabel(labelKey),
+                severity: severity,
+                treatmentSteps: steps,
+                initialSummary: summary,
+                modelName: modelName,
+                imageUrl: imageUrl?.isEmpty == true ? null : imageUrl,
+                diagnosisMode: diagnosisMode,
+              );
               if (!mounted) return;
               if (cropId != null) {
-                await context.read<ChatProvider>().linkCurrentSessionToCrop(cropId);
+                await context
+                    .read<ChatProvider>()
+                    .linkCurrentSessionToCrop(cropId);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: const Text('Crop added to My Crops!'),
@@ -1260,8 +1299,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
     );
   }
 
-  Widget _buildTreatmentChecklist(
-      BuildContext context, List<String> actions) {
+  Widget _buildTreatmentChecklist(BuildContext context, List<String> actions) {
     return Container(
       margin: const EdgeInsets.only(top: 6),
       constraints:
@@ -1294,8 +1332,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
               const Spacer(),
               Text(
                 '${_checkedSteps.length}/${actions.length} done',
-                style: const TextStyle(
-                    fontSize: 11, color: AppColors.textGray),
+                style: const TextStyle(fontSize: 11, color: AppColors.textGray),
               ),
             ],
           ),
@@ -1325,13 +1362,10 @@ class _MessageBubbleState extends State<_MessageBubble> {
                       margin: const EdgeInsets.only(top: 1, right: 8),
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: checked
-                            ? AppColors.primary
-                            : Colors.transparent,
+                        color: checked ? AppColors.primary : Colors.transparent,
                         border: Border.all(
-                          color: checked
-                              ? AppColors.primary
-                              : Colors.grey[400]!,
+                          color:
+                              checked ? AppColors.primary : Colors.grey[400]!,
                           width: 1.5,
                         ),
                       ),
@@ -1345,9 +1379,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                         step,
                         style: TextStyle(
                           fontSize: 13,
-                          color: checked
-                              ? Colors.grey[400]
-                              : AppColors.textDark,
+                          color:
+                              checked ? Colors.grey[400] : AppColors.textDark,
                           decoration: checked
                               ? TextDecoration.lineThrough
                               : TextDecoration.none,
@@ -1363,8 +1396,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
           if (_checkedSteps.length == actions.length && actions.isNotEmpty) ...[
             const SizedBox(height: 8),
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.10),
                 borderRadius: BorderRadius.circular(8),
@@ -1372,8 +1404,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
               child: const Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.celebration,
-                      color: AppColors.primary, size: 14),
+                  Icon(Icons.celebration, color: AppColors.primary, size: 14),
                   SizedBox(width: 6),
                   Text('All steps checked! Track in My Crops.',
                       style: TextStyle(
@@ -1459,8 +1490,7 @@ class _TypingIndicatorState extends State<_TypingIndicator>
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16)),
+              color: Colors.white, borderRadius: BorderRadius.circular(16)),
           child: Row(children: [
             ...List.generate(
               3,
@@ -1551,8 +1581,8 @@ class _ConversationHistorySheet extends StatelessWidget {
                   const Spacer(),
                   TextButton.icon(
                     onPressed: onNewChat,
-                    icon: const Icon(Icons.add, size: 18,
-                        color: AppColors.primary),
+                    icon: const Icon(Icons.add,
+                        size: 18, color: AppColors.primary),
                     label: const Text('New chat',
                         style: TextStyle(
                             color: AppColors.primary,
@@ -1606,9 +1636,8 @@ class _ConversationHistorySheet extends StatelessWidget {
                             ),
                             child: Icon(
                               Icons.chat_bubble_outline_rounded,
-                              color: isCurrent
-                                  ? Colors.white
-                                  : AppColors.primary,
+                              color:
+                                  isCurrent ? Colors.white : AppColors.primary,
                               size: 20,
                             ),
                           ),
@@ -1617,9 +1646,8 @@ class _ConversationHistorySheet extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              fontWeight: isCurrent
-                                  ? FontWeight.w700
-                                  : FontWeight.w500,
+                              fontWeight:
+                                  isCurrent ? FontWeight.w700 : FontWeight.w500,
                               fontSize: 14,
                               color: AppColors.textDark,
                             ),
@@ -1627,8 +1655,7 @@ class _ConversationHistorySheet extends StatelessWidget {
                           subtitle: Text(
                             _formatDate(date),
                             style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.textLightGray),
+                                fontSize: 12, color: AppColors.textLightGray),
                           ),
                           trailing: isCurrent
                               ? Container(
@@ -1636,8 +1663,7 @@ class _ConversationHistorySheet extends StatelessWidget {
                                       horizontal: 8, vertical: 4),
                                   decoration: BoxDecoration(
                                     color: AppColors.backgroundGreenLight,
-                                    borderRadius:
-                                        BorderRadius.circular(12),
+                                    borderRadius: BorderRadius.circular(12),
                                   ),
                                   child: const Text('Active',
                                       style: TextStyle(
@@ -1679,23 +1705,21 @@ class _InputBar extends StatefulWidget {
 }
 
 class _InputBarState extends State<_InputBar> {
-  late stt.SpeechToText _speech;
+  final SpeechRecognitionService _speech = SpeechRecognitionService();
+  final AudioRecorder _recorder = AudioRecorder();
   bool _isListening = false;
   bool _speechAvailable = false;
   bool _handledCurrentMicSession = false;
   bool _startingMic = false;
+  bool _transcribing = false;
+  bool _usingBackendFallback = false;
 
   @override
   void initState() {
     super.initState();
-    _speech = stt.SpeechToText();
-    _initializeSpeechClient();
   }
 
   Future<bool> _initializeSpeechClient({bool recreate = false}) async {
-    if (recreate) {
-      _speech = stt.SpeechToText();
-    }
     final ok = await _speech.initialize(
       onStatus: (status) {
         if (status == 'done' || status == 'notListening') {
@@ -1704,7 +1728,7 @@ class _InputBarState extends State<_InputBar> {
       },
       onError: (error) {
         if (!mounted) return;
-        final message = error.toString().toLowerCase();
+        final message = error.toLowerCase();
         _handledCurrentMicSession = true;
         setState(() => _isListening = false);
         if (message.contains('busy') ||
@@ -1713,6 +1737,7 @@ class _InputBarState extends State<_InputBar> {
           return;
         }
       },
+      recreate: recreate,
     );
     if (mounted) {
       setState(() => _speechAvailable = ok);
@@ -1721,7 +1746,8 @@ class _InputBarState extends State<_InputBar> {
   }
 
   Future<bool> _ensureSpeechReady() async {
-    if (_speechAvailable) {
+    final ready = await _initializeSpeechClient();
+    if (ready && _speech.isAvailable) {
       return true;
     }
     return _initializeSpeechClient(recreate: true);
@@ -1753,70 +1779,37 @@ class _InputBarState extends State<_InputBar> {
   }
 
   Future<void> _resetSpeechSession({bool recreate = false}) async {
-    try {
-      await _speech.stop();
-    } catch (_) {}
-    await Future<void>.delayed(const Duration(milliseconds: 120));
-    try {
-      await _speech.cancel();
-    } catch (_) {}
-    await Future<void>.delayed(const Duration(milliseconds: 160));
-    if (recreate) {
-      await _initializeSpeechClient(recreate: true);
+    await _speech.reset(recreate: recreate);
+    if (mounted && recreate) {
+      setState(() => _speechAvailable = _speech.isAvailable);
     }
   }
 
-  Future<bool> _startListeningSession() async {
-    Future<bool> startListenAttempt({required bool onDevice}) async {
-      try {
-        return await _speech.listen(
-          onResult: (result) {
-            if (mounted) {
-              widget.controller.text = result.recognizedWords;
-              widget.controller.selection = TextSelection.fromPosition(
-                TextPosition(offset: widget.controller.text.length),
-              );
-            }
-          },
-          listenFor: const Duration(minutes: 2),
-          pauseFor: const Duration(seconds: 8),
-          listenOptions: stt.SpeechListenOptions(
-            partialResults: true,
-            autoPunctuation: true,
-            listenMode: stt.ListenMode.dictation,
-            onDevice: onDevice,
-          ),
+  Future<bool> _startListeningSession({required bool preferOnDevice}) async {
+    if (!await _ensureSpeechReady()) {
+      return false;
+    }
+
+    return _speech.startDictation(
+      preferOnDevice: preferOnDevice,
+      onResult: (transcript, _) {
+        if (!mounted) return;
+        widget.controller.text = transcript;
+        widget.controller.selection = TextSelection.fromPosition(
+          TextPosition(offset: widget.controller.text.length),
         );
-      } catch (_) {
-        return false;
-      }
-    }
-
-    for (var attempt = 0; attempt < 3; attempt++) {
-      if (!await _ensureSpeechReady()) {
-        return false;
-      }
-
-      final didStartOnDevice = await startListenAttempt(onDevice: true);
-      if (didStartOnDevice) {
-        return true;
-      }
-
-      final didStartDefault = await startListenAttempt(onDevice: false);
-      if (didStartDefault) {
-        return true;
-      }
-
-      await _resetSpeechSession(recreate: true);
-    }
-
-    return false;
+      },
+    );
   }
 
   Future<void> _toggleMic() async {
-    if (_startingMic) return;
+    if (_startingMic || _transcribing) return;
 
-    if (_isListening || _speech.isListening) {
+    if (_isListening || _speech.isListening || _usingBackendFallback) {
+      if (_usingBackendFallback) {
+        await _stopRecordingAndTranscribe();
+        return;
+      }
       await _speech.stop();
       _finishMicSession();
       return;
@@ -1825,18 +1818,8 @@ class _InputBarState extends State<_InputBar> {
     if (!await _ensureMicrophonePermission()) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Microphone permission is required to use voice input.'),
-        ),
-      );
-      return;
-    }
-
-    if (!await _ensureSpeechReady()) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Microphone or speech recognition is unavailable right now.',
-          ),
+          content:
+              Text('Microphone permission is required to use voice input.'),
         ),
       );
       return;
@@ -1847,17 +1830,39 @@ class _InputBarState extends State<_InputBar> {
       _handledCurrentMicSession = true;
       await _resetSpeechSession(recreate: true);
 
+      var isOnline = true;
+      bool preferOnDevice = false;
+      try {
+        isOnline = await context.read<ConnectivityService>().isConnected;
+        preferOnDevice = !isOnline;
+      } catch (_) {}
+
       if (!mounted) return;
       _handledCurrentMicSession = false;
       setState(() => _isListening = true);
 
-      final didStart = await _startListeningSession();
+      final didStart = await _startListeningSession(
+        preferOnDevice: preferOnDevice,
+      );
+
+      if (!didStart && isOnline) {
+        final backendFallbackStarted = await _startBackendRecordingFallback();
+        if (backendFallbackStarted) {
+          return;
+        }
+      }
 
       if (!didStart && mounted) {
         setState(() => _isListening = false);
         _handledCurrentMicSession = true;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not start microphone recognition.')),
+          SnackBar(
+            content: Text(
+              isOnline
+                  ? 'Could not start speech recognition on this device or the backend fallback.'
+                  : 'Could not start speech recognition on this device.',
+            ),
+          ),
         );
       }
     } catch (_) {
@@ -1869,6 +1874,100 @@ class _InputBarState extends State<_InputBar> {
       );
     } finally {
       _startingMic = false;
+    }
+  }
+
+  Future<bool> _startBackendRecordingFallback() async {
+    try {
+      final hasRecorderPermission = await _recorder.hasPermission();
+      if (!hasRecorderPermission) {
+        return false;
+      }
+
+      final recordingPath = await _buildRecordingPath();
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          sampleRate: 16000,
+          numChannels: 1,
+          bitRate: 128000,
+        ),
+        path: recordingPath,
+      );
+
+      if (!mounted) {
+        return true;
+      }
+
+      setState(() {
+        _isListening = true;
+        _usingBackendFallback = true;
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<String> _buildRecordingPath() async {
+    final tempDir = await getTemporaryDirectory();
+    return path.join(
+      tempDir.path,
+      'chat-mic-${DateTime.now().millisecondsSinceEpoch}.wav',
+    );
+  }
+
+  Future<void> _stopRecordingAndTranscribe() async {
+    final recordingPath = await _recorder.stop();
+    if (!mounted) return;
+
+    setState(() {
+      _isListening = false;
+      _transcribing = true;
+      _usingBackendFallback = false;
+      _handledCurrentMicSession = true;
+    });
+
+    if (recordingPath == null || recordingPath.trim().isEmpty) {
+      if (!mounted) return;
+      setState(() => _transcribing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No audio was captured. Try again.')),
+      );
+      return;
+    }
+
+    try {
+      final audioBytes = await File(recordingPath).readAsBytes();
+      final transcriptResponse =
+          await context.read<AiBackendService>().transcribeAudio(
+                audioBytes: audioBytes,
+                filename: path.basename(recordingPath),
+              );
+      final transcript = transcriptResponse.transcript.trim();
+
+      if (!mounted) return;
+      widget.controller.text = transcript;
+      widget.controller.selection = TextSelection.fromPosition(
+        TextPosition(offset: widget.controller.text.length),
+      );
+      setState(() => _transcribing = false);
+
+      if (transcript.isNotEmpty) {
+        widget.onSend();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No speech was detected. Try again.')),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _transcribing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Voice transcription failed. Check the backend connection and try again.'),
+        ),
+      );
     }
   }
 
@@ -1953,7 +2052,8 @@ class _InputBarState extends State<_InputBar> {
 
   @override
   void dispose() {
-    _speech.cancel();
+    _speech.dispose();
+    unawaited(_recorder.dispose());
     super.dispose();
   }
 
@@ -2039,7 +2139,8 @@ class _InputBarState extends State<_InputBar> {
                     height: 44,
                     decoration: const BoxDecoration(
                         shape: BoxShape.circle, color: AppColors.primary),
-                    child: const Icon(Icons.send, color: Colors.white, size: 20),
+                    child:
+                        const Icon(Icons.send, color: Colors.white, size: 20),
                   ),
                 ),
         ]),
@@ -2114,7 +2215,9 @@ class _ChatCameraScreenState extends State<_ChatCameraScreen> {
   bool _popped = false;
 
   Future<void> _capture() async {
-    if (_ctrl == null || !_ctrl!.value.isInitialized || _capturing || _popped) return;
+    if (_ctrl == null || !_ctrl!.value.isInitialized || _capturing || _popped) {
+      return;
+    }
     setState(() => _capturing = true);
     try {
       final file = await _ctrl!.takePicture();
@@ -2178,8 +2281,7 @@ class _ChatCameraScreenState extends State<_ChatCameraScreen> {
                     color: Colors.black.withOpacity(0.45),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.close,
-                      color: Colors.white, size: 22),
+                  child: const Icon(Icons.close, color: Colors.white, size: 22),
                 ),
               ),
             ),
@@ -2198,8 +2300,7 @@ class _ChatCameraScreenState extends State<_ChatCameraScreen> {
                       height: 76,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        border:
-                            Border.all(color: Colors.white, width: 4),
+                        border: Border.all(color: Colors.white, width: 4),
                       ),
                       child: _capturing
                           ? const Padding(
