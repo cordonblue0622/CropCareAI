@@ -144,8 +144,10 @@ class _AddCropScreenState extends State<AddCropScreen> {
             _buildField(
               controller: _nameCtrl,
               hint: 'e.g. Tomato Plot A',
-              validator: (v) =>
-                  v == null || v.trim().isEmpty ? 'Required' : null,
+              validator: (v) => context.read<CropsProvider>().validateUniqueCropName(
+                cropName: v ?? '',
+                excludingCropId: widget.existing?.id,
+              ),
             ),
             const SizedBox(height: 16),
 

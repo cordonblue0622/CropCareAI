@@ -30,7 +30,7 @@ class AppConstants {
   );
   static const String aiBackendAndroidBaseUrl = String.fromEnvironment(
     'AI_BACKEND_ANDROID_BASE_URL',
-    defaultValue: '',
+    defaultValue: 'https://cropcareai-nxn4.onrender.com',
   );
 
     // Shipped on-device classifier (PlantVillage EfficientNetV2S, 38 labels).
@@ -44,6 +44,7 @@ class AppConstants {
   static const double temporaryScannerProvisionalConfidence = 0.35;
   static const double temporaryScannerProvisionalCropFamilyConfidence = 0.55;
   static const double temporaryScannerAcceptedConfidence = 0.60;
+  static const double temporaryScannerHintedAcceptedConfidence = 0.30;
   static const double temporaryScannerAcceptedMargin = 0.15;
 
   // ─── Local Database ───────────────────────────────────────────────────────

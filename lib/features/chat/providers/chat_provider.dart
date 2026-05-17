@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../core/utils/label_formatter.dart';
 import '../../../core/utils/image_reference.dart';
 import '../../../data/local/bundled_disease_knowledge.dart';
 import '../../../data/local/database_helper.dart';
@@ -90,15 +91,17 @@ class ChatProvider extends ChangeNotifier {
   Future<void> fetchSessions(String userId) async {
     try {
       final rows = await _supabase.getChatSessions(userId);
-      _sessions = rows.map(ChatSessionModel.fromMap).toList();
+      final fetchedSessions = rows.map(ChatSessionModel.fromMap).toList();
       await _db.upsertRows(
         AppConstants.chatSessionsTable,
-        _sessions.map((session) => session.toMap()),
+        fetchedSessions.map((session) => session.toMap()),
       );
+      _sessions = await _filterHistorySessions(fetchedSessions);
     } catch (_) {
       final rows =
           await _db.queryByUserId(AppConstants.chatSessionsTable, userId);
-      _sessions = rows.map(ChatSessionModel.fromMap).toList();
+      final fetchedSessions = rows.map(ChatSessionModel.fromMap).toList();
+      _sessions = await _filterHistorySessions(fetchedSessions);
     }
     notifyListeners();
   }
@@ -124,8 +127,6 @@ class ChatProvider extends ChangeNotifier {
       await _supabase.upsertChatSession(_sessionRemoteMap(session));
     } catch (_) {}
     await _db.upsertRow(AppConstants.chatSessionsTable, session.toMap());
-
-    _sessions.insert(0, session);
     notifyListeners();
   }
 
@@ -199,6 +200,8 @@ class ChatProvider extends ChangeNotifier {
     bool hideMessageTextInUi = false,
     DiagnosisModel? attachedDiagnosis,
     List<int>? attachedImageBytes,
+    String? attachedAudioPath,
+    String? attachedVideoPath,
     String? attachedImageMimeType,
     bool isVideoFrame = false,
     String? hintCropType,
@@ -229,7 +232,10 @@ class ChatProvider extends ChangeNotifier {
     );
     final requiresFreshImage = attachedDiagnosis == null &&
         !hasAttachedImage &&
-        resolvedHintCropType == null;
+        _requiresFreshImageForMessage(
+          content,
+          resolvedHintCropType: resolvedHintCropType,
+        );
 
     final conversationHistory = _recentConversationHistory();
 
@@ -246,8 +252,17 @@ class ChatProvider extends ChangeNotifier {
     final localImageReference =
         hasAttachedImage ? buildInlineImageDataUrl(attachedImageBytes) : null;
     final persistedImageReference = uploadedImageUrl ?? localImageReference;
+    final normalizedVideoPath = attachedVideoPath?.trim();
     final userMetadata = <String, dynamic>{
       if (persistedImageReference != null) 'image_url': persistedImageReference,
+      if (normalizedVideoPath != null && normalizedVideoPath.isNotEmpty)
+        'video_url': normalizedVideoPath,
+      if (normalizedVideoPath != null &&
+          normalizedVideoPath.isNotEmpty &&
+          persistedImageReference != null)
+        'video_poster_url': persistedImageReference,
+      if (attachedAudioPath != null && attachedAudioPath.trim().isNotEmpty)
+        'audio_path': attachedAudioPath.trim(),
       if (hideMessageTextInUi) 'hide_text': true,
     };
 
@@ -259,9 +274,12 @@ class ChatProvider extends ChangeNotifier {
       content: content,
       createdAt: DateTime.now(),
         metadata: userMetadata.isEmpty ? null : userMetadata,
-      imageBytes:
-          hasAttachedImage ? Uint8List.fromList(attachedImageBytes) : null,
-      isVideoFrame: isVideoFrame,
+      imageBytes: hasAttachedImage &&
+              (normalizedVideoPath == null || normalizedVideoPath.isEmpty)
+          ? Uint8List.fromList(attachedImageBytes)
+          : null,
+      isVideoFrame: isVideoFrame &&
+          (normalizedVideoPath == null || normalizedVideoPath.isEmpty),
     );
     _currentMessages.add(userMsg);
     notifyListeners();
@@ -314,24 +332,32 @@ class ChatProvider extends ChangeNotifier {
           diseaseName: inferredDiseaseName,
           aiContent: backendResponse.answer,
         );
+        final effectiveCropType = inferredCropType.isNotEmpty
+            ? inferredCropType
+            : (resolvedHintCropType ?? '');
         final inferredLabelKey = backendDiseaseName.isNotEmpty
             ? _inferLabelKey(
                 diseaseName: inferredDiseaseName,
-                cropType: inferredCropType,
+                cropType: effectiveCropType,
               )
             : (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
                 ? attachedDiagnosis!.labelKey!.trim()
                 : _inferLabelKey(
                     diseaseName: inferredDiseaseName,
-                    cropType: inferredCropType,
+                    cropType: effectiveCropType,
                   );
         final normalizedActions = backendResponse.recommendedActions.isNotEmpty
             ? backendResponse.recommendedActions
             : _extractTreatmentActionsFromContent(
                 backendResponse.answer,
-                inferredCropType: inferredCropType,
+                inferredCropType: effectiveCropType,
                 inferredDiseaseName: inferredDiseaseName,
               );
+        final effectiveActions = _resolveRecommendedActions(
+          recommendedActions: normalizedActions,
+          inferredDiseaseName: inferredDiseaseName,
+          inferredCropType: effectiveCropType,
+        );
         // Store recommended_actions in metadata but DON'T append them to text
         // — they are rendered as an interactive checklist in the UI.
         aiContent = _formatBackendResponse(backendResponse);
@@ -339,21 +365,25 @@ class ChatProvider extends ChangeNotifier {
           !hasShownAddCropSuggestion &&
             _shouldShowTreatmentCard(
               attachedDiagnosis: attachedDiagnosis,
-              recommendedActions: normalizedActions,
+              recommendedActions: effectiveActions,
               inferredDiseaseName: inferredDiseaseName,
-              inferredCropType: inferredCropType,
+              inferredCropType: effectiveCropType,
             );
         aiMetadata = {
           'model': backendResponse.model,
           'sources': backendResponse.sources,
           'recommended_actions':
-              showTreatmentCard ? normalizedActions : const <String>[],
+              showTreatmentCard ? effectiveActions : const <String>[],
           'warnings':
               showTreatmentCard ? backendResponse.warnings : const <String>[],
           'disease_name': inferredDiseaseName,
-          'crop_type': inferredCropType,
+          'crop_type': effectiveCropType,
           'label_key': inferredLabelKey,
-          'severity': attachedDiagnosis?.severity.value ?? 'moderate',
+          'severity': _resolveConversationSeverity(
+            attachedDiagnosis: attachedDiagnosis,
+            inferredDiseaseName: inferredDiseaseName,
+            aiContent: backendResponse.answer,
+          ).value,
           'in_app_crop_scope': backendResponse.inAppCropScope,
           'show_treatment_card': showTreatmentCard,
         };
@@ -382,10 +412,15 @@ class ChatProvider extends ChangeNotifier {
           inferredDiseaseName: fallbackDiseaseName,
           inferredCropType: fallbackCropType,
         );
+        final effectiveFallbackActions = _resolveRecommendedActions(
+          recommendedActions: fallbackActions,
+          inferredDiseaseName: fallbackDiseaseName,
+          inferredCropType: fallbackCropType,
+        );
         final showTreatmentCard = !hasShownAddCropSuggestion &&
             _shouldShowTreatmentCard(
               attachedDiagnosis: attachedDiagnosis,
-              recommendedActions: fallbackActions,
+              recommendedActions: effectiveFallbackActions,
               inferredDiseaseName: fallbackDiseaseName,
               inferredCropType: fallbackCropType,
             );
@@ -400,7 +435,7 @@ class ChatProvider extends ChangeNotifier {
           'model': 'local-fallback',
           'sources': const <String>[],
           'recommended_actions':
-              showTreatmentCard ? fallbackActions : const <String>[],
+              showTreatmentCard ? effectiveFallbackActions : const <String>[],
           'warnings': [
             hasAttachedImage
                 ? 'Online AI backend unavailable; limited offline guidance was used for this image.'
@@ -411,7 +446,11 @@ class ChatProvider extends ChangeNotifier {
           'disease_name': fallbackDiseaseName,
           'crop_type': fallbackCropType,
           'label_key': fallbackLabelKey,
-          'severity': attachedDiagnosis?.severity.value ?? 'moderate',
+          'severity': _resolveConversationSeverity(
+            attachedDiagnosis: attachedDiagnosis,
+            inferredDiseaseName: fallbackDiseaseName,
+            aiContent: aiContent,
+          ).value,
           'in_app_crop_scope': attachedDiagnosis != null || hasAttachedImage,
           'show_treatment_card': showTreatmentCard,
         };
@@ -491,7 +530,9 @@ class ChatProvider extends ChangeNotifier {
           'type': 'add_crop_suggestion',
           'disease_name': inferredDiseaseName,
           'label_key': inferredLabelKey,
-          'severity': attachedDiagnosis?.severity.value ?? 'moderate',
+            'severity': aiMetadata['severity'] ??
+              attachedDiagnosis?.severity.value ??
+              'moderate',
           'diagnosis_mode': preferAssistantDiagnosis
               ? DiagnosisMode.online.value
               : attachedDiagnosis?.diagnosisMode.value ??
@@ -511,13 +552,16 @@ class ChatProvider extends ChangeNotifier {
       await _saveMessage(cardMsg);
     }
 
-    // Update session last_message_at
-    try {
-      await _supabase.client
-          .from('chat_sessions')
-          .update({'last_message_at': DateTime.now().toIso8601String()}).eq(
-              'id', _currentSession!.id);
-    } catch (_) {}
+    await _touchCurrentSession(
+      activityAt: aiMsg.createdAt,
+      preferredTitle: _buildConversationTitle(
+        userContent: content,
+        hideMessageTextInUi: hideMessageTextInUi,
+        attachedDiagnosis: attachedDiagnosis,
+        aiMetadata: aiMetadata,
+        hintCropType: resolvedHintCropType,
+      ),
+    );
 
     notifyListeners();
   }
@@ -618,6 +662,10 @@ class ChatProvider extends ChangeNotifier {
     }
 
     if (!hasAttachedImage) {
+      if (_looksLikeGreeting(lower) || _looksLikeGeneralHelpQuestion(lower)) {
+        return _buildGreetingResponse(normalizedHint);
+      }
+
       if (normalizedHint.isNotEmpty) {
         final cropKnowledge = _knowledgeBase
             .where((kb) => kb.cropType.value == normalizedHint)
@@ -643,48 +691,6 @@ class ChatProvider extends ChangeNotifier {
     }
 
     return _buildUncertainImageResponse();
-
-    // Search knowledge base for disease mentions
-
-    // Search knowledge base for disease mentions
-    for (final kb in _knowledgeBase) {
-      if (lower.contains(kb.diseaseName.toLowerCase()) ||
-          lower.contains(kb.cropType.name.toLowerCase())) {
-        return _formatKbResponse(kb);
-      }
-    }
-
-    // Keyword responses
-    if (lower.contains('water') || lower.contains('irrigat')) {
-      return 'Proper irrigation is critical for crop health. For most vegetable crops:\n\n• Water early morning (6–9 AM) to reduce fungal disease risk\n• Avoid overhead watering — use drip irrigation when possible\n• Check soil moisture 2–3 inches deep before watering\n• Reduce irrigation when rainfall and soil moisture are already high\n\nWould you like advice for a specific crop?';
-    }
-    if (lower.contains('pest') ||
-        lower.contains('insect') ||
-        lower.contains('bug')) {
-      return 'To identify a pest, describe its appearance or upload an image using the camera icon. Common vegetable pests include:\n\n• Aphids — tiny green or black insects on leaf undersides\n• Diamondback moth larvae — small green caterpillars on brassicas like pechay\n• Whiteflies — white flying insects that cause yellowing\n• Leaf miners — pests that create pale trails inside leaves\n\nWhich crop are you concerned about?';
-    }
-    if (lower.contains('fertili') || lower.contains('nutrient')) {
-      return 'Nutrient management for vegetables:\n\n• Nitrogen (N) — promotes leafy growth; yellowing leaves may indicate deficiency\n• Phosphorus (P) — essential for root development\n• Potassium (K) — strengthens disease resistance\n\nFor organic options, compost, vermicast, or fish emulsion can help support crop recovery. Would you like a specific fertilizer schedule?';
-    }
-    if (lower.contains('yellow') ||
-        lower.contains('wilting') ||
-        lower.contains('spot')) {
-      for (final kb in _knowledgeBase) {
-        if (kb.symptoms != null &&
-            kb.symptoms!
-                .any((s) => s.toLowerCase().contains(lower.split(' ').first))) {
-          return _formatKbResponse(kb);
-        }
-      }
-      return 'Yellowing, wilting, or spots on leaves can indicate several issues:\n\n• **Disease** — fungal or bacterial infection (upload an image for diagnosis)\n• **Nutrient deficiency** — especially nitrogen or iron\n• **Overwatering** — root rot can cause wilting\n• **Pest damage** — check leaf undersides for insects\n\nFor accurate diagnosis, tap the camera icon to upload a photo of the affected leaves.';
-    }
-    if (lower.contains('hello') ||
-        lower.contains('hi') ||
-        lower.contains('help')) {
-      return 'Hello! I\'m your CropCare AI Vegetable Doctor. I can help you with:\n\n• 🔍 **Identify diseases** — describe symptoms or upload a photo\n• 💊 **Treatment protocols** — organic and clinical options\n• 💧 **Watering & fertilizer** schedules\n• 🌱 **Crop health monitoring** for Tomato, Pechay, Pepper, Eggplant, and Squash\n\nWhat\'s going on with your crops today?';
-    }
-
-    return 'Thank you for your question. Based on the information currently available, I recommend monitoring your crops closely for any changes in leaf color, texture, or growth patterns.\n\nFor the most accurate diagnosis, please:\n1. Upload a clear photo of the affected area\n2. Describe specific symptoms you\'re observing\n3. Mention which crop and plot is affected\n\nI\'m here to help with your crop health.';
   }
 
   String _formatKbResponse(DiseaseKnowledgeModel kb) {
@@ -733,11 +739,56 @@ class ChatProvider extends ChangeNotifier {
       hasAttachedImage: hasAttachedImage,
       hintCropType: hintCropType,
     );
+    final requiresSignIn = error is AiBackendHttpException &&
+      (error.statusCode == 401 || error.statusCode == 403);
     final detail = kDebugMode && error != null
         ? '\n\nDebug: ${_aiBackend.baseUrl} failed with $error'
         : '';
-    return 'Online AI is unavailable right now, so I am using offline crop guidance only.\n\n'
+    final intro = requiresSignIn
+      ? 'Online AI requires a signed-in account right now, so I am using offline crop guidance only.'
+      : 'Online AI is unavailable right now, so I am using offline crop guidance only.';
+    return '$intro\n\n'
         '$fallback$detail';
+  }
+
+  bool _looksLikeGreeting(String text) {
+    final normalized = text.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return false;
+    }
+
+    const greetingPhrases = [
+      'hi',
+      'hello',
+      'hey',
+      'good morning',
+      'good afternoon',
+      'good evening',
+    ];
+
+    return greetingPhrases.any(
+      (phrase) => normalized == phrase || normalized.startsWith('$phrase '),
+    );
+  }
+
+  bool _looksLikeGeneralHelpQuestion(String text) {
+    final normalized = text.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return false;
+    }
+
+    return normalized.contains('what can you do') ||
+        normalized.contains('how can you help') ||
+        normalized == 'help' ||
+        normalized.startsWith('help me');
+  }
+
+  String _buildGreetingResponse(String normalizedHint) {
+    if (normalizedHint.isNotEmpty) {
+      return 'Hello. I can help with your $normalizedHint crop. Ask about symptoms, treatment timing, or a product you want to check, or upload a close leaf photo when you want a diagnosis.';
+    }
+
+    return 'Hello. I can help with tomato, bell pepper, squash, eggplant, and pechay. Tell me which crop you want help with, ask a crop question, or upload a close leaf photo when you are ready.';
   }
 
   String _buildImageRequiredResponse() {
@@ -835,6 +886,109 @@ class ChatProvider extends ChangeNotifier {
         lower.contains('neem');
   }
 
+  bool _requiresFreshImageForMessage(
+    String text, {
+    required String? resolvedHintCropType,
+  }) {
+    final lower = text.trim().toLowerCase();
+    if (lower.isEmpty) {
+      return false;
+    }
+
+    if (_looksLikeObservationSentence(lower) ||
+        _looksLikeDiagnosisRequest(lower)) {
+      return true;
+    }
+
+    if (_looksLikeCurrentCropConcern(lower)) {
+      return true;
+    }
+
+    if (resolvedHintCropType != null && resolvedHintCropType.isNotEmpty) {
+      return false;
+    }
+
+    return false;
+  }
+
+  bool _looksLikeDiagnosisRequest(String text) {
+    final lower = text.trim().toLowerCase();
+    if (lower.isEmpty) {
+      return false;
+    }
+
+    const diagnosisPhrases = [
+      'what disease',
+      'what pest',
+      'what is wrong',
+      'what\'s wrong',
+      'diagnose',
+      'diagnosis',
+      'identify this',
+      'identify the disease',
+      'analyze this',
+      'analyse this',
+      'check this crop',
+      'check this plant',
+      'is this diseased',
+      'does this have',
+    ];
+
+    return diagnosisPhrases.any(lower.contains);
+  }
+
+  bool _looksLikeCurrentCropConcern(String text) {
+    final lower = text.trim().toLowerCase();
+    if (lower.isEmpty) {
+      return false;
+    }
+
+    const cropReferences = [
+      'this crop',
+      'this plant',
+      'this leaf',
+      'these leaves',
+      'my crop',
+      'my plant',
+      'my leaves',
+      'my leaf',
+      'our crop',
+      'current crop',
+    ];
+
+    const symptomHints = [
+      'spot',
+      'yellow',
+      'brown',
+      'black',
+      'curl',
+      'wilt',
+      'wilting',
+      'rot',
+      'hole',
+      'pest',
+      'bug',
+      'mold',
+      'mould',
+      'blight',
+      'mildew',
+      'lesion',
+      'disease',
+      'infect',
+      'damage',
+      'symptom',
+      'drying',
+      'drooping',
+    ];
+
+    final refersToCurrentCrop = cropReferences.any(lower.contains);
+    if (!refersToCurrentCrop) {
+      return false;
+    }
+
+    return symptomHints.any(lower.contains);
+  }
+
   // ─── Save ────────────────────────────────────────────────────────────────
 
   Future<void> _saveMessage(ChatMessageModel msg) async {
@@ -850,6 +1004,152 @@ class ChatProvider extends ChangeNotifier {
       });
     } catch (_) {}
     await _db.upsertRow(AppConstants.chatMessagesTable, msg.toMap());
+  }
+
+  Future<void> _touchCurrentSession({
+    required DateTime activityAt,
+    String? preferredTitle,
+  }) async {
+    final current = _currentSession;
+    if (current == null) {
+      return;
+    }
+
+    final updated = current.copyWith(
+      title: preferredTitle?.trim().isNotEmpty == true
+          ? preferredTitle!.trim()
+          : current.title,
+      lastMessageAt: activityAt,
+      updatedAt: activityAt,
+    );
+    _currentSession = updated;
+
+    final hasVisibleInput = _hasVisibleUserInput(_currentMessages);
+    final existingIndex = _sessions.indexWhere((session) => session.id == updated.id);
+    if (existingIndex != -1) {
+      _sessions.removeAt(existingIndex);
+    }
+    if (hasVisibleInput) {
+      _sessions.insert(0, updated);
+    }
+
+    try {
+      await _supabase.upsertChatSession(_sessionRemoteMap(updated));
+    } catch (_) {}
+    await _db.upsertRow(AppConstants.chatSessionsTable, updated.toMap());
+  }
+
+  Future<List<ChatSessionModel>> _filterHistorySessions(
+    List<ChatSessionModel> sessions,
+  ) async {
+    final filtered = <ChatSessionModel>[];
+
+    for (final session in sessions) {
+      final localRows = await _db.queryChatMessages(session.id);
+      var messages = localRows.map(ChatMessageModel.fromMap).toList();
+
+      if (!_hasVisibleUserInput(messages)) {
+        try {
+          final remoteRows = await _supabase.getChatMessages(session.id);
+          if (remoteRows.isNotEmpty) {
+            messages = remoteRows.map(ChatMessageModel.fromMap).toList();
+            await _db.upsertRows(
+              AppConstants.chatMessagesTable,
+              messages.map((message) => message.toMap()),
+            );
+          }
+        } catch (_) {
+          // Keep the local snapshot when remote history is unavailable.
+        }
+      }
+
+      if (_hasVisibleUserInput(messages)) {
+        filtered.add(session);
+      }
+    }
+
+    filtered.sort(
+      (a, b) => (b.lastMessageAt ?? b.createdAt)
+          .compareTo(a.lastMessageAt ?? a.createdAt),
+    );
+    return filtered;
+  }
+
+  bool _hasVisibleUserInput(List<ChatMessageModel> messages) {
+    for (final message in messages) {
+      if (message.role != MessageRole.user) {
+        continue;
+      }
+      if (message.content.trim().isEmpty) {
+        continue;
+      }
+      if (message.metadata?['hide_text'] == true) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  String _buildConversationTitle({
+    required String userContent,
+    required bool hideMessageTextInUi,
+    required DiagnosisModel? attachedDiagnosis,
+    required Map<String, dynamic>? aiMetadata,
+    required String? hintCropType,
+  }) {
+    final diseaseName =
+        (aiMetadata?['disease_name'] as String? ?? attachedDiagnosis?.diseaseName ?? '')
+            .trim();
+    final cropType =
+        (aiMetadata?['crop_type'] as String? ?? hintCropType ?? '')
+            .trim()
+            .toLowerCase();
+
+    if (diseaseName.isNotEmpty && cropType.isNotEmpty) {
+      final cropLabel = _titleCaseWords(cropType);
+      final diseaseLabel = humanizeDiseaseLabel(diseaseName);
+      if (diseaseLabel.toLowerCase().contains('healthy')) {
+        return '$cropLabel healthy check';
+      }
+      return '$cropLabel $diseaseLabel';
+    }
+
+    if (diseaseName.isNotEmpty) {
+      return humanizeDiseaseLabel(diseaseName);
+    }
+
+    if (cropType.isNotEmpty) {
+      return '${_titleCaseWords(cropType)} diagnosis';
+    }
+
+    if (!hideMessageTextInUi && userContent.trim().isNotEmpty) {
+      return _summarizeTitleFromText(userContent);
+    }
+
+    return 'Crop consultation';
+  }
+
+  String _summarizeTitleFromText(String value) {
+    final normalized = value
+        .trim()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'[^A-Za-z0-9\s]'), '');
+    if (normalized.isEmpty) {
+      return 'Crop consultation';
+    }
+
+    final words = normalized.split(' ').where((word) => word.isNotEmpty).toList();
+    final summary = words.take(6).join(' ');
+    return _titleCaseWords(summary);
+  }
+
+  String _titleCaseWords(String value) {
+    return value
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) => '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}')
+        .join(' ');
   }
 
   Future<void> _markCurrentSessionOffline() async {
@@ -894,6 +1194,10 @@ class ChatProvider extends ChangeNotifier {
 
   String _inferDiseaseName(String aiContent) {
     final normalized = aiContent.toLowerCase();
+    if (_looksHealthyAnswer(normalized)) {
+      return 'Healthy';
+    }
+
     for (final knowledge in _knowledgeBase) {
       final diseaseName = knowledge.diseaseName.trim();
       if (diseaseName.isNotEmpty &&
@@ -901,7 +1205,72 @@ class ChatProvider extends ChangeNotifier {
         return diseaseName;
       }
     }
+
+    final flattened = aiContent.replaceAll('\n', ' ');
+    final patterns = [
+      RegExp(
+        r'(?:diagnosis|assessment|condition)\s*[:\-]\s*([A-Za-z][A-Za-z\s\-/]{2,60})',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'(?:likely|appears to have|appears to be|shows signs of|consistent with|suggests|affected by)\s+([A-Za-z][A-Za-z\s\-/]{2,60})',
+        caseSensitive: false,
+      ),
+    ];
+
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(flattened);
+      if (match == null) {
+        continue;
+      }
+      final candidate = _sanitizeInferredDiseaseName(match.group(1) ?? '');
+      if (candidate.isNotEmpty) {
+        return candidate;
+      }
+    }
+
     return '';
+  }
+
+  bool _looksHealthyAnswer(String text) {
+    const healthyPhrases = [
+      'looks healthy',
+      'appears healthy',
+      'seems healthy',
+      'is healthy',
+      'healthy crop',
+      'healthy plant',
+      'no obvious disease',
+      'no visible disease',
+      'no clear disease',
+      'no signs of disease',
+      'no strong signs of disease',
+    ];
+
+    return healthyPhrases.any(text.contains);
+  }
+
+  String _sanitizeInferredDiseaseName(String raw) {
+    var value = raw.trim();
+    if (value.isEmpty) {
+      return '';
+    }
+
+    value = value.replaceAll(RegExp(r'[\.,;:!?].*$'), '').trim();
+    value = value.replaceAll(
+      RegExp(
+        r'\b(on|in|with|because|from|caused by|which|that|for)\b.*$',
+        caseSensitive: false,
+      ),
+      '',
+    ).trim();
+    value = value.replaceAll(RegExp(r'\s+'), ' ');
+
+    if (value.length < 3 || value.split(' ').length > 6) {
+      return '';
+    }
+
+    return _titleCaseWords(value);
   }
 
   List<String> _extractTreatmentActionsFromContent(
@@ -1018,6 +1387,105 @@ class ChatProvider extends ChangeNotifier {
       }
     }
     return deduped.take(7).toList();
+  }
+
+  List<String> _resolveRecommendedActions({
+    required List<String> recommendedActions,
+    required String inferredDiseaseName,
+    required String inferredCropType,
+  }) {
+    final deduped = <String>[];
+    for (final action in recommendedActions) {
+      final normalized = action.trim();
+      if (normalized.isNotEmpty && !deduped.contains(normalized)) {
+        deduped.add(normalized);
+      }
+    }
+
+    if (deduped.isNotEmpty) {
+      return deduped.take(7).toList();
+    }
+
+    if (_isHealthyDiagnosisName(inferredDiseaseName) &&
+        _supportedTreatmentCardCrops.contains(inferredCropType)) {
+      final cropLabel = _titleCaseWords(inferredCropType);
+      return [
+        'Inspect $cropLabel leaves each day for new spots, pests, or sudden wilting.',
+        'Keep the soil evenly moist and water early so the foliage dries quickly.',
+        'Remove weeds and damaged leaves to maintain airflow and keep the crop healthy.',
+      ];
+    }
+
+    return const [];
+  }
+
+  Severity _resolveConversationSeverity({
+    required DiagnosisModel? attachedDiagnosis,
+    required String inferredDiseaseName,
+    required String aiContent,
+  }) {
+    if (_isHealthyDiagnosisName(inferredDiseaseName)) {
+      return Severity.healthy;
+    }
+
+    if (attachedDiagnosis != null) {
+      return attachedDiagnosis.severity;
+    }
+
+    return _inferSeverityFromContent(aiContent) ?? Severity.moderate;
+  }
+
+  Severity? _inferSeverityFromContent(String aiContent) {
+    final normalized = aiContent.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    const severeHints = [
+      'severe',
+      'serious',
+      'advanced',
+      'badly infected',
+      'heavily infected',
+      'rapidly spreading',
+      'high risk',
+      'urgent',
+    ];
+    if (severeHints.any(normalized.contains)) {
+      return Severity.severe;
+    }
+
+    const mildHints = [
+      'mild',
+      'minor',
+      'early stage',
+      'slight',
+      'small amount',
+      'limited spots',
+      'light infection',
+      'starting to',
+      'early signs',
+    ];
+    if (mildHints.any(normalized.contains)) {
+      return Severity.mild;
+    }
+
+    const moderateHints = [
+      'moderate',
+      'spreading',
+      'noticeable',
+      'several leaves',
+      'visible damage',
+    ];
+    if (moderateHints.any(normalized.contains)) {
+      return Severity.moderate;
+    }
+
+    return null;
+  }
+
+  bool _isHealthyDiagnosisName(String value) {
+    return value.trim().toLowerCase().contains('healthy');
   }
 
   DiseaseKnowledgeModel? _knowledgeForDiagnosis(DiagnosisModel diagnosis) {

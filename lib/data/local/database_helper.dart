@@ -496,6 +496,14 @@ class DatabaseHelper {
     }
   }
 
+  Future<void> deleteDatabaseFile() async {
+    if (_isDisabledOnPlatform) return;
+    await closeDatabase();
+    final dbPath = await getDatabasesPath();
+    final path = join(dbPath, AppConstants.dbName);
+    await deleteDatabase(path);
+  }
+
   // ─── Generic upsert / query helpers ──────────────────────────────────────
 
   Future<void> upsertRow(String table, Map<String, dynamic> data) async {
@@ -616,6 +624,18 @@ class DatabaseHelper {
     );
   }
 
+  Future<List<Map<String, dynamic>>> queryTreatmentsForCrop(
+      String cropId) async {
+    if (_isDisabledOnPlatform) return [];
+    final db = await database;
+    return db.query(
+      AppConstants.treatmentsTable,
+      where: 'crop_id = ? AND is_deleted = 0',
+      whereArgs: [cropId],
+      orderBy: 'started_at DESC, created_at DESC',
+    );
+  }
+
   Future<List<Map<String, dynamic>>> queryDiagnosesForCrop(
       String cropId) async {
     if (_isDisabledOnPlatform) return [];
@@ -625,6 +645,30 @@ class DatabaseHelper {
       where: 'crop_id = ? AND is_deleted = 0',
       whereArgs: [cropId],
       orderBy: 'diagnosed_at ASC',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> queryProgressUpdatesForCrop(
+      String cropId) async {
+    if (_isDisabledOnPlatform) return [];
+    final db = await database;
+    return db.query(
+      AppConstants.progressUpdatesTable,
+      where: 'crop_id = ? AND is_deleted = 0',
+      whereArgs: [cropId],
+      orderBy: 'created_at ASC',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> queryChatSessionsByCrop(
+      String cropId) async {
+    if (_isDisabledOnPlatform) return [];
+    final db = await database;
+    return db.query(
+      AppConstants.chatSessionsTable,
+      where: 'crop_id = ? AND is_deleted = 0',
+      whereArgs: [cropId],
+      orderBy: 'last_message_at DESC, created_at DESC',
     );
   }
 

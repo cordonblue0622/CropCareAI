@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import '../../../core/constants/app_enums.dart';
 import '../../../core/theme/app_colors.dart';
 import 'scan_result_screen.dart';
 
@@ -23,6 +24,7 @@ class PreviewScreen extends StatefulWidget {
 
 class _PreviewScreenState extends State<PreviewScreen> {
   final TextEditingController _messageCtrl = TextEditingController();
+  CropType? _selectedCropType;
   bool _continuing = false;
 
   @override
@@ -45,6 +47,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
             imageFile: widget.imageFile,
             imageBytes: widget.imageBytes,
             initialQuery: _messageCtrl.text.trim(),
+            cropTypeHint: _selectedCropType,
             openChatOnComplete: true,
             isFromVideo: widget.isFromVideo,
           ),
@@ -206,6 +209,49 @@ class _PreviewScreenState extends State<PreviewScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 16),
+                const Text(
+                  'What crop is this?',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: CropType.values
+                      .map(
+                        (cropType) => ChoiceChip(
+                          label: Text(
+                            _cropTypeLabel(cropType),
+                            style: TextStyle(
+                              color: _selectedCropType == cropType
+                                  ? Colors.white
+                                  : AppColors.primaryDark,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          selected: _selectedCropType == cropType,
+                          onSelected: (_) {
+                            setState(() {
+                              _selectedCropType =
+                                  _selectedCropType == cropType ? null : cropType;
+                            });
+                          },
+                          selectedColor: AppColors.primary,
+                          backgroundColor: Colors.white,
+                          side: BorderSide(
+                            color: _selectedCropType == cropType
+                                ? AppColors.primary
+                                : AppColors.primaryLight,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
               ],
             ),
           ),
@@ -263,6 +309,11 @@ class _PreviewScreenState extends State<PreviewScreen> {
         ]),
       ),
     );
+  }
+
+  String _cropTypeLabel(CropType cropType) {
+    final name = cropType.name;
+    return '${name[0].toUpperCase()}${name.substring(1)}';
   }
 }
 

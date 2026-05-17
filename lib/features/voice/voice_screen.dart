@@ -11,7 +11,6 @@ import 'package:record/record.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../data/remote/ai_backend_service.dart';
 import '../../services/connectivity_service.dart';
-import '../../services/speech_recognition_service.dart';
 import '../chat/screens/chat_screen.dart';
 import '../scan/scan_screen.dart';
 
@@ -32,15 +31,10 @@ class VoiceScreen extends StatefulWidget {
 
 class _VoiceScreenState extends State<VoiceScreen>
     with TickerProviderStateMixin {
-  final SpeechRecognitionService _speech = SpeechRecognitionService();
   final AudioRecorder _recorder = AudioRecorder();
-  bool _available = false;
   bool _listening = false;
   bool _transcribing = false;
   bool _usingBackendFallback = false;
-  // Prevents double-navigation when speech_to_text fires both
-  // 'done' and 'notListening' status events for the same session.
-  bool _commandHandled = false;
   String _words = '';
   String? _errorText;
   late AnimationController _pulseCtrl;
@@ -54,63 +48,6 @@ class _VoiceScreenState extends State<VoiceScreen>
       ..repeat(reverse: true);
     _pulse = Tween<double>(begin: 1.0, end: 1.18).animate(
         CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
-  }
-
-  Future<bool> _initSpeech({bool recreate = false}) async {
-    final available = await _speech.initialize(
-      recreate: recreate,
-      onStatus: (status) {
-        if (status != 'done' && status != 'notListening') {
-          return;
-        }
-        if (mounted) {
-          setState(() => _listening = false);
-        }
-        if (_commandHandled) {
-          return;
-        }
-        final transcript = _words.trim();
-        if (transcript.isNotEmpty) {
-          _commandHandled = true;
-          _handleCommand(transcript);
-          return;
-        }
-        if (mounted && (_errorText == null || _errorText!.trim().isEmpty)) {
-          setState(() {
-            _errorText = 'No speech was detected. Try again.';
-          });
-        }
-      },
-      onError: (error) {
-        if (!mounted) return;
-        final message = error.toLowerCase();
-        setState(() {
-          _listening = false;
-          if (message.contains('busy')) {
-            _errorText = 'Voice recognition is busy. Try again in a moment.';
-          } else if (message.contains('no match') ||
-              message.contains('no_speech')) {
-            _errorText = 'No speech was detected. Try again.';
-          } else {
-            _errorText =
-                'Voice recognition was interrupted. Tap the mic and try again.';
-          }
-        });
-      },
-    );
-    _available = available;
-    if (mounted) {
-      setState(() {});
-    }
-    return available;
-  }
-
-  Future<bool> _ensureSpeechAvailable() async {
-    final ready = await _initSpeech();
-    if (ready) {
-      return true;
-    }
-    return _initSpeech(recreate: true);
   }
 
   Future<bool> _ensureMicrophonePermission() async {
@@ -128,15 +65,12 @@ class _VoiceScreenState extends State<VoiceScreen>
       return;
     }
 
-    if (_listening || _speech.isListening || _usingBackendFallback) {
+    if (_listening || _usingBackendFallback) {
       if (_usingBackendFallback) {
         await _stopRecordingAndTranscribe();
         return;
       }
-      await _speech.stop();
-      if (mounted) {
-        setState(() => _listening = false);
-      }
+      if (mounted) setState(() => _listening = false);
     } else {
       await _startVoiceCapture();
     }
@@ -165,81 +99,24 @@ class _VoiceScreenState extends State<VoiceScreen>
       isOnline = false;
     }
 
-    final localSpeechStarted = await _startSpeechRecognition(
-      isOnline
-          ? 'Listening with speech recognition.'
-          : 'You are offline. Using on-device speech recognition when available.',
-      preferOnDevice: !isOnline,
-    );
-    if (localSpeechStarted) {
+    if (!isOnline) {
+      if (!mounted) return;
+      setState(() {
+        _errorText = 'Voice assistant requires an internet connection.';
+      });
       return;
     }
 
-    if (isOnline) {
-      final backendFallbackStarted = await _startBackendRecordingFallback();
-      if (backendFallbackStarted) {
-        return;
-      }
+    final backendFallbackStarted = await _startBackendRecordingFallback();
+    if (backendFallbackStarted) {
+      return;
     }
 
-    if (!localSpeechStarted && mounted) {
-      if (!mounted) return;
+    if (mounted) {
       setState(() {
-        _errorText = isOnline
-            ? 'Could not start speech recognition on this device. Backend transcription also failed to start.'
-            : 'Could not start speech recognition on this device. Try again.';
+        _errorText = 'Could not start online voice recording. Try again.';
       });
     }
-  }
-
-  Future<bool> _startSpeechRecognition(
-    String message, {
-    required bool preferOnDevice,
-  }) async {
-    if (!await _ensureSpeechAvailable()) {
-      if (!mounted) return false;
-      setState(() {
-        _listening = false;
-        _errorText =
-            'Microphone or speech recognition is unavailable on this device.';
-      });
-      return false;
-    }
-
-    if (!mounted) return false;
-    setState(() {
-      _listening = true;
-      _usingBackendFallback = false;
-      _commandHandled = false;
-      _errorText = message;
-      _words = '';
-    });
-
-    final didStart = await _speech.startDictation(
-      preferOnDevice: preferOnDevice,
-      onResult: (transcript, isFinal) {
-        if (mounted) {
-          setState(() => _words = transcript);
-        }
-        if (!isFinal || transcript.isEmpty || _commandHandled) {
-          return;
-        }
-        _commandHandled = true;
-        if (mounted) {
-          setState(() => _listening = false);
-        }
-        _handleCommand(transcript);
-      },
-    );
-
-    if (!didStart && mounted) {
-      setState(() {
-        _listening = false;
-        _errorText = 'Could not start voice recognition. Try again.';
-      });
-    }
-
-    return didStart;
   }
 
   Future<bool> _startBackendRecordingFallback() async {
@@ -273,7 +150,6 @@ class _VoiceScreenState extends State<VoiceScreen>
       setState(() {
         _listening = true;
         _usingBackendFallback = true;
-        _commandHandled = false;
         _words = '';
         _errorText = 'Recording for backend transcription.';
       });
@@ -363,7 +239,6 @@ class _VoiceScreenState extends State<VoiceScreen>
 
   @override
   void dispose() {
-    _speech.dispose();
     unawaited(_recorder.dispose());
     _pulseCtrl.dispose();
     super.dispose();

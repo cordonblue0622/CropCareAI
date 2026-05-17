@@ -14,6 +14,7 @@ class NotificationsProvider extends ChangeNotifier {
   List<NotificationModel> _notifications = [];
   List<TreatmentTaskModel> _todayTasks = [];
   List<TreatmentTaskModel> _missedTasks = [];
+  List<TreatmentTaskModel> _tomorrowTasks = [];
   List<TreatmentTaskModel> _upcomingTasks = [];
   bool _isLoading = false;
 
@@ -27,6 +28,7 @@ class NotificationsProvider extends ChangeNotifier {
       _notifications.where((n) => !n.isRead).toList();
   List<TreatmentTaskModel> get todayTasks => _todayTasks;
   List<TreatmentTaskModel> get missedTasks => _missedTasks;
+  List<TreatmentTaskModel> get tomorrowTasks => _tomorrowTasks;
   List<TreatmentTaskModel> get upcomingTasks => _upcomingTasks;
   bool get isLoading => _isLoading;
   int get unreadCount => unread.length;
@@ -87,6 +89,7 @@ class NotificationsProvider extends ChangeNotifier {
     final now = DateTime.now();
     final todayStart = DateTime(now.year, now.month, now.day);
     final todayEnd = todayStart.add(const Duration(days: 1));
+    final tomorrowEnd = todayEnd.add(const Duration(days: 1));
     final sevenDaysOut = todayStart.add(const Duration(days: 7));
 
     _todayTasks = allTasks
@@ -102,12 +105,24 @@ class NotificationsProvider extends ChangeNotifier {
             task.status == TaskStatus.pending)
         .toList();
 
+    _tomorrowTasks = allTasks
+      .where((task) =>
+        !task.dueAt.isBefore(todayEnd) &&
+        task.dueAt.isBefore(tomorrowEnd) &&
+        task.status == TaskStatus.pending)
+      .toList();
+
     _upcomingTasks = allTasks
         .where((task) =>
             !task.dueAt.isBefore(todayStart) &&
             task.dueAt.isBefore(sevenDaysOut) &&
             task.status == TaskStatus.pending)
         .toList();
+
+    _todayTasks.sort((a, b) => a.dueAt.compareTo(b.dueAt));
+    _missedTasks.sort((a, b) => a.dueAt.compareTo(b.dueAt));
+    _tomorrowTasks.sort((a, b) => a.dueAt.compareTo(b.dueAt));
+    _upcomingTasks.sort((a, b) => a.dueAt.compareTo(b.dueAt));
   }
 
   // ─── Actions ──────────────────────────────────────────────────────────────
@@ -174,6 +189,7 @@ class NotificationsProvider extends ChangeNotifier {
     _notifications = [];
     _todayTasks = [];
     _missedTasks = [];
+    _tomorrowTasks = [];
     _upcomingTasks = [];
     notifyListeners();
   }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../../core/constants/app_enums.dart';
 import '../../../core/theme/app_colors.dart';
 import 'scan_result_screen.dart';
 
@@ -18,6 +19,7 @@ class VideoPreviewScreen extends StatefulWidget {
 class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
   VideoPlayerController? _controller;
   final TextEditingController _messageCtrl = TextEditingController();
+  CropType? _selectedCropType;
   bool _continuing = false;
   bool _initError = false;
 
@@ -54,6 +56,10 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
     if (_continuing) return;
     setState(() => _continuing = true);
     try {
+      final controller = _controller;
+      if (controller != null && controller.value.isPlaying) {
+        await controller.pause();
+      }
       await Navigator.push(
         context,
         MaterialPageRoute(
@@ -61,13 +67,20 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
             imageFile: widget.videoFile, // ScanResultScreen treats this as the source XFile
             videoFile: widget.videoFile,
             initialQuery: _messageCtrl.text.trim(),
+            cropTypeHint: _selectedCropType,
             openChatOnComplete: true,
             isFromVideo: true,
           ),
         ),
       );
     } finally {
-      if (mounted) setState(() => _continuing = false);
+      if (mounted) {
+        setState(() => _continuing = false);
+      }
+      final controller = _controller;
+      if (controller != null && controller.value.isInitialized && mounted) {
+        await controller.play();
+      }
     }
   }
 
@@ -134,6 +147,46 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
                       borderSide: BorderSide.none,
                     ),
                   ),
+                ),
+                const SizedBox(height: 16),
+                const Text('What crop is this?',
+                    style: TextStyle(
+                        color: AppColors.textDark,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: CropType.values
+                      .map(
+                        (cropType) => ChoiceChip(
+                          label: Text(
+                            _cropTypeLabel(cropType),
+                            style: TextStyle(
+                              color: _selectedCropType == cropType
+                                  ? Colors.white
+                                  : AppColors.primaryDark,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          selected: _selectedCropType == cropType,
+                          onSelected: (_) {
+                            setState(() {
+                              _selectedCropType =
+                                  _selectedCropType == cropType ? null : cropType;
+                            });
+                          },
+                          selectedColor: AppColors.primary,
+                          backgroundColor: Colors.white,
+                          side: BorderSide(
+                            color: _selectedCropType == cropType
+                                ? AppColors.primary
+                                : AppColors.primaryLight,
+                          ),
+                        ),
+                      )
+                      .toList(),
                 ),
               ],
             ),
@@ -241,5 +294,10 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
         ],
       ),
     );
+  }
+
+  String _cropTypeLabel(CropType cropType) {
+    final name = cropType.name;
+    return '${name[0].toUpperCase()}${name.substring(1)}';
   }
 }

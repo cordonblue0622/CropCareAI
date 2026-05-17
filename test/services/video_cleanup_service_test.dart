@@ -31,9 +31,11 @@ void main() {
     PathProviderPlatform.instance = _FakePathProvider(tempDocs.path);
     SharedPreferences.setMockInitialValues({});
     db = DatabaseHelper.instance;
+    await db.deleteDatabaseFile();
   });
 
   tearDown(() async {
+    await db.deleteDatabaseFile();
     if (await tempDocs.exists()) {
       await tempDocs.delete(recursive: true);
     }

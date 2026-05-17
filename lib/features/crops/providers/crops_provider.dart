@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:csv/csv.dart';
 import 'package:uuid/uuid.dart';
@@ -43,6 +44,46 @@ class CropsProvider extends ChangeNotifier {
       .where((c) => c.status != CropStatus.archived && !c.isDeleted)
       .toList();
 
+    List<CropModel> get completedCrops => _crops
+      .where((c) => c.status == CropStatus.archived && !c.isDeleted)
+      .toList();
+
+  bool hasCropNameConflict({
+    required String cropName,
+    String? excludingCropId,
+  }) {
+    final normalizedName = _normalizeCropName(cropName);
+    if (normalizedName.isEmpty) {
+      return false;
+    }
+
+    return _crops.any(
+      (crop) =>
+          !crop.isDeleted &&
+          crop.id != excludingCropId &&
+          _normalizeCropName(crop.cropName) == normalizedName,
+    );
+  }
+
+  String? validateUniqueCropName({
+    required String cropName,
+    String? excludingCropId,
+  }) {
+    final trimmedName = cropName.trim();
+    if (trimmedName.isEmpty) {
+      return 'Required';
+    }
+
+    if (hasCropNameConflict(
+      cropName: trimmedName,
+      excludingCropId: excludingCropId,
+    )) {
+      return 'Crop name already exists. Use a unique name.';
+    }
+
+    return null;
+  }
+
   // ─── Fetch ────────────────────────────────────────────────────────────────
 
   Future<void> fetchCrops(String userId) async {
@@ -84,7 +125,12 @@ class CropsProvider extends ChangeNotifier {
     DateTime? plantedAt,
   }) async {
     try {
-      _error = null;
+      _error = validateUniqueCropName(cropName: cropName);
+      if (_error != null) {
+        notifyListeners();
+        return false;
+      }
+
       final now = DateTime.now();
       final crop = CropModel(
         id: const Uuid().v4(),
@@ -122,7 +168,15 @@ class CropsProvider extends ChangeNotifier {
 
   Future<bool> updateCrop(CropModel crop) async {
     try {
-      _error = null;
+      _error = validateUniqueCropName(
+        cropName: crop.cropName,
+        excludingCropId: crop.id,
+      );
+      if (_error != null) {
+        notifyListeners();
+        return false;
+      }
+
       final updated = crop.copyWith(updatedAt: DateTime.now());
       await _upsertLocallyAndQueue(
         table: AppConstants.cropsTable,
@@ -328,6 +382,8 @@ class CropsProvider extends ChangeNotifier {
     }
   }
 
+  String _normalizeCropName(String value) => value.trim().toLowerCase();
+
   // ─── Helper ───────────────────────────────────────────────────────────────
 
   /// Converts a CropModel to a map suitable for Supabase (boolean vs int).
@@ -432,12 +488,18 @@ class CropsProvider extends ChangeNotifier {
     DateTime? plantedAt,
   }) async {
     try {
-      _error = null;
+      _error = validateUniqueCropName(cropName: cropName);
+      if (_error != null) {
+        notifyListeners();
+        return null;
+      }
+
       final now = DateTime.now();
       final cropId = const Uuid().v4();
 
       // Initial health score based on severity
       final initialScore = switch (severity) {
+        Severity.healthy => 95.0,
         Severity.severe => 25.0,
         Severity.moderate => 50.0,
         Severity.mild => 70.0,
@@ -638,6 +700,162 @@ class CropsProvider extends ChangeNotifier {
     await _attemptSync();
   }
 
+  Future<void> completeTreatmentTimeline({
+    required CropModel crop,
+    required TreatmentModel treatment,
+    required bool healed,
+    String? completionNote,
+  }) async {
+    _error = null;
+    final now = DateTime.now();
+    final closedTreatment = treatment.copyWith(
+      status: healed
+          ? TreatmentStatus.completed
+          : TreatmentStatus.needsReassessment,
+      endedAt: now,
+      reassessmentRequired: !healed,
+      notes: _mergeNotes(treatment.notes, completionNote),
+      updatedAt: now,
+    );
+    final archivedCrop = crop.copyWith(
+      status: CropStatus.archived,
+      lastCheckedAt: now,
+      updatedAt: now,
+    );
+
+    await _upsertLocallyAndQueue(
+      table: AppConstants.treatmentsTable,
+      recordId: closedTreatment.id,
+      localData: closedTreatment.toMap(),
+      remoteData: _treatmentRemoteMap(closedTreatment),
+    );
+    await _upsertLocallyAndQueue(
+      table: AppConstants.cropsTable,
+      recordId: archivedCrop.id,
+      localData: archivedCrop.toMap(),
+      remoteData: _remoteMap(archivedCrop),
+    );
+
+    final cropIndex = _crops.indexWhere((candidate) => candidate.id == crop.id);
+    if (cropIndex != -1) {
+      _crops[cropIndex] = archivedCrop;
+    }
+
+    notifyListeners();
+    await _attemptSync();
+  }
+
+  Future<TreatmentExtensionResult?> extendTreatmentTracking({
+    required CropModel crop,
+    required TreatmentModel currentTreatment,
+    required List<String> treatmentSteps,
+    required String explanation,
+    List<String> sources = const [],
+  }) async {
+    final cleanedSteps = _normalizeTreatmentSteps(treatmentSteps);
+    if (cleanedSteps.isEmpty) {
+      return null;
+    }
+
+    _error = null;
+    final now = DateTime.now();
+    final timelineStart = DateTime(now.year, now.month, now.day);
+    final reassessmentNote = _mergeNotes(
+      explanation,
+      sources.isEmpty ? null : 'Sources:\n${sources.map((source) => '- $source').join('\n')}',
+    );
+
+    final closedTreatment = currentTreatment.copyWith(
+      status: TreatmentStatus.needsReassessment,
+      endedAt: now,
+      reassessmentRequired: true,
+      notes: _mergeNotes(currentTreatment.notes, reassessmentNote),
+      updatedAt: now,
+    );
+
+    await _upsertLocallyAndQueue(
+      table: AppConstants.treatmentsTable,
+      recordId: closedTreatment.id,
+      localData: closedTreatment.toMap(),
+      remoteData: _treatmentRemoteMap(closedTreatment),
+    );
+
+    final extendedTreatment = TreatmentModel(
+      id: const Uuid().v4(),
+      cropId: crop.id,
+      diagnosisId: currentTreatment.diagnosisId,
+      userId: crop.userId,
+      diseaseName: currentTreatment.diseaseName,
+      treatmentTitle: 'Extended Treatment — ${currentTreatment.diseaseName}',
+      treatmentSteps: cleanedSteps,
+      expectedDurationDays: math.max(cleanedSteps.length, 7),
+      status: TreatmentStatus.ongoing,
+      startedAt: timelineStart,
+      notes: reassessmentNote,
+      source: 'ai-reassessment',
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    await _upsertLocallyAndQueue(
+      table: AppConstants.treatmentsTable,
+      recordId: extendedTreatment.id,
+      localData: extendedTreatment.toMap(),
+      remoteData: _treatmentRemoteMap(extendedTreatment),
+    );
+
+    final newTasks = <TreatmentTaskModel>[];
+    for (var index = 0; index < cleanedSteps.length; index++) {
+      final task = TreatmentTaskModel(
+        id: const Uuid().v4(),
+        treatmentId: extendedTreatment.id,
+        cropId: crop.id,
+        userId: crop.userId,
+        title: cleanedSteps[index],
+        dueAt: timelineStart.add(Duration(days: index)),
+        status: TaskStatus.pending,
+        taskOrder: index + 1,
+        createdAt: now,
+        updatedAt: now,
+      );
+      newTasks.add(task);
+      await _upsertLocallyAndQueue(
+        table: AppConstants.treatmentTasksTable,
+        recordId: task.id,
+        localData: task.toMap(),
+        remoteData: _treatmentTaskRemoteMap(task),
+      );
+    }
+
+    final updatedCrop = crop.copyWith(
+      status: CropStatus.recovering,
+      lastCheckedAt: now,
+      updatedAt: now,
+    );
+
+    await _upsertLocallyAndQueue(
+      table: AppConstants.cropsTable,
+      recordId: updatedCrop.id,
+      localData: updatedCrop.toMap(),
+      remoteData: _remoteMap(updatedCrop),
+    );
+
+    final cropIndex = _crops.indexWhere((candidate) => candidate.id == crop.id);
+    if (cropIndex != -1) {
+      _crops[cropIndex] = updatedCrop;
+    }
+
+    notifyListeners();
+    await _attemptSync();
+
+    return TreatmentExtensionResult(
+      crop: updatedCrop,
+      previousTreatment: closedTreatment,
+      treatment: extendedTreatment,
+      tasks: newTasks,
+    );
+  }
+
   /// Recomputes [latestHealthScore] for [cropId] from the local DB without
   /// requiring a photo check-in. Used so marking a treatment task DONE in the
   /// dashboard or notifications screen immediately moves Farm Vitality.
@@ -670,6 +888,30 @@ class CropsProvider extends ChangeNotifier {
     } catch (_) {
       // Best-effort; leave the existing score untouched.
     }
+  }
+
+  List<String> _normalizeTreatmentSteps(List<String> treatmentSteps) {
+    final normalized = <String>[];
+    for (final step in treatmentSteps) {
+      final trimmed = step.trim();
+      if (trimmed.isEmpty || normalized.contains(trimmed)) {
+        continue;
+      }
+      normalized.add(trimmed);
+    }
+    return normalized;
+  }
+
+  String? _mergeNotes(String? existing, String? addition) {
+    final current = existing?.trim() ?? '';
+    final next = addition?.trim() ?? '';
+    if (current.isEmpty) {
+      return next.isEmpty ? null : next;
+    }
+    if (next.isEmpty || current.contains(next)) {
+      return current;
+    }
+    return '$current\n\n$next';
   }
 
   Future<List<DiseaseKnowledgeModel>> fetchDiseaseKnowledge(
@@ -1070,6 +1312,20 @@ class CropsProvider extends ChangeNotifier {
   String _buildStableLabelKey(CropType cropType, String diseaseName) {
     return '${cropType.value}_${_normalizeKey(diseaseName)}';
   }
+}
+
+class TreatmentExtensionResult {
+  final CropModel crop;
+  final TreatmentModel previousTreatment;
+  final TreatmentModel treatment;
+  final List<TreatmentTaskModel> tasks;
+
+  const TreatmentExtensionResult({
+    required this.crop,
+    required this.previousTreatment,
+    required this.treatment,
+    required this.tasks,
+  });
 }
 
 class DiseaseDatasetImportSummary {

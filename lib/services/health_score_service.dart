@@ -49,23 +49,32 @@ class HealthScoreService {
     required DateTime now,
   }) {
     final today = DateTime(now.year, now.month, now.day);
+    final earliestVisibleDay = today.subtract(const Duration(days: 13));
+    final firstDiagnosisDay = _firstDiagnosisDay(diagnoses);
+    final startDay = firstDiagnosisDay != null &&
+            firstDiagnosisDay.isAfter(earliestVisibleDay)
+        ? firstDiagnosisDay
+        : earliestVisibleDay;
     final points = <HealthScorePoint>[];
 
-    for (int i = 13; i >= 0; i--) {
-      final day = today.subtract(Duration(days: i));
+    for (DateTime day = startDay;
+        !day.isAfter(today);
+        day = day.add(const Duration(days: 1))) {
       final endOfDay = DateTime(day.year, day.month, day.day, 23, 59, 59, 999);
 
-      final dueByDay = tasks.where((task) => !task.dueAt.isAfter(endOfDay)).toList();
+      final dueByDay =
+          tasks.where((task) => !task.dueAt.isAfter(endOfDay)).toList();
       final completedByDay = dueByDay
           .where((task) =>
               task.completedAt != null && !task.completedAt!.isAfter(endOfDay))
           .toList();
 
-      final baseScore = dueByDay.isEmpty
-          ? 100
-          : ((completedByDay.length / dueByDay.length) * 100).round();
-      final penalty = _penaltyFor(_latestSeverity(diagnoses, endOfDay));
-      final score = (baseScore - penalty).clamp(0, 100);
+      final severity = _latestSeverity(diagnoses, endOfDay);
+      final score = _scoreForDay(
+        totalTasks: dueByDay.length,
+        completedTasks: completedByDay.length,
+        severity: severity,
+      );
 
       points.add(HealthScorePoint(
         date: day,
@@ -73,7 +82,7 @@ class HealthScoreService {
         status: ProgressStatus.insufficientData,
         totalTasks: dueByDay.length,
         completedTasks: completedByDay.length,
-        latestSeverity: _latestSeverity(diagnoses, endOfDay),
+        latestSeverity: severity,
       ));
     }
 
@@ -112,17 +121,18 @@ class HealthScoreService {
     required DateTime now,
   }) {
     final endOfToday = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
-    final dueTasks = tasks.where((task) => !task.dueAt.isAfter(endOfToday)).toList();
+    final dueTasks =
+        tasks.where((task) => !task.dueAt.isAfter(endOfToday)).toList();
     final completedTasks = dueTasks
         .where((task) =>
             task.completedAt != null && !task.completedAt!.isAfter(endOfToday))
         .toList();
 
-    final baseScore = dueTasks.isEmpty
-        ? 100
-        : ((completedTasks.length / dueTasks.length) * 100).round();
-    final penalty = _penaltyFor(_latestSeverity(diagnoses, endOfToday));
-    return (baseScore - penalty).clamp(0, 100);
+    return _scoreForDay(
+      totalTasks: dueTasks.length,
+      completedTasks: completedTasks.length,
+      severity: _latestSeverity(diagnoses, endOfToday),
+    );
   }
 
   static ProgressStatus statusForScoreChange({
@@ -149,16 +159,47 @@ class HealthScoreService {
     return latest?.severity;
   }
 
-  static int _penaltyFor(Severity? severity) {
+  static DateTime? _firstDiagnosisDay(List<DiagnosisModel> diagnoses) {
+    DateTime? earliest;
+    for (final diagnosis in diagnoses) {
+      final day = DateTime(
+        diagnosis.diagnosedAt.year,
+        diagnosis.diagnosedAt.month,
+        diagnosis.diagnosedAt.day,
+      );
+      if (earliest == null || day.isBefore(earliest)) {
+        earliest = day;
+      }
+    }
+    return earliest;
+  }
+
+  static int _scoreForDay({
+    required int totalTasks,
+    required int completedTasks,
+    required Severity? severity,
+  }) {
+    final baseline = _baselineFor(severity);
+    if (totalTasks <= 0) {
+      return baseline;
+    }
+
+    final completionRatio = (completedTasks / totalTasks).clamp(0.0, 1.0);
+    return (baseline + ((100 - baseline) * completionRatio)).round();
+  }
+
+  static int _baselineFor(Severity? severity) {
     switch (severity) {
+      case Severity.healthy:
+        return 92;
       case Severity.mild:
-        return 10;
+        return 70;
       case Severity.moderate:
-        return 25;
+        return 50;
       case Severity.severe:
-        return 45;
+        return 25;
       default:
-        return 0;
+        return 55;
     }
   }
 }

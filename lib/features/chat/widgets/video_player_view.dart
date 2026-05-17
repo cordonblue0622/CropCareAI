@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -71,8 +72,25 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
     setState(() {});
   }
 
+  Future<void> _pauseIfPlaying() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) {
+      return;
+    }
+    if (controller.value.isPlaying) {
+      await controller.pause();
+    }
+  }
+
+  @override
+  void deactivate() {
+    unawaited(_pauseIfPlaying());
+    super.deactivate();
+  }
+
   @override
   void dispose() {
+    unawaited(_pauseIfPlaying());
     _controller?.removeListener(_onVideoTick);
     _controller?.dispose();
     super.dispose();
@@ -213,25 +231,47 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(
-                                    '${_formatDuration(position)} / ${_formatDuration(duration)}',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
+                                  Expanded(
+                                    child: Text(
+                                      '${_formatDuration(position)} / ${_formatDuration(duration)}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                     ),
                                   ),
+                                  IconButton(
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                    tooltip: 'Stop video',
+                                    icon: const Icon(
+                                      Icons.stop_circle_outlined,
+                                      color: Colors.white,
+                                      size: 20,
+                                    ),
+                                    onPressed: () async {
+                                      await c.pause();
+                                      await c.seekTo(Duration.zero);
+                                      if (mounted) {
+                                        setState(() {});
+                                      }
+                                    },
+                                  ),
                                   if (!widget.inline && _isLocal && widget.showDeleteAction)
-                                    IconButton(
-                                      padding: EdgeInsets.zero,
-                                      constraints: const BoxConstraints(),
-                                      tooltip: 'Delete video',
-                                      icon: const Icon(
-                                        Icons.delete_outline,
-                                        color: Colors.white,
-                                        size: 20,
+                                    Padding(
+                                      padding: const EdgeInsets.only(left: 12),
+                                      child: IconButton(
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                        tooltip: 'Delete video',
+                                        icon: const Icon(
+                                          Icons.delete_outline,
+                                          color: Colors.white,
+                                          size: 20,
+                                        ),
+                                        onPressed: _confirmDelete,
                                       ),
-                                      onPressed: _confirmDelete,
                                     ),
                                 ],
                               ),

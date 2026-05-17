@@ -250,6 +250,44 @@ class AiBackendService {
         jsonDecode(response.body) as Map<String, dynamic>);
   }
 
+  Future<AiBackendChatResponse> suggestTreatmentExtension({
+    required String cropType,
+    required String cropName,
+    required String diseaseName,
+    required double currentHealthScore,
+    required ProgressStatus progressStatus,
+    String? latestNote,
+  }) {
+    final note = latestNote?.trim();
+    final prompt = StringBuffer()
+      ..writeln(
+        'A farmer has completed the current treatment timeline for a $cropType crop named "$cropName" diagnosed with $diseaseName.',
+      )
+      ..writeln(
+        'The latest health score is ${currentHealthScore.toStringAsFixed(0)} out of 100 and the trend is ${progressStatus.value}.',
+      )
+      ..writeln(
+        'Search for reputable agricultural, university, or government-backed remedies or follow-up actions that could help this crop recover further.',
+      )
+      ..writeln(
+        'Respond with a short explanation, 3 to 6 concrete recommended actions, and populate the sources field with the legit sources you used.',
+      )
+      ..writeln(
+        'If the crop needs expert inspection, say so clearly and keep the advice focused on safe next steps.',
+      );
+
+    if (note != null && note.isNotEmpty) {
+      prompt
+        ..writeln()
+        ..writeln('Latest farmer update: $note');
+    }
+
+    return sendChatMessage(
+      userMessage: prompt.toString(),
+      hintCropType: cropType,
+    );
+  }
+
   Future<http.Response> _postJsonWithWarmup({
     required String path,
     required Object payload,
@@ -391,19 +429,36 @@ class AiBackendService {
       final decoded = jsonDecode(response.body) as Map<String, dynamic>;
       final detail = decoded['detail'];
       if (detail is String && detail.trim().isNotEmpty) {
-        throw Exception(detail.trim());
+        throw AiBackendHttpException(
+          statusCode: response.statusCode,
+          message: detail.trim(),
+        );
       }
     } catch (_) {
       // Fall back to the raw body below.
     }
 
     final body = response.body.trim();
-    throw Exception(
-      body.isEmpty
+    throw AiBackendHttpException(
+      statusCode: response.statusCode,
+      message: body.isEmpty
           ? 'AI backend request failed with status ${response.statusCode}.'
           : body,
     );
   }
+}
+
+class AiBackendHttpException implements Exception {
+  final int statusCode;
+  final String message;
+
+  const AiBackendHttpException({
+    required this.statusCode,
+    required this.message,
+  });
+
+  @override
+  String toString() => message;
 }
 
 class AiBackendChatResponse {

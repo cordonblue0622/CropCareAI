@@ -3,10 +3,12 @@ import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
+import '../../../data/models/crop_model.dart';
 import '../../../data/models/notification_model.dart';
 import '../../../data/models/treatment_task_model.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../crops/providers/crops_provider.dart';
+import '../../crops/screens/crop_detail_screen.dart';
 import '../providers/notifications_provider.dart';
 
 class NotificationsScreen extends StatefulWidget {
@@ -30,6 +32,44 @@ class _NotificationsScreenState extends State<NotificationsScreen>
   void dispose() {
     _tabs.dispose();
     super.dispose();
+  }
+
+  Future<void> _openTask(TreatmentTaskModel task) async {
+    final crops = context.read<CropsProvider>();
+    CropModel? crop;
+
+    for (final candidate in crops.activeCrops) {
+      if (candidate.id == task.cropId) {
+        crop = candidate;
+        break;
+      }
+    }
+
+    crop ??= crops.crops.cast<CropModel?>().firstWhere(
+          (candidate) => candidate?.id == task.cropId,
+          orElse: () => null,
+        );
+
+    if (crop == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not find the linked crop for this task.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CropDetailScreen(
+          crop: crop!,
+          initialTabIndex: 1,
+          initialSelectedDate:
+              DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day),
+        ),
+      ),
+    );
   }
 
   @override
@@ -71,16 +111,14 @@ class _NotificationsScreenState extends State<NotificationsScreen>
             Tab(
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 const Text('Alerts'),
-                if (notifs.notifications
-                    .where((n) => n.type == NotificationType.progressAlert && !n.isRead)
-                    .isNotEmpty)
+                if (notifs.missedTasks.isNotEmpty)
                   Container(
                     margin: const EdgeInsets.only(left: 4),
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                         color: Colors.red, borderRadius: BorderRadius.circular(10)),
                     child: Text(
-                      '${notifs.notifications.where((n) => n.type == NotificationType.progressAlert && !n.isRead).length}',
+                      '${notifs.missedTasks.length}',
                       style: const TextStyle(color: Colors.white, fontSize: 10),
                     ),
                   ),
@@ -98,31 +136,19 @@ class _NotificationsScreenState extends State<NotificationsScreen>
               controller: _tabs,
               children: [
                 _AlertsTab(
+                    overdueTasks: notifs.missedTasks,
                     notifications: notifs.notifications
                         .where((n) =>
                             n.type == NotificationType.progressAlert ||
                             n.type == NotificationType.general)
                         .toList(),
-                    onMarkRead: notifs.markRead),
+                    onMarkRead: notifs.markRead,
+                    onOpenTask: _openTask),
                 _TasksTab(
                     todayTasks: notifs.todayTasks,
-                    missedTasks: notifs.missedTasks,
-                    onTaskDone: (taskId) async {
-                      final cropId = await notifs.markTaskDone(taskId);
-                      if (!context.mounted) return;
-                      if (cropId != null && cropId.isNotEmpty) {
-                        await context
-                            .read<CropsProvider>()
-                            .recomputeHealthScoreForCrop(cropId);
-                      }
-                    }),
+                    onOpenTask: _openTask),
                 _RemindersTab(
-                    notifications: notifs.notifications
-                        .where((n) =>
-                            n.type == NotificationType.taskReminder ||
-                            n.type == NotificationType.treatmentReminder)
-                        .toList(),
-                    onMarkRead: notifs.markRead),
+                    tomorrowTasks: notifs.tomorrowTasks),
               ],
             ),
     );
@@ -132,48 +158,83 @@ class _NotificationsScreenState extends State<NotificationsScreen>
 // ─── Alerts Tab ───────────────────────────────────────────────────────────
 
 class _AlertsTab extends StatelessWidget {
+  final List<TreatmentTaskModel> overdueTasks;
   final List<NotificationModel> notifications;
   final Future<void> Function(String) onMarkRead;
-  const _AlertsTab({required this.notifications, required this.onMarkRead});
+  final Future<void> Function(TreatmentTaskModel task) onOpenTask;
+
+  const _AlertsTab({
+    required this.overdueTasks,
+    required this.notifications,
+    required this.onMarkRead,
+    required this.onOpenTask,
+  });
 
   @override
   Widget build(BuildContext context) {
-    if (notifications.isEmpty) {
+    if (overdueTasks.isEmpty && notifications.isEmpty) {
       return _emptyState(
           icon: Icons.check_circle_outline,
           message: 'No critical alerts',
           sub: 'Your crops are doing well!');
     }
-    return ListView.separated(
+    return ListView(
       padding: const EdgeInsets.all(16),
-      itemCount: notifications.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 12),
-      itemBuilder: (_, i) {
-        final n = notifications[i];
-        final isCritical = n.type == NotificationType.progressAlert;
-        return _AlertCard(
-          notification: n,
-          borderColor: isCritical ? Colors.red : Colors.orange,
-          onMarkRead: onMarkRead,
-          action: isCritical
-              ? ElevatedButton.icon(
-                  onPressed: () {},
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
-                    foregroundColor: Colors.white,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                  ),
-                  icon: const Icon(Icons.camera_alt, size: 16),
-                  label: const Text('ANALYZE NOW',
-                      style:
-                          TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
-                )
-              : null,
-        );
-      },
+      children: [
+        if (overdueTasks.isNotEmpty) ...[
+          _SectionLabel(
+            label: 'Overdue Tasks',
+            count: overdueTasks.length,
+            color: Colors.red,
+          ),
+          const SizedBox(height: 8),
+          ...overdueTasks.map(
+            (task) => _TaskCard(
+              task: task,
+              isMissed: true,
+              actionLabel: 'OPEN DAILY PLAN',
+              onAction: () => onOpenTask(task),
+            ),
+          ),
+          if (notifications.isNotEmpty) const SizedBox(height: 16),
+        ],
+        if (notifications.isNotEmpty) ...[
+          _SectionLabel(
+            label: 'System Alerts',
+            count: notifications.length,
+            color: Colors.orange,
+          ),
+          const SizedBox(height: 8),
+          ...notifications.map((n) {
+            final isCritical = n.type == NotificationType.progressAlert;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _AlertCard(
+                notification: n,
+                borderColor: isCritical ? Colors.red : Colors.orange,
+                onMarkRead: onMarkRead,
+                action: isCritical
+                    ? ElevatedButton.icon(
+                        onPressed: () => onMarkRead(n.id),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 8),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                        ),
+                        icon: const Icon(Icons.done, size: 16),
+                        label: const Text('MARK READ',
+                            style: TextStyle(
+                                fontWeight: FontWeight.w700, fontSize: 12)),
+                      )
+                    : null,
+              ),
+            );
+          }),
+        ],
+      ],
     );
   }
 }
@@ -182,41 +243,29 @@ class _AlertsTab extends StatelessWidget {
 
 class _TasksTab extends StatelessWidget {
   final List<TreatmentTaskModel> todayTasks;
-  final List<TreatmentTaskModel> missedTasks;
-  final Future<void> Function(String) onTaskDone;
-  const _TasksTab(
-      {required this.todayTasks,
-      required this.missedTasks,
-      required this.onTaskDone});
+  final Future<void> Function(TreatmentTaskModel task) onOpenTask;
+  const _TasksTab({required this.todayTasks, required this.onOpenTask});
 
   @override
   Widget build(BuildContext context) {
-    if (todayTasks.isEmpty && missedTasks.isEmpty) {
+    if (todayTasks.isEmpty) {
       return _emptyState(
           icon: Icons.task_alt, message: 'No tasks due', sub: 'All caught up!');
     }
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (missedTasks.isNotEmpty) ...[
-          _SectionLabel(label: 'Missed Tasks', count: missedTasks.length, color: Colors.red),
-          const SizedBox(height: 8),
-          ...missedTasks.map((t) => _TaskCard(
-                task: t,
-                isMissed: true,
-                onDone: onTaskDone,
-              )),
-          const SizedBox(height: 16),
-        ],
-        if (todayTasks.isNotEmpty) ...[
-          _SectionLabel(label: "Today's Tasks", count: todayTasks.length, color: AppColors.primary),
-          const SizedBox(height: 8),
-          ...todayTasks.map((t) => _TaskCard(
-                task: t,
-                isMissed: false,
-                onDone: onTaskDone,
-              )),
-        ],
+        _SectionLabel(
+            label: "Today's Tasks",
+            count: todayTasks.length,
+            color: AppColors.primary),
+        const SizedBox(height: 8),
+        ...todayTasks.map((t) => _TaskCard(
+              task: t,
+              isMissed: false,
+              actionLabel: 'OPEN DAILY PLAN',
+              onAction: () => onOpenTask(t),
+            )),
       ],
     );
   }
@@ -225,27 +274,35 @@ class _TasksTab extends StatelessWidget {
 // ─── Reminders Tab ────────────────────────────────────────────────────────
 
 class _RemindersTab extends StatelessWidget {
-  final List<NotificationModel> notifications;
-  final Future<void> Function(String) onMarkRead;
-  const _RemindersTab({required this.notifications, required this.onMarkRead});
+  final List<TreatmentTaskModel> tomorrowTasks;
+  const _RemindersTab({required this.tomorrowTasks});
 
   @override
   Widget build(BuildContext context) {
-    if (notifications.isEmpty) {
+    if (tomorrowTasks.isEmpty) {
       return _emptyState(
           icon: Icons.notifications_none,
           message: 'No reminders',
           sub: 'Reminders will appear here');
     }
-    return ListView.separated(
+    return ListView(
       padding: const EdgeInsets.all(16),
-      itemCount: notifications.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 12),
-      itemBuilder: (_, i) => _AlertCard(
-        notification: notifications[i],
-        borderColor: AppColors.primaryMedium,
-        onMarkRead: onMarkRead,
-      ),
+      children: [
+        _SectionLabel(
+          label: 'Tomorrow',
+          count: tomorrowTasks.length,
+          color: AppColors.primaryMedium,
+        ),
+        const SizedBox(height: 8),
+        ...tomorrowTasks.map(
+          (task) => _TaskCard(
+            task: task,
+            isMissed: false,
+            actionLabel: 'AVAILABLE TOMORROW',
+            onAction: null,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -332,12 +389,19 @@ class _AlertCard extends StatelessWidget {
 class _TaskCard extends StatelessWidget {
   final TreatmentTaskModel task;
   final bool isMissed;
-  final Future<void> Function(String) onDone;
-  const _TaskCard(
-      {required this.task, required this.isMissed, required this.onDone});
+  final String actionLabel;
+  final VoidCallback? onAction;
+
+  const _TaskCard({
+    required this.task,
+    required this.isMissed,
+    required this.actionLabel,
+    required this.onAction,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final isActionEnabled = onAction != null;
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
@@ -369,17 +433,24 @@ class _TaskCard extends StatelessWidget {
           Text(
             isMissed
                 ? 'Due ${DateFormat('MMM d').format(task.dueAt)}'
-                : 'Due today ${DateFormat('HH:mm').format(task.dueAt)}',
+              : isActionEnabled
+                ? 'Due today ${DateFormat('HH:mm').format(task.dueAt)}'
+                : 'Due tomorrow ${DateFormat('HH:mm').format(task.dueAt)}',
             style: TextStyle(
                 fontSize: 12,
-                color: isMissed ? Colors.red : AppColors.textGray),
+              color: isMissed
+                ? Colors.red
+                : isActionEnabled
+                  ? AppColors.textGray
+                  : AppColors.primaryMedium),
           ),
           const Spacer(),
           ElevatedButton(
-            onPressed: () => onDone(task.id),
+            onPressed: onAction,
             style: ElevatedButton.styleFrom(
-              backgroundColor:
-                  isMissed ? Colors.orange : AppColors.primary,
+              backgroundColor: isActionEnabled
+                ? (isMissed ? Colors.orange : AppColors.primary)
+                : AppColors.textLightGray,
               foregroundColor: Colors.white,
               padding:
                   const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
@@ -388,7 +459,7 @@ class _TaskCard extends StatelessWidget {
               minimumSize: Size.zero,
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
-            child: Text(isMissed ? 'RESOLVE' : 'DONE',
+            child: Text(actionLabel,
                 style: const TextStyle(
                     fontSize: 12, fontWeight: FontWeight.w700)),
           ),

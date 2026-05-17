@@ -1,5 +1,7 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:confetti/confetti.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -11,6 +13,7 @@ import '../../../core/constants/app_enums.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/image_reference.dart';
 import '../../../core/utils/label_formatter.dart';
+import '../../../data/local/database_helper.dart';
 import '../../../data/models/chat_message_model.dart';
 import '../../../data/models/chat_session_model.dart';
 import '../../../data/models/crop_model.dart';
@@ -24,9 +27,9 @@ import '../../../services/health_score_service.dart';
 import '../../../services/local_classifier_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../chat/screens/chat_screen.dart';
+import '../../home/home_screen.dart';
 import '../providers/crops_provider.dart';
 import 'add_crop_screen.dart';
-import '../../../services/notification_service.dart';
 import '../../../shared/widgets/app_image_reference.dart';
 import '../widgets/calendar_tracker.dart';
 import '../widgets/health_score_graph.dart';
@@ -104,63 +107,152 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     }
   }
 
+  List<T> _safeParseRows<T>(
+    Iterable<Map<String, dynamic>> rows,
+    T Function(Map<String, dynamic> row) parser,
+  ) {
+    final parsed = <T>[];
+    for (final row in rows) {
+      try {
+        parsed.add(parser(row));
+      } catch (_) {
+        // Ignore malformed rows so one bad record does not block the screen.
+      }
+    }
+    return parsed;
+  }
+
+  List<Map<String, dynamic>> _mergeRowsById(
+    List<Map<String, dynamic>> localRows,
+    List<Map<String, dynamic>> remoteRows,
+  ) {
+    final merged = <String, Map<String, dynamic>>{};
+    for (final row in localRows) {
+      final id = (row['id'] as String?)?.trim();
+      if (id == null || id.isEmpty) {
+        continue;
+      }
+      merged[id] = Map<String, dynamic>.from(row);
+    }
+    for (final row in remoteRows) {
+      final id = (row['id'] as String?)?.trim();
+      if (id == null || id.isEmpty) {
+        continue;
+      }
+      merged[id] = Map<String, dynamic>.from(row);
+    }
+    return merged.values.toList(growable: false);
+  }
+
   Future<void> _loadData() async {
+    final db = context.read<DatabaseHelper>();
     final svc = context.read<SupabaseService>();
-    final rawDx = await _runOrFallback(
-      () => svc.getDiagnosesByCrop(_crop.id),
-      <Map<String, dynamic>>[],
-    );
-    final rawTx = await _runOrFallback(
-      () => svc.getTreatmentsByCrop(_crop.id),
-      <Map<String, dynamic>>[],
-    );
-    final rawProgress = await _runOrFallback(
-      () => svc.getProgressUpdates(_crop.id),
-      <Map<String, dynamic>>[],
-    );
 
-    final treatments = rawTx.map(TreatmentModel.fromMap).toList();
-    final allTasks = <TreatmentTaskModel>[];
-    for (final treatment in treatments) {
-      final rawTasks = await _runOrFallback(
-        () => svc.getTreatmentTasks(treatment.id),
+    try {
+      final localDx = await db.queryDiagnosesForCrop(_crop.id);
+      final localTx = await db.queryTreatmentsForCrop(_crop.id);
+      final localProgress = await db.queryProgressUpdatesForCrop(_crop.id);
+      final localTasks = await db.queryTasksForCrop(_crop.id);
+      final localSessions = await db.queryChatSessionsByCrop(_crop.id);
+
+      final remoteDx = await _runOrFallback(
+        () => svc.getDiagnosesByCrop(_crop.id),
         <Map<String, dynamic>>[],
       );
-      allTasks.addAll(rawTasks.map(TreatmentTaskModel.fromMap));
-    }
-    allTasks.sort((a, b) {
-      final dueCompare = a.dueAt.compareTo(b.dueAt);
-      if (dueCompare != 0) return dueCompare;
-      return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
-    });
-
-    final rawSessions = await _runOrFallback(
-      () => svc.getChatSessionsByCrop(_crop.id),
-      <Map<String, dynamic>>[],
-    );
-    final sessions = rawSessions.map(ChatSessionModel.fromMap).toList();
-    final allMessages = <ChatMessageModel>[];
-    for (final session in sessions) {
-      final rawMessages = await _runOrFallback(
-        () => svc.getChatMessages(session.id),
+      final remoteTx = await _runOrFallback(
+        () => svc.getTreatmentsByCrop(_crop.id),
         <Map<String, dynamic>>[],
       );
-      allMessages.addAll(rawMessages.map(ChatMessageModel.fromMap));
-    }
-    allMessages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
-    final historyMessages = allMessages
-        .where((message) => message.role != MessageRole.system)
-        .toList();
+      final remoteProgress = await _runOrFallback(
+        () => svc.getProgressUpdates(_crop.id),
+        <Map<String, dynamic>>[],
+      );
 
-    if (!mounted) return;
-    setState(() {
-      _diagnoses = rawDx.map(DiagnosisModel.fromMap).toList();
-      _treatments = treatments;
-      _tasks = allTasks;
-      _progress = rawProgress.map(ProgressUpdateModel.fromMap).toList();
-      _chatHistory = historyMessages;
-      _loading = false;
-    });
+      final rawDx = _mergeRowsById(localDx, remoteDx);
+      final rawTx = _mergeRowsById(localTx, remoteTx);
+      final rawProgress = _mergeRowsById(localProgress, remoteProgress);
+
+      final diagnoses = _safeParseRows(rawDx, DiagnosisModel.fromMap);
+      final treatments = _safeParseRows(rawTx, TreatmentModel.fromMap);
+      final progress = _safeParseRows(rawProgress, ProgressUpdateModel.fromMap)
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+      final taskRowsById = <String, Map<String, dynamic>>{};
+      for (final row in localTasks) {
+        final id = (row['id'] as String?)?.trim();
+        if (id != null && id.isNotEmpty) {
+          taskRowsById[id] = Map<String, dynamic>.from(row);
+        }
+      }
+      for (final treatment in treatments) {
+        final rawTasks = await _runOrFallback(
+          () => svc.getTreatmentTasks(treatment.id),
+          <Map<String, dynamic>>[],
+        );
+        for (final row in rawTasks) {
+          final id = (row['id'] as String?)?.trim();
+          if (id != null && id.isNotEmpty) {
+            taskRowsById[id] = Map<String, dynamic>.from(row);
+          }
+        }
+      }
+      final allTasks = _safeParseRows(
+        taskRowsById.values,
+        TreatmentTaskModel.fromMap,
+      );
+      allTasks.sort((a, b) {
+        final dueCompare = a.dueAt.compareTo(b.dueAt);
+        if (dueCompare != 0) return dueCompare;
+        return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
+      });
+
+      final remoteSessions = await _runOrFallback(
+        () => svc.getChatSessionsByCrop(_crop.id),
+        <Map<String, dynamic>>[],
+      );
+      final rawSessions = _mergeRowsById(localSessions, remoteSessions);
+      final sessions = _safeParseRows(rawSessions, ChatSessionModel.fromMap);
+      final messageRowsById = <String, Map<String, dynamic>>{};
+      for (final session in sessions) {
+        final localMessages = await db.queryChatMessages(session.id);
+        for (final row in localMessages) {
+          final id = (row['id'] as String?)?.trim();
+          if (id != null && id.isNotEmpty) {
+            messageRowsById[id] = Map<String, dynamic>.from(row);
+          }
+        }
+        final rawMessages = await _runOrFallback(
+          () => svc.getChatMessages(session.id),
+          <Map<String, dynamic>>[],
+        );
+        for (final row in rawMessages) {
+          final id = (row['id'] as String?)?.trim();
+          if (id != null && id.isNotEmpty) {
+            messageRowsById[id] = Map<String, dynamic>.from(row);
+          }
+        }
+      }
+      final allMessages = _safeParseRows(
+        messageRowsById.values,
+        ChatMessageModel.fromMap,
+      )..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      final historyMessages = allMessages
+          .where((message) => message.role != MessageRole.system)
+          .toList(growable: false);
+
+      if (!mounted) return;
+      setState(() {
+        _diagnoses = diagnoses;
+        _treatments = treatments;
+        _tasks = allTasks;
+        _progress = progress;
+        _chatHistory = historyMessages;
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
   }
 
   List<FlSpot> get _sparklineSpots {
@@ -169,9 +261,10 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     final last7 =
         sorted.length > 7 ? sorted.sublist(sorted.length - 7) : sorted;
     if (last7.isEmpty) {
+      final baseline = (_crop.latestHealthScore ?? 0).toDouble();
       return [
-        const FlSpot(0, 50),
-        FlSpot(1, _crop.latestHealthScore ?? 50),
+        FlSpot(0, baseline),
+        FlSpot(1, baseline),
       ];
     }
     return last7
@@ -227,6 +320,10 @@ class _CropDetailScreenState extends State<CropDetailScreen>
 
   Future<void> _showCheckInSheetForTask(TreatmentTaskModel task) async {
     final cropsProvider = context.read<CropsProvider>();
+    final activeTreatment = _treatmentForTask(task);
+    double? submittedScore;
+    ProgressStatus? submittedStatus;
+    ProgressUpdateModel? submittedUpdate;
     final didSubmit = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -238,6 +335,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         activeTreatment: _treatmentForTask(task),
         latestDiagnosis: _diagnosisForTask(task),
         onSubmitted: (newScore, newStatus, update) async {
+          submittedScore = newScore;
+          submittedStatus = newStatus;
+          submittedUpdate = update;
           final completedAt = update.createdAt;
           await cropsProvider.saveProgressUpdate(update);
           await cropsProvider.updateCropHealthScore(
@@ -266,8 +366,322 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     );
 
     if (didSubmit == true && mounted) {
+      final latestScore = submittedScore;
+      final latestStatus = submittedStatus;
+      final latestUpdate = submittedUpdate;
+
+      if (activeTreatment != null &&
+          latestScore != null &&
+          latestStatus != null &&
+          latestUpdate != null &&
+          _isTreatmentTimelineComplete(activeTreatment.id)) {
+        await _handleCompletedTreatmentTimeline(
+          treatment: activeTreatment,
+          latestScore: latestScore,
+          latestStatus: latestStatus,
+          latestUpdate: latestUpdate,
+        );
+        return;
+      }
+
       await _showTaskCelebration(task.title);
     }
+  }
+
+  bool _isTreatmentTimelineComplete(String treatmentId) {
+    final treatmentTasks = _tasks
+        .where((task) => task.treatmentId == treatmentId && !task.isDeleted)
+        .toList(growable: false);
+    return treatmentTasks.isNotEmpty &&
+        treatmentTasks.every((task) => task.status == TaskStatus.completed);
+  }
+
+  bool _hasDownwardTrend({
+    required double latestScore,
+    required ProgressStatus latestStatus,
+  }) {
+    if (latestStatus == ProgressStatus.worsening) {
+      return true;
+    }
+
+    final scoredUpdates = _progress
+        .where((update) => update.healthScore != null)
+        .toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+    if (scoredUpdates.length < 2) {
+      return false;
+    }
+
+    final previousScore = scoredUpdates[scoredUpdates.length - 2].healthScore!;
+    return latestScore < previousScore - 3;
+  }
+
+  bool _isHealedOutcome({
+    required double latestScore,
+    required ProgressStatus latestStatus,
+  }) {
+    return latestScore >= 90 &&
+        !_hasDownwardTrend(
+          latestScore: latestScore,
+          latestStatus: latestStatus,
+        );
+  }
+
+  Future<void> _handleCompletedTreatmentTimeline({
+    required TreatmentModel treatment,
+    required double latestScore,
+    required ProgressStatus latestStatus,
+    required ProgressUpdateModel latestUpdate,
+  }) async {
+    final cropsProvider = context.read<CropsProvider>();
+    final healed = _isHealedOutcome(
+      latestScore: latestScore,
+      latestStatus: latestStatus,
+    );
+
+    if (healed) {
+      final completionNote =
+          'Treatment timeline completed successfully with a ${latestScore.toStringAsFixed(0)} health score and a ${latestStatus.value} trend.';
+      await cropsProvider.completeTreatmentTimeline(
+        crop: _crop,
+        treatment: treatment,
+        healed: true,
+        completionNote: completionNote,
+      );
+      if (!mounted) return;
+
+      setState(() {
+        _crop = _crop.copyWith(
+          status: CropStatus.archived,
+          lastCheckedAt: latestUpdate.createdAt,
+          updatedAt: latestUpdate.createdAt,
+        );
+        _treatments = _treatments
+            .map((current) => current.id == treatment.id
+                ? current.copyWith(
+                    status: TreatmentStatus.completed,
+                    endedAt: latestUpdate.createdAt,
+                    reassessmentRequired: false,
+                    notes: completionNote,
+                    updatedAt: latestUpdate.createdAt,
+                  )
+                : current)
+            .toList();
+      });
+
+      final action = await showDialog<_CompletionDialogAction>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _TreatmentCompletedDialog(
+          cropName: _crop.cropName,
+          latestScore: latestScore,
+        ),
+      );
+      if (!mounted) return;
+      await _handleCompletionAction(action ?? _CompletionDialogAction.done);
+      return;
+    }
+
+    final suggestion = await _requestTreatmentExtensionSuggestion(
+      treatment: treatment,
+      latestScore: latestScore,
+      latestStatus: latestStatus,
+      latestUpdate: latestUpdate,
+    );
+    if (!mounted) return;
+
+    final suggestedActions = _suggestedExtensionActions(suggestion);
+    final reassessmentAction = await showDialog<_ReassessmentDialogAction>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _TreatmentReassessmentDialog(
+        cropName: _crop.cropName,
+        latestScore: latestScore,
+        isDownwardTrend: _hasDownwardTrend(
+          latestScore: latestScore,
+          latestStatus: latestStatus,
+        ),
+        explanation: suggestion?.answer.isNotEmpty == true
+            ? suggestion!.answer
+            : _defaultReassessmentExplanation(
+                latestScore: latestScore,
+                latestStatus: latestStatus,
+              ),
+        suggestedActions: suggestedActions,
+        sources: suggestion?.sources ?? const [],
+        canExtend: suggestedActions.isNotEmpty,
+      ),
+    );
+    if (!mounted) return;
+
+    if (reassessmentAction == _ReassessmentDialogAction.extend &&
+        suggestedActions.isNotEmpty) {
+      final extension = await cropsProvider.extendTreatmentTracking(
+        crop: _crop,
+        currentTreatment: treatment,
+        treatmentSteps: suggestedActions,
+        explanation: suggestion?.answer.isNotEmpty == true
+            ? suggestion!.answer
+            : _defaultReassessmentExplanation(
+                latestScore: latestScore,
+                latestStatus: latestStatus,
+              ),
+        sources: suggestion?.sources ?? const [],
+      );
+      if (!mounted || extension == null) return;
+
+      setState(() {
+        _crop = extension.crop;
+        _treatments = [
+          extension.treatment,
+          ..._treatments.map(
+            (current) => current.id == treatment.id
+                ? extension.previousTreatment
+                : current,
+          ),
+        ];
+        _tasks = [..._tasks, ...extension.tasks]
+          ..sort((a, b) {
+            final dueCompare = a.dueAt.compareTo(b.dueAt);
+            if (dueCompare != 0) return dueCompare;
+            return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
+          });
+        _selectedDate = _todayDate();
+      });
+
+      _tabs.animateTo(1);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Treatment tracking extended with a new recovery plan.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    if (reassessmentAction == _ReassessmentDialogAction.moveToCompleted) {
+      final completionNote = suggestion?.answer.isNotEmpty == true
+          ? suggestion!.answer
+          : _defaultReassessmentExplanation(
+              latestScore: latestScore,
+              latestStatus: latestStatus,
+            );
+      await cropsProvider.completeTreatmentTimeline(
+        crop: _crop,
+        treatment: treatment,
+        healed: false,
+        completionNote: completionNote,
+      );
+      if (!mounted) return;
+
+      setState(() {
+        _crop = _crop.copyWith(
+          status: CropStatus.archived,
+          lastCheckedAt: latestUpdate.createdAt,
+          updatedAt: latestUpdate.createdAt,
+        );
+        _treatments = _treatments
+            .map((current) => current.id == treatment.id
+                ? current.copyWith(
+                    status: TreatmentStatus.needsReassessment,
+                    endedAt: latestUpdate.createdAt,
+                    reassessmentRequired: true,
+                    notes: completionNote,
+                    updatedAt: latestUpdate.createdAt,
+                  )
+                : current)
+            .toList();
+      });
+
+      final action = await showDialog<_CompletionDialogAction>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _TreatmentArchivedDialog(cropName: _crop.cropName),
+      );
+      if (!mounted) return;
+      await _handleCompletionAction(action ?? _CompletionDialogAction.done);
+    }
+  }
+
+  Future<AiBackendChatResponse?> _requestTreatmentExtensionSuggestion({
+    required TreatmentModel treatment,
+    required double latestScore,
+    required ProgressStatus latestStatus,
+    required ProgressUpdateModel latestUpdate,
+  }) async {
+    try {
+      return await context.read<AiBackendService>().suggestTreatmentExtension(
+            cropType: _crop.cropType.value,
+            cropName: _crop.cropName,
+            diseaseName: treatment.diseaseName,
+            currentHealthScore: latestScore,
+            progressStatus: latestStatus,
+            latestNote: latestUpdate.note,
+          );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<String> _suggestedExtensionActions(AiBackendChatResponse? suggestion) {
+    if (suggestion == null) {
+      return const [];
+    }
+
+    final normalized = <String>[];
+    for (final action in suggestion.recommendedActions) {
+      final trimmed = action.trim();
+      if (trimmed.isNotEmpty && !normalized.contains(trimmed)) {
+        normalized.add(trimmed);
+      }
+    }
+    if (normalized.isNotEmpty) {
+      return normalized;
+    }
+
+    for (final rawLine in suggestion.answer.split(RegExp(r'[\r\n]+'))) {
+      final cleaned = rawLine
+          .replaceFirst(RegExp(r'^[-•*\d\.)\s]+'), '')
+          .trim();
+      if (cleaned.isEmpty ||
+          cleaned.toLowerCase().startsWith('source') ||
+          cleaned.length < 10 ||
+          normalized.contains(cleaned)) {
+        continue;
+      }
+      normalized.add(cleaned);
+      if (normalized.length == 6) {
+        break;
+      }
+    }
+
+    return normalized;
+  }
+
+  String _defaultReassessmentExplanation({
+    required double latestScore,
+    required ProgressStatus latestStatus,
+  }) {
+    final scoreLabel = latestScore.toStringAsFixed(0);
+    if (_hasDownwardTrend(
+      latestScore: latestScore,
+      latestStatus: latestStatus,
+    )) {
+      return 'The treatment timeline is complete, but the latest health score dropped to $scoreLabel and the crop is trending downward. Review new treatment options before closing this crop.';
+    }
+
+    return 'The treatment timeline is complete, but the crop has not fully recovered yet. The latest health score is $scoreLabel and it still needs follow-up care to reach a healed state.';
+  }
+
+  Future<void> _handleCompletionAction(_CompletionDialogAction action) async {
+    if (!mounted) return;
+
+    if (action == _CompletionDialogAction.dashboard) {
+      HomeScreen.tabSelection.value = 0;
+    }
+
+    Navigator.of(context).pop();
   }
 
   Future<void> _showTaskCelebration(String taskTitle) async {
@@ -300,47 +714,31 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   }
 
   Future<void> _onTaskToggled(TreatmentTaskModel task) async {
-    if (task.status == TaskStatus.completed) return;
+    if (task.status == TaskStatus.completed) {
+      return;
+    }
 
-    // Optimistic update.
-    final now = DateTime.now();
-    setState(() {
-      _tasks = _tasks.map((t) {
-        if (t.id != task.id) return t;
-        return t.copyWith(
-          status: TaskStatus.completed,
-          completedAt: now,
-          updatedAt: now,
-        );
-      }).toList();
-    });
+    final taskDate = DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
+    final today = _todayDate();
 
-    // Persist via provider.
-    final cropsProvider = context.read<CropsProvider>();
-    final updated = await cropsProvider.markTaskDone(task.id);
-    if (!mounted) return;
-
-    if (updated == null) {
-      // Persistence failed — revert.
-      setState(() {
-        _tasks = _tasks.map((t) {
-          if (t.id != task.id) return t;
-          return t.copyWith(
-            status: TaskStatus.pending,
-            completedAt: null,
-            updatedAt: now,
-          );
-        }).toList();
-      });
+    if (taskDate.isAfter(today)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not mark task done. Try again.')),
+        SnackBar(
+          content: Text(
+            'This task can only be completed on ${DateFormat('MMM d').format(task.dueAt)} or later.',
+          ),
+        ),
       );
       return;
     }
 
-    // Cancel any scheduled reminders for this task.
-    // ignore: discarded_futures
-    NotificationService.instance.cancelForTask(task.id);
+    setState(() => _selectedDate = taskDate);
+    _tabs.animateTo(1);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Open the Daily Plan tab to upload your update for this task.'),
+      ),
+    );
   }
 
   Color _statusColor(CropStatus s) {
@@ -597,27 +995,14 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                       treatments: _treatments,
                       onTaskComplete: _showCheckInSheetForTask,
                     ),
-                    SingleChildScrollView(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          CalendarTracker(
-                            tasks: _tasks,
-                            selectedDate: _selectedDate,
-                            onDateSelected: (d) =>
-                                setState(() => _selectedDate = d),
-                            onTaskToggled: _onTaskToggled,
-                          ),
-                          const SizedBox(height: 16),
-                          HealthScoreGraph(
-                            points: _healthCurve,
-                            selectedDate: _selectedDate,
-                            onPointTap: (d) =>
-                                setState(() => _selectedDate = d),
-                          ),
-                        ],
-                      ),
+                    _ProgressTab(
+                      tasks: _tasks,
+                      diagnoses: _diagnoses,
+                      progress: _progress,
+                      healthCurve: _healthCurve,
+                      selectedDate: _selectedDate,
+                      onDateSelected: (d) => setState(() => _selectedDate = d),
+                      onTaskSelected: _onTaskToggled,
                     ),
                     _DiagnosesTab(
                       diagnoses: _diagnoses,
@@ -972,6 +1357,10 @@ class _TaskCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isCompleted = task.status == TaskStatus.completed;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final taskDay = DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
+    final isFutureTask = taskDay.isAfter(today);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 240),
       margin: const EdgeInsets.only(bottom: 10),
@@ -987,7 +1376,7 @@ class _TaskCard extends StatelessWidget {
       ),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         InkWell(
-          onTap: isCompleted
+          onTap: isCompleted || isFutureTask
               ? null
               : () {
                   onComplete();
@@ -1050,11 +1439,16 @@ class _TaskCard extends StatelessWidget {
               Text(
                 isCompleted
                     ? 'Completed ${task.completedAt != null ? DateFormat('MMM d').format(task.completedAt!) : 'today'}'
-                    : 'Due: ${DateFormat('MMM d').format(task.dueAt)}',
+                    : isFutureTask
+                        ? 'Available: ${DateFormat('MMM d').format(task.dueAt)}'
+                        : 'Due: ${DateFormat('MMM d').format(task.dueAt)}',
                 style: TextStyle(
                   fontSize: 11,
-                  color:
-                      isCompleted ? AppColors.primary : AppColors.textLightGray,
+                  color: isCompleted
+                      ? AppColors.primary
+                      : isFutureTask
+                          ? Colors.orange
+                          : AppColors.textLightGray,
                 ),
               ),
             ]),
@@ -1068,101 +1462,47 @@ class _TaskCard extends StatelessWidget {
 // ─── Progress Tab ─────────────────────────────────────────────────────────
 
 class _ProgressTab extends StatelessWidget {
-  final CropModel crop;
+  final List<TreatmentTaskModel> tasks;
+  final List<DiagnosisModel> diagnoses;
   final List<ProgressUpdateModel> progress;
-  final List<FlSpot> sparklineSpots;
+  final List<HealthScorePoint> healthCurve;
+  final DateTime selectedDate;
+  final ValueChanged<DateTime> onDateSelected;
+  final ValueChanged<TreatmentTaskModel> onTaskSelected;
 
   const _ProgressTab({
-    required this.crop,
+    required this.tasks,
+    required this.diagnoses,
     required this.progress,
-    required this.sparklineSpots,
+    required this.healthCurve,
+    required this.selectedDate,
+    required this.onDateSelected,
+    required this.onTaskSelected,
   });
 
   @override
   Widget build(BuildContext context) {
-    final sorted = [...progress]
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final evolutionEntries = _visualEvolutionEntries();
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (sparklineSpots.length >= 2) ...[
-          const _SectionHeader('Health Score Over Time'),
-          const SizedBox(height: 12),
-          Container(
-            height: 180,
-            padding: const EdgeInsets.fromLTRB(8, 16, 16, 8),
-            decoration: BoxDecoration(
-                color: Colors.white, borderRadius: BorderRadius.circular(14)),
-            child: LineChart(
-              LineChartData(
-                gridData: FlGridData(
-                  show: true,
-                  drawVerticalLine: false,
-                  getDrawingHorizontalLine: (v) => FlLine(
-                    color: Colors.grey[200]!,
-                    strokeWidth: 1,
-                  ),
-                ),
-                titlesData: FlTitlesData(
-                  bottomTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false)),
-                  topTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false)),
-                  leftTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      reservedSize: 32,
-                      interval: 25,
-                      getTitlesWidget: (v, _) => Text(
-                        '${v.toInt()}%',
-                        style: const TextStyle(
-                            fontSize: 10, color: AppColors.textGray),
-                      ),
-                    ),
-                  ),
-                ),
-                borderData: FlBorderData(show: false),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots: sparklineSpots,
-                    isCurved: true,
-                    color: AppColors.primary,
-                    barWidth: 2.5,
-                    dotData: FlDotData(
-                      show: true,
-                      getDotPainter: (_, __, ___, ____) => FlDotCirclePainter(
-                        radius: 3,
-                        color: AppColors.primary,
-                        strokeColor: Colors.white,
-                        strokeWidth: 1.5,
-                      ),
-                    ),
-                    belowBarData: BarAreaData(
-                      show: true,
-                      gradient: LinearGradient(
-                        colors: [
-                          AppColors.primary.withOpacity(0.25),
-                          AppColors.primary.withOpacity(0),
-                        ],
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                      ),
-                    ),
-                  ),
-                ],
-                minY: 0,
-                maxY: 100,
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-        ],
-        const _SectionHeader('Update History'),
+        CalendarTracker(
+          tasks: tasks,
+          selectedDate: selectedDate,
+          onDateSelected: onDateSelected,
+          onTaskToggled: onTaskSelected,
+        ),
+        const SizedBox(height: 16),
+        HealthScoreGraph(
+          points: healthCurve,
+          selectedDate: selectedDate,
+          onPointTap: onDateSelected,
+        ),
+        const SizedBox(height: 16),
+        const _SectionHeader('Visual Evolution'),
         const SizedBox(height: 8),
-        if (sorted.isEmpty)
+        if (evolutionEntries.isEmpty)
           Container(
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
@@ -1178,7 +1518,7 @@ class _ProgressTab extends StatelessWidget {
                           TextStyle(color: AppColors.textGray, fontSize: 15)),
                   SizedBox(height: 4),
                   Text(
-                    'Submit a daily check-in from the Daily Plan tab',
+                    'Upload photo check-ins from the Daily Plan tab to build the treatment timeline.',
                     style:
                         TextStyle(color: AppColors.textLightGray, fontSize: 12),
                     textAlign: TextAlign.center,
@@ -1186,8 +1526,227 @@ class _ProgressTab extends StatelessWidget {
                 ]),
           )
         else
-          ...sorted.map((p) => _ProgressCard(update: p)),
+          SizedBox(
+            height: 230,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: evolutionEntries.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 14),
+              itemBuilder: (_, index) => _VisualEvolutionCard(
+                entry: evolutionEntries[index],
+              ),
+            ),
+          ),
       ],
+    );
+  }
+
+  List<_VisualEvolutionEntry> _visualEvolutionEntries() {
+    final rowsByDay = <DateTime, _VisualEvolutionEntry>{};
+
+    final sortedDiagnoses = [...diagnoses]
+      ..sort((a, b) => a.diagnosedAt.compareTo(b.diagnosedAt));
+    for (final diagnosis in sortedDiagnoses) {
+      final imageRef = diagnosis.imageUrl?.trim();
+      if (imageRef == null || imageRef.isEmpty) {
+        continue;
+      }
+      final day = DateTime(
+        diagnosis.diagnosedAt.year,
+        diagnosis.diagnosedAt.month,
+        diagnosis.diagnosedAt.day,
+      );
+      rowsByDay[day] = _VisualEvolutionEntry(
+        date: day,
+        imageRef: imageRef,
+        headline: humanizeDiseaseLabel(diagnosis.diseaseName),
+        caption: diagnosis.summary?.trim(),
+      );
+      break;
+    }
+
+    final sortedProgress = [...progress]
+      ..sort((a, b) => a.updateDate.compareTo(b.updateDate));
+    for (final update in sortedProgress) {
+      final imageRef = update.imageUrl?.trim();
+      if (imageRef == null || imageRef.isEmpty) {
+        continue;
+      }
+      final day = DateTime(
+        update.updateDate.year,
+        update.updateDate.month,
+        update.updateDate.day,
+      );
+      rowsByDay[day] = _VisualEvolutionEntry(
+        date: day,
+        imageRef: imageRef,
+        headline: _statusLabel(update.progressStatus),
+        caption: update.note?.trim().isNotEmpty == true
+            ? update.note!.trim()
+            : update.detectedDiseaseName?.trim(),
+      );
+    }
+
+    final entries = rowsByDay.values.toList()
+      ..sort((a, b) => a.date.compareTo(b.date));
+    if (entries.isEmpty) {
+      return const [];
+    }
+
+    final firstDay = entries.first.date;
+    return entries
+        .map(
+          (entry) => entry.copyWith(
+            dayNumber: entry.date.difference(firstDay).inDays + 1,
+            isToday: DateUtils.isSameDay(entry.date, DateTime.now()),
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  String _statusLabel(ProgressStatus status) {
+    switch (status) {
+      case ProgressStatus.improving:
+        return 'Improving';
+      case ProgressStatus.worsening:
+        return 'Needs Attention';
+      case ProgressStatus.stable:
+        return 'Stable';
+      default:
+        return 'Update';
+    }
+  }
+}
+
+class _VisualEvolutionEntry {
+  final DateTime date;
+  final String imageRef;
+  final String headline;
+  final String? caption;
+  final int dayNumber;
+  final bool isToday;
+
+  const _VisualEvolutionEntry({
+    required this.date,
+    required this.imageRef,
+    required this.headline,
+    this.caption,
+    this.dayNumber = 1,
+    this.isToday = false,
+  });
+
+  _VisualEvolutionEntry copyWith({
+    int? dayNumber,
+    bool? isToday,
+  }) {
+    return _VisualEvolutionEntry(
+      date: date,
+      imageRef: imageRef,
+      headline: headline,
+      caption: caption,
+      dayNumber: dayNumber ?? this.dayNumber,
+      isToday: isToday ?? this.isToday,
+    );
+  }
+}
+
+class _VisualEvolutionCard extends StatelessWidget {
+  final _VisualEvolutionEntry entry;
+
+  const _VisualEvolutionCard({required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 220,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+            child: AppImageReference(
+              imageRef: entry.imageRef,
+              width: double.infinity,
+              height: 150,
+              fit: BoxFit.cover,
+              placeholder: Container(
+                height: 150,
+                color: Colors.grey[200],
+                child: const Center(
+                  child: Icon(Icons.image, color: Colors.grey),
+                ),
+              ),
+              errorWidget: Container(
+                height: 150,
+                color: Colors.grey[200],
+                child: const Center(
+                  child: Icon(Icons.broken_image, color: Colors.grey),
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.isToday
+                      ? 'DAY ${entry.dayNumber} (TODAY)'
+                      : 'DAY ${entry.dayNumber}',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.1,
+                    color: entry.isToday ? AppColors.primaryDark : AppColors.textDark,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  entry.headline,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textDark,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  DateFormat('MMM d, yyyy').format(entry.date),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textGray,
+                  ),
+                ),
+                if (entry.caption != null && entry.caption!.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    entry.caption!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      height: 1.35,
+                      color: AppColors.textGray,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2268,6 +2827,440 @@ class _TaskCelebrationDialog extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+enum _CompletionDialogAction { done, dashboard }
+
+enum _ReassessmentDialogAction { extend, moveToCompleted }
+
+class _TreatmentCompletedDialog extends StatefulWidget {
+  final String cropName;
+  final double latestScore;
+
+  const _TreatmentCompletedDialog({
+    required this.cropName,
+    required this.latestScore,
+  });
+
+  @override
+  State<_TreatmentCompletedDialog> createState() =>
+      _TreatmentCompletedDialogState();
+}
+
+class _TreatmentCompletedDialogState extends State<_TreatmentCompletedDialog> {
+  late final ConfettiController _confetti;
+
+  @override
+  void initState() {
+    super.initState();
+    _confetti = ConfettiController(
+      duration: const Duration(seconds: 3),
+    )..play();
+  }
+
+  @override
+  void dispose() {
+    _confetti.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
+      child: Stack(
+        alignment: Alignment.topCenter,
+        children: [
+          Positioned.fill(
+            child: IgnorePointer(
+              child: ConfettiWidget(
+                confettiController: _confetti,
+                blastDirection: math.pi / 2,
+                emissionFrequency: 0.05,
+                numberOfParticles: 24,
+                maxBlastForce: 14,
+                minBlastForce: 5,
+                gravity: 0.22,
+                shouldLoop: false,
+                colors: const [
+                  Color(0xFFFFC727),
+                  Color(0xFF6BCB77),
+                  Color(0xFF4D96FF),
+                  Color(0xFFFF6B6B),
+                  Color(0xFFB980F0),
+                ],
+              ),
+            ),
+          ),
+          Container(
+            margin: const EdgeInsets.only(top: 36),
+            padding: const EdgeInsets.fromLTRB(24, 36, 24, 24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFFF9FBEF), Color(0xFFF2F8D7), Colors.white],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+              ),
+              borderRadius: BorderRadius.circular(30),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.14),
+                  blurRadius: 30,
+                  offset: const Offset(0, 18),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 92,
+                  height: 92,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF8DCE3B), Color(0xFF5AA11E)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF8DCE3B).withOpacity(0.35),
+                        blurRadius: 24,
+                        spreadRadius: 6,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.check_rounded,
+                    color: Colors.white,
+                    size: 54,
+                  ),
+                ),
+                const SizedBox(height: 22),
+                const Text(
+                  'Well done!',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 34,
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.primaryDark,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '${widget.cropName} completed its treatment plan with a ${widget.latestScore.toStringAsFixed(0)} health score. The crop is ready to move into your treated crops section.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    height: 1.55,
+                    color: AppColors.textGray,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 16,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEAF5CC),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.favorite, color: AppColors.primary, size: 26),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Your plant is thriving thanks to your daily care.',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.primaryDark,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(
+                          _CompletionDialogAction.done,
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.primaryDark,
+                          side: const BorderSide(color: AppColors.primaryLight),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: const Text('Done'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () => Navigator.of(context).pop(
+                          _CompletionDialogAction.dashboard,
+                        ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: const Text('Go to Dashboard'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TreatmentReassessmentDialog extends StatelessWidget {
+  final String cropName;
+  final double latestScore;
+  final bool isDownwardTrend;
+  final String explanation;
+  final List<String> suggestedActions;
+  final List<String> sources;
+  final bool canExtend;
+
+  const _TreatmentReassessmentDialog({
+    required this.cropName,
+    required this.latestScore,
+    required this.isDownwardTrend,
+    required this.explanation,
+    required this.suggestedActions,
+    required this.sources,
+    required this.canExtend,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      titlePadding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+      contentPadding: const EdgeInsets.fromLTRB(24, 18, 24, 12),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      title: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: Colors.orange.withOpacity(0.14),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Icon(
+              Icons.insights_rounded,
+              color: Colors.orange,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              isDownwardTrend
+                  ? 'Recovery needs more help'
+                  : 'Treatment finished, but not healed yet',
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '$cropName closed the current timeline at ${latestScore.toStringAsFixed(0)} health score.',
+              style: const TextStyle(
+                color: AppColors.textGray,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Text(
+                explanation,
+                style: const TextStyle(
+                  fontSize: 14,
+                  height: 1.5,
+                  color: AppColors.textDark,
+                ),
+              ),
+            ),
+            if (suggestedActions.isNotEmpty) ...[
+              const SizedBox(height: 18),
+              const Text(
+                'Suggested extended treatment',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textDark,
+                ),
+              ),
+              const SizedBox(height: 10),
+              ...suggestedActions.asMap().entries.map(
+                    (entry) => Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: 24,
+                            height: 24,
+                            decoration: BoxDecoration(
+                              color: AppColors.backgroundGreenLight,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              '${entry.key + 1}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              entry.value,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                height: 1.45,
+                                color: AppColors.textGray,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+            ],
+            if (sources.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Legit sources',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textDark,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ...sources.take(4).map(
+                    (source) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(
+                            Icons.link_rounded,
+                            size: 16,
+                            color: AppColors.primary,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              source,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                height: 1.4,
+                                color: AppColors.textGray,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(
+            _ReassessmentDialogAction.moveToCompleted,
+          ),
+          child: const Text('Move to Completed'),
+        ),
+        FilledButton(
+          onPressed: canExtend
+              ? () => Navigator.of(context).pop(
+                    _ReassessmentDialogAction.extend,
+                  )
+              : null,
+          style: FilledButton.styleFrom(
+            backgroundColor: AppColors.primary,
+          ),
+          child: const Text('Extend Tracking'),
+        ),
+      ],
+    );
+  }
+}
+
+class _TreatmentArchivedDialog extends StatelessWidget {
+  final String cropName;
+
+  const _TreatmentArchivedDialog({required this.cropName});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      title: const Text(
+        'Moved to Completed',
+        style: TextStyle(fontWeight: FontWeight.w800),
+      ),
+      content: Text(
+        '$cropName was moved to your completed crops section under the needs-help outcome so you can revisit it later if needed.',
+        style: const TextStyle(height: 1.5, color: AppColors.textGray),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_CompletionDialogAction.done),
+          child: const Text('Done'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(
+            _CompletionDialogAction.dashboard,
+          ),
+          style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+          child: const Text('Go to Dashboard'),
+        ),
+      ],
     );
   }
 }

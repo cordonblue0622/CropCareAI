@@ -60,6 +60,8 @@ dependencies:
   speech_to_text: ^7.0.0
   record: ^5.2.1
   flutter_tts: ^4.2.2
+  audioplayers: ^6.1.0
+  confetti: ^0.7.0
 
   # Local Notifications
   flutter_local_notifications: ^17.2.3

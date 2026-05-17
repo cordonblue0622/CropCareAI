@@ -89,6 +89,17 @@ class _FakeAiBackendService implements AiBackendService {
     double? currentHealthScore,
   }) async =>
       throw UnimplementedError();
+
+  @override
+  Future<AiBackendChatResponse> suggestTreatmentExtension({
+    required String cropType,
+    required String cropName,
+    required String diseaseName,
+    required double currentHealthScore,
+    required dynamic progressStatus,
+    String? latestNote,
+  }) async =>
+      throw UnimplementedError();
 }
 
 // ---------------------------------------------------------------------------

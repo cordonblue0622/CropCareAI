@@ -104,4 +104,47 @@ class TreatmentModel {
       'updated_at': updatedAt.toIso8601String(),
     };
   }
+
+  TreatmentModel copyWith({
+    String? id,
+    String? cropId,
+    String? diagnosisId,
+    String? userId,
+    String? diseaseName,
+    String? treatmentTitle,
+    List<String>? treatmentSteps,
+    int? expectedDurationDays,
+    TreatmentStatus? status,
+    DateTime? startedAt,
+    DateTime? endedAt,
+    bool? reassessmentRequired,
+    String? notes,
+    String? source,
+    int? syncVersion,
+    bool? isDeleted,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+  }) {
+    return TreatmentModel(
+      id: id ?? this.id,
+      cropId: cropId ?? this.cropId,
+      diagnosisId: diagnosisId ?? this.diagnosisId,
+      userId: userId ?? this.userId,
+      diseaseName: diseaseName ?? this.diseaseName,
+      treatmentTitle: treatmentTitle ?? this.treatmentTitle,
+      treatmentSteps: treatmentSteps ?? this.treatmentSteps,
+      expectedDurationDays: expectedDurationDays ?? this.expectedDurationDays,
+      status: status ?? this.status,
+      startedAt: startedAt ?? this.startedAt,
+      endedAt: endedAt ?? this.endedAt,
+      reassessmentRequired:
+          reassessmentRequired ?? this.reassessmentRequired,
+      notes: notes ?? this.notes,
+      source: source ?? this.source,
+      syncVersion: syncVersion ?? this.syncVersion,
+      isDeleted: isDeleted ?? this.isDeleted,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
 }

@@ -23,6 +23,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
   CropType? _filterType;
   String _searchQuery = '';
   final _searchCtrl = TextEditingController();
+  _CropsSectionMode _sectionMode = _CropsSectionMode.active;
 
   @override
   void dispose() {
@@ -54,7 +55,12 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
   Widget build(BuildContext context) {
     final crops = context.watch<CropsProvider>();
     final user = context.watch<AuthProvider>().currentUser;
-    final filtered = _filtered(crops.activeCrops);
+    final activeCrops = _filtered(crops.activeCrops);
+    final completedCrops = _filtered(crops.completedCrops);
+    final healedCrops = completedCrops.where(_isHealedCompletedCrop).toList();
+    final needsHelpCrops = completedCrops
+        .where((crop) => !_isHealedCompletedCrop(crop))
+        .toList();
 
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
@@ -125,38 +131,170 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
           ),
           const SizedBox(height: 12),
 
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _SectionChip(
+                    label: 'Active Crops',
+                    count: activeCrops.length,
+                    selected: _sectionMode == _CropsSectionMode.active,
+                    onTap: () => setState(
+                      () => _sectionMode = _CropsSectionMode.active,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _SectionChip(
+                    label: 'Treated Crops',
+                    count: completedCrops.length,
+                    selected: _sectionMode == _CropsSectionMode.completed,
+                    onTap: () => setState(
+                      () => _sectionMode = _CropsSectionMode.completed,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
           // List
           Expanded(
             child: crops.isLoading
                 ? const Center(
                     child: CircularProgressIndicator(color: AppColors.primary))
-                : filtered.isEmpty
-                    ? _emptyState(context)
-                    : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
-                        itemCount: filtered.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 16),
-                        itemBuilder: (_, i) => GestureDetector(
-                          onTap: () async {
-                            await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) =>
-                                    CropDetailScreen(crop: filtered[i]),
+                : _sectionMode == _CropsSectionMode.active
+                    ? activeCrops.isEmpty
+                        ? _emptyState(
+                            context,
+                            title: 'No active crops found',
+                            subtitle:
+                                'Add your first crop or clear the current filters.',
+                          )
+                        : ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
+                            itemCount: activeCrops.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 16),
+                            itemBuilder: (_, i) => GestureDetector(
+                              onTap: () async {
+                                await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        CropDetailScreen(crop: activeCrops[i]),
+                                  ),
+                                );
+                              },
+                              child: _CropCard(
+                                crop: activeCrops[i],
+                                previewImageFuture:
+                                    _previewImageFor(activeCrops[i].id),
                               ),
-                            );
-                          },
-                          child: _CropCard(
-                            crop: filtered[i],
-                            previewImageFuture:
-                                _previewImageFor(filtered[i].id),
+                            ),
+                          )
+                    : completedCrops.isEmpty
+                        ? _emptyState(
+                            context,
+                            title: 'No treated crops yet',
+                            subtitle:
+                                'Finished treatment timelines will appear here.',
+                            showAddAction: false,
+                          )
+                        : ListView(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
+                            children: [
+                              if (healedCrops.isNotEmpty) ...[
+                                _CompletionSectionHeader(
+                                  title: 'Fully Healed',
+                                  subtitle:
+                                      'Recovered crops with strong final health scores.',
+                                  count: healedCrops.length,
+                                  color: AppColors.primary,
+                                ),
+                                const SizedBox(height: 12),
+                                ...healedCrops.map(
+                                  (crop) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 16),
+                                    child: GestureDetector(
+                                      onTap: () async {
+                                        await Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                CropDetailScreen(crop: crop),
+                                          ),
+                                        );
+                                      },
+                                      child: _CropCard(
+                                        crop: crop,
+                                        previewImageFuture:
+                                            _previewImageFor(crop.id),
+                                        statusLabel: 'HEALED',
+                                        statusColor: AppColors.primary,
+                                        completionSummary:
+                                            'Treatment completed with a health score above 90.',
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              if (needsHelpCrops.isNotEmpty) ...[
+                                _CompletionSectionHeader(
+                                  title: 'Needs Help',
+                                  subtitle:
+                                      'Completed timelines that still need follow-up attention.',
+                                  count: needsHelpCrops.length,
+                                  color: Colors.orange,
+                                ),
+                                const SizedBox(height: 12),
+                                ...needsHelpCrops.map(
+                                  (crop) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 16),
+                                    child: GestureDetector(
+                                      onTap: () async {
+                                        await Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                CropDetailScreen(crop: crop),
+                                          ),
+                                        );
+                                      },
+                                      child: _CropCard(
+                                        crop: crop,
+                                        previewImageFuture:
+                                            _previewImageFor(crop.id),
+                                        statusLabel: 'NEEDS HELP',
+                                        statusColor: Colors.orange,
+                                        completionSummary:
+                                            _completionSummaryFor(crop),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
-                        ),
-                      ),
           ),
         ]),
       ),
     );
+  }
+
+  bool _isHealedCompletedCrop(CropModel crop) {
+    final score = crop.latestHealthScore ?? 0;
+    return score >= 90 && crop.latestProgressStatus != ProgressStatus.worsening;
+  }
+
+  String _completionSummaryFor(CropModel crop) {
+    if (crop.latestProgressStatus == ProgressStatus.worsening) {
+      return 'Treatment finished, but the latest health trend moved downward.';
+    }
+    return 'Treatment finished below the healed threshold and may need more care.';
   }
 
   void _showFilterSheet(BuildContext context) {
@@ -194,7 +332,12 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
     );
   }
 
-  Widget _emptyState(BuildContext context) {
+  Widget _emptyState(
+    BuildContext context, {
+    required String title,
+    required String subtitle,
+    bool showAddAction = true,
+  }) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -202,27 +345,171 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
           const Icon(Icons.energy_savings_leaf_outlined,
               color: AppColors.textLightGray, size: 64),
           const SizedBox(height: 16),
-          const Text('No crops found',
-              style: TextStyle(
+          Text(title,
+              style: const TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textDark)),
           const SizedBox(height: 8),
-          const Text('Add your first crop to get started',
-              style: TextStyle(color: AppColors.textGray)),
-          const SizedBox(height: 20),
-          ElevatedButton.icon(
-            onPressed: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const AddCropScreen())),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20)),
+          Text(subtitle, style: const TextStyle(color: AppColors.textGray)),
+          if (showAddAction) ...[
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const AddCropScreen())),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20)),
+              ),
+              icon: const Icon(Icons.add),
+              label: const Text('Add Crop'),
             ),
-            icon: const Icon(Icons.add),
-            label: const Text('Add Crop'),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+enum _CropsSectionMode { active, completed }
+
+class _SectionChip extends StatelessWidget {
+  final String label;
+  final int count;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _SectionChip({
+    required this.label,
+    required this.count,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary : Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: selected ? AppColors.primary : AppColors.primaryLight,
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: selected ? Colors.white : AppColors.primaryDark,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: selected
+                    ? Colors.white.withOpacity(0.2)
+                    : AppColors.backgroundGreenLight,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: selected ? Colors.white : AppColors.primary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CompletionSectionHeader extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final int count;
+  final Color color;
+
+  const _CompletionSectionHeader({
+    required this.title,
+    required this.subtitle,
+    required this.count,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: color.withOpacity(0.18)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(Icons.eco_rounded, color: color),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.textDark,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    height: 1.35,
+                    color: AppColors.textGray,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            '$count',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+              color: color,
+            ),
           ),
         ],
       ),
@@ -271,10 +558,16 @@ class _FilterChip extends StatelessWidget {
 class _CropCard extends StatelessWidget {
   final CropModel crop;
   final Future<String?> previewImageFuture;
+  final String? statusLabel;
+  final Color? statusColor;
+  final String? completionSummary;
 
   const _CropCard({
     required this.crop,
     required this.previewImageFuture,
+    this.statusLabel,
+    this.statusColor,
+    this.completionSummary,
   });
 
   Color _statusColor(CropStatus s) {
@@ -307,6 +600,8 @@ class _CropCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final score = crop.latestHealthScore ?? 0;
+    final badgeColor = statusColor ?? _statusColor(crop.status);
+    final badgeLabel = statusLabel ?? crop.status.name.toUpperCase();
 
     return Container(
       decoration: BoxDecoration(
@@ -350,9 +645,9 @@ class _CropCard extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                  color: _statusColor(crop.status).withOpacity(0.9),
+                color: badgeColor.withOpacity(0.9),
                   borderRadius: BorderRadius.circular(8)),
-              child: Text(crop.status.name.toUpperCase(),
+              child: Text(badgeLabel,
                   style: const TextStyle(
                       fontSize: 10,
                       color: Colors.white,
@@ -423,6 +718,17 @@ class _CropCard extends StatelessWidget {
                     fontSize: 12, color: AppColors.textLightGray),
               ),
             ]),
+            if (completionSummary != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                completionSummary!,
+                style: const TextStyle(
+                  fontSize: 12,
+                  height: 1.4,
+                  color: AppColors.textGray,
+                ),
+              ),
+            ],
           ]),
         ),
       ]),

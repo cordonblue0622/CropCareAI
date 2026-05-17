@@ -133,12 +133,13 @@ Use Render only for the online augmentation endpoints.
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL=gpt-5.4-mini`
 - `ENABLE_MOCK_SERVICES=false`
-- `REQUIRE_AUTH=true`
+- `REQUIRE_AUTH=false`
 - `APP_ENV=production`
 - `LOG_LEVEL=INFO`
 - `CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080`
 
 If you will also call the backend from a hosted web frontend later, append that origin to `CORS_ORIGINS`.
+If you turn `REQUIRE_AUTH` back on later, the mobile app must be signed in or the hosted AI routes will return `401 Unauthorized`.
 
 6. Deploy the service.
 
@@ -175,7 +176,7 @@ After the Render deploy is live, test the APK in two passes.
 Online pass:
 
 1. Install the APK built with `AI_BACKEND_BASE_URL` pointing to Render.
-2. Sign in.
+2. Sign in if you want hosted AI requests tied to the user's Supabase account. With `REQUIRE_AUTH=false`, the demo AI flow also works before sign-in.
 3. Upload a crop photo.
 4. Confirm TFLite still performs the initial scan locally.
 5. Confirm the chat response is conversational and image-aware.

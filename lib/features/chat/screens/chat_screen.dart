@@ -18,12 +18,12 @@ import '../../../data/models/chat_message_model.dart';
 import '../../../data/models/chat_session_model.dart';
 import '../../../data/models/diagnosis_model.dart';
 import '../../../services/connectivity_service.dart';
-import '../../../services/speech_recognition_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../crops/providers/crops_provider.dart';
 import '../providers/chat_provider.dart';
 import '../../../services/text_to_speech_service.dart';
 import '../../home/home_screen.dart';
+import '../widgets/audio_message_player.dart';
 import '../widgets/video_player_view.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -33,6 +33,7 @@ class ChatScreen extends StatefulWidget {
   final Uint8List? initialImageBytes;
   final bool startFreshSession;
   final bool initialIsVideoFrame;
+  final String? initialVideoPath;
   final String? cropId;
   final String? cropName;
 
@@ -47,6 +48,7 @@ class ChatScreen extends StatefulWidget {
     this.initialImageBytes,
     this.startFreshSession = false,
     this.initialIsVideoFrame = false,
+    this.initialVideoPath,
     this.cropId,
     this.cropName,
     this.hintCropType,
@@ -60,7 +62,6 @@ class _ChatScreenState extends State<ChatScreen> {
   final _textCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   bool _sending = false;
-  final bool _hasShownAddCropDialog = false;
 
   @override
   void initState() {
@@ -95,6 +96,7 @@ class _ChatScreenState extends State<ChatScreen> {
         attachedDiagnosis: widget.initialDiagnosis,
         attachedImageBytes: widget.initialImageBytes,
         isVideoFrame: widget.initialIsVideoFrame,
+        attachedVideoPath: widget.initialVideoPath,
       );
     } else if (widget.initialDiagnosis != null ||
         widget.initialImageBytes != null) {
@@ -110,171 +112,17 @@ class _ChatScreenState extends State<ChatScreen> {
         attachedDiagnosis: widget.initialDiagnosis,
         attachedImageBytes: widget.initialImageBytes,
         isVideoFrame: widget.initialIsVideoFrame,
+        attachedVideoPath: widget.initialVideoPath,
       );
     }
   }
 
-  void _showAddCropDialog(DiagnosisModel diagnosis) {
-    final cropNameCtrl = TextEditingController(
-        text: diagnosis.labelKey != null && diagnosis.labelKey!.isNotEmpty
-            ? diagnosis.labelKey!.split('_').first.capitalize()
-            : diagnosis.diseaseName.split(' ').first);
-    // Get recommended actions from the latest assistant message metadata
-    final chat = context.read<ChatProvider>();
-    final actions = chat.currentMessages
-        .where((m) => m.role == MessageRole.assistant)
-        .lastOrNull
-        ?.metadata?['recommended_actions'];
-    final latestAssistant = chat.currentMessages.lastWhere(
-      (m) => m.role == MessageRole.assistant,
-      orElse: () => ChatMessageModel(
-        id: '',
-        sessionId: '',
-        userId: '',
-        role: MessageRole.assistant,
-        content: diagnosis.summary ?? '',
-        createdAt: DateTime.now(),
-      ),
-    );
-    final List<String> steps = actions is List
-        ? List<String>.from(actions.map((e) => e.toString()))
-        : [];
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.12),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.eco, color: AppColors.primary, size: 22),
-            ),
-            const SizedBox(width: 10),
-            const Expanded(
-              child: Text('Add to My Crops?',
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Track the health of this crop and follow its treatment plan.',
-              style: TextStyle(color: Colors.grey[600], fontSize: 13),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Detected: ${humanizeDiseaseLabel(diagnosis.diseaseName)}',
-              style: const TextStyle(
-                  fontWeight: FontWeight.w600, color: AppColors.primaryDark),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: cropNameCtrl,
-              decoration: InputDecoration(
-                labelText: 'Crop Name',
-                hintText: 'e.g. My Tomato Plant',
-                filled: true,
-                fillColor: Colors.grey[100],
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none),
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Skip', style: TextStyle(color: Colors.grey)),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-            onPressed: () async {
-              Navigator.of(ctx).pop();
-              final user = context.read<AuthProvider>().currentUser;
-              if (user == null) return;
-              if (context
-                      .read<ChatProvider>()
-                      .currentSession
-                      ?.cropId
-                      ?.isNotEmpty ==
-                  true) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('This diagnosis is already in My Crops.'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-                return;
-              }
-              final cropsProvider = context.read<CropsProvider>();
-              final cropId = await cropsProvider.addCropFromDiagnosis(
-                userId: user.id,
-                diseaseName: diagnosis.diseaseName,
-                labelKey: diagnosis.labelKey ?? '',
-                cropName: cropNameCtrl.text.trim().isNotEmpty
-                    ? cropNameCtrl.text.trim()
-                    : (diagnosis.labelKey?.split('_').first ?? ''),
-                cropType: _cropTypeFromLabel(diagnosis.labelKey),
-                severity: diagnosis.severity,
-                treatmentSteps: steps,
-                initialSummary: diagnosis.summary ?? latestAssistant.content,
-                confidenceScore: diagnosis.confidenceScore,
-                resultLabel: diagnosis.resultLabel,
-                modelName: diagnosis.modelName,
-                modelVersion: diagnosis.modelVersion,
-                imageUrl: diagnosis.imageUrl,
-                diagnosisMode: diagnosis.diagnosisMode,
-              );
-              if (!mounted) return;
-              if (cropId != null) {
-                await context
-                    .read<ChatProvider>()
-                    .linkCurrentSessionToCrop(cropId);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: const Text('Crop added to My Crops!'),
-                    backgroundColor: AppColors.primary,
-                    behavior: SnackBarBehavior.floating,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                  ),
-                );
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      cropsProvider.error ??
-                          'Could not add this crop right now. Please try again.',
-                    ),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              }
-            },
-            child: const Text('Add to My Crops'),
-          ),
-        ],
-      ),
-    );
-    cropNameCtrl.dispose();
-  }
-
-  static CropType _cropTypeFromLabel(String? labelKey) {
+  static CropType? _tryCropTypeFromLabel(String? labelKey) {
     final key = (labelKey ?? '').toLowerCase();
     if (key.contains('tomato')) return CropType.tomato;
-    if (key.contains('eggplant')) return CropType.eggplant;
+    if (key.contains('eggplant') || key.contains('talong')) {
+      return CropType.eggplant;
+    }
     if (key.contains('pepper') || key.contains('capsicum')) {
       return CropType.pepper;
     }
@@ -286,7 +134,43 @@ class _ChatScreenState extends State<ChatScreen> {
     if (key.contains('squash') || key.contains('kalabasa')) {
       return CropType.squash;
     }
-    return CropType.tomato; // default
+    return null;
+  }
+
+  CropType? _resolveCropTypeForCard({
+    required String rawCropType,
+    required String labelKey,
+    required String summary,
+    required String diseaseName,
+    required String cropName,
+  }) {
+    final candidates = [
+      rawCropType,
+      labelKey,
+      summary,
+      diseaseName,
+      cropName,
+      widget.hintCropType ?? '',
+    ];
+
+    for (final candidate in candidates) {
+      final resolved = _tryCropTypeFromLabel(candidate);
+      if (resolved != null) {
+        return resolved;
+      }
+    }
+
+    final linkedCropId =
+        widget.cropId ?? context.read<ChatProvider>().currentSession?.cropId;
+    if (linkedCropId != null && linkedCropId.isNotEmpty) {
+      for (final crop in context.read<CropsProvider>().crops) {
+        if (crop.id == linkedCropId && !crop.isDeleted) {
+          return crop.cropType;
+        }
+      }
+    }
+
+    return null;
   }
 
   /// Hint sent to the AI backend when TFLite did not produce a diagnosis.
@@ -312,22 +196,20 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  bool _cropNeedsOnlineDiagnosis(String? crop) {
-    final c = (crop ?? '').toLowerCase();
-    return c == 'eggplant' || c == 'pechay';
-  }
-
   Future<void> _sendMessage(
     String text, {
     bool hideMessageTextInUi = false,
     DiagnosisModel? attachedDiagnosis,
     List<int>? attachedImageBytes,
+    String? attachedAudioPath,
+    String? attachedVideoPath,
     bool isVideoFrame = false,
   }) async {
     final trimmed = text.trim();
     final hasImage =
         attachedImageBytes != null && attachedImageBytes.isNotEmpty;
-    if (trimmed.isEmpty && !hasImage) return;
+    final hasAudio = attachedAudioPath != null && attachedAudioPath.trim().isNotEmpty;
+    if (trimmed.isEmpty && !hasImage && !hasAudio) return;
     final user = context.read<AuthProvider>().currentUser;
     if (user == null) return;
 
@@ -343,6 +225,8 @@ class _ChatScreenState extends State<ChatScreen> {
           hideMessageTextInUi: hideMessageTextInUi,
           attachedDiagnosis: attachedDiagnosis,
           attachedImageBytes: attachedImageBytes,
+          attachedAudioPath: attachedAudioPath,
+          attachedVideoPath: attachedVideoPath,
           isVideoFrame: isVideoFrame,
           hintCropType: _effectiveHintCropType(),
         );
@@ -481,50 +365,10 @@ class _ChatScreenState extends State<ChatScreen> {
           onSend: () => _sendMessage(_textCtrl.text),
           onSendWithImage: (bytes) =>
               _sendMessage('', attachedImageBytes: bytes),
+          onSendWithVoice: (text, audioPath) =>
+              _sendMessage(text, attachedAudioPath: audioPath),
         ),
       ]),
-    );
-  }
-}
-
-class _ScanImageCard extends StatelessWidget {
-  final Uint8List imageBytes;
-
-  const _ScanImageCard({required this.imageBytes});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: Container(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.68,
-          ),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(24),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 14,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(24),
-            child: Image.memory(
-              imageBytes,
-              height: 220,
-              width: double.infinity,
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -770,6 +614,40 @@ class _MessageBubbleState extends State<_MessageBubble> {
   // Local checklist state for treatment recommendations
   final Set<int> _checkedSteps = {};
 
+  CropType? _resolveCropTypeForCard({
+    required String rawCropType,
+    required String labelKey,
+    required String summary,
+    required String diseaseName,
+    required String cropName,
+  }) {
+    final candidates = [
+      rawCropType,
+      labelKey,
+      summary,
+      diseaseName,
+      cropName,
+    ];
+
+    for (final candidate in candidates) {
+      final resolved = _ChatScreenState._tryCropTypeFromLabel(candidate);
+      if (resolved != null) {
+        return resolved;
+      }
+    }
+
+    final linkedCropId = context.read<ChatProvider>().currentSession?.cropId;
+    if (linkedCropId != null && linkedCropId.isNotEmpty) {
+      for (final crop in context.read<CropsProvider>().crops) {
+        if (crop.id == linkedCropId && !crop.isDeleted) {
+          return crop.cropType;
+        }
+      }
+    }
+
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final message = widget.message;
@@ -787,6 +665,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
     final hasImage =
         message.imageBytes != null && message.imageBytes!.isNotEmpty;
     final hideText = message.metadata?['hide_text'] == true;
+    final audioPath = message.metadata?['audio_path'] as String?;
     final videoUrl = message.metadata?['video_url'] as String?;
     final posterUrl = message.metadata?['video_poster_url'] as String?;
 
@@ -949,6 +828,14 @@ class _MessageBubbleState extends State<_MessageBubble> {
                       ],
                     ),
                   ),
+                if (audioPath != null && audioPath.trim().isNotEmpty) ...[
+                  if (hasImage) const SizedBox(height: 8),
+                  AudioMessagePlayer(
+                    audioPath: audioPath,
+                    isUser: isUser,
+                  ),
+                  const SizedBox(height: 6),
+                ],
                 // ── Text bubble ──
                 if (!hideText &&
                   message.content.isNotEmpty &&
@@ -1156,12 +1043,22 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 onPressed: alreadyLinked
                     ? null
                     : () {
+                        final inferredCropType = _resolveCropTypeForCard(
+                          rawCropType: rawCropType,
+                          labelKey: labelKey,
+                          summary: summary,
+                          diseaseName: diseaseName,
+                          cropName: '',
+                        );
                         final cropNameCtrl = TextEditingController(
-                            text: labelKey.isNotEmpty
-                                ? labelKey.split('_').first.capitalize()
-                                : rawCropType.isNotEmpty
-                                    ? rawCropType.capitalize()
-                                    : diseaseName.split(' ').first);
+                          text: labelKey.isNotEmpty
+                            ? labelKey.split('_').first.capitalize()
+                            : rawCropType.isNotEmpty
+                              ? rawCropType.capitalize()
+                              : inferredCropType != null
+                                ? inferredCropType.name.capitalize()
+                                : diseaseName.split(' ').first,
+                        );
                         _showAddCropFromCardDialog(context,
                             diseaseName: diseaseName,
                             labelKey: labelKey,
@@ -1197,105 +1094,143 @@ class _MessageBubbleState extends State<_MessageBubble> {
   }) {
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Name Your Crop',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-        content: TextField(
-          controller: cropNameCtrl,
-          autofocus: true,
-          decoration: InputDecoration(
-            labelText: 'Crop Name',
-            hintText: 'e.g. My Tomato Plant',
-            filled: true,
-            fillColor: Colors.grey[100],
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      builder: (ctx) {
+        String? errorText;
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) => AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Text('Name Your Crop',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            content: TextField(
+              controller: cropNameCtrl,
+              autofocus: true,
+              onChanged: (_) {
+                if (errorText == null) {
+                  return;
+                }
+                setDialogState(() => errorText = null);
+              },
+              decoration: InputDecoration(
+                labelText: 'Crop Name',
+                hintText: 'e.g. My Tomato Plant',
+                errorText: errorText,
+                filled: true,
+                fillColor: Colors.grey[100],
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child:
+                    const Text('Cancel', style: TextStyle(color: Colors.grey)),
+              ),
+              FilledButton(
+                style:
+                    FilledButton.styleFrom(backgroundColor: AppColors.primary),
+                onPressed: () async {
+                  final user = context.read<AuthProvider>().currentUser;
+                  if (user == null) return;
+                  if (context
+                          .read<ChatProvider>()
+                          .currentSession
+                          ?.cropId
+                          ?.isNotEmpty ==
+                      true) {
+                    Navigator.of(ctx).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('This diagnosis is already in My Crops.'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                    return;
+                  }
+                  final severity = Severity.values.firstWhere(
+                      (s) => s.value == rawSeverity,
+                      orElse: () => Severity.moderate);
+                  final cropsProvider = context.read<CropsProvider>();
+                  final proposedName = cropNameCtrl.text.trim().isNotEmpty
+                      ? cropNameCtrl.text.trim()
+                      : labelKey.isNotEmpty
+                          ? labelKey.split('_').first
+                          : rawCropType.isNotEmpty
+                              ? rawCropType
+                              : 'My Crop';
+                  final validationError = cropsProvider.validateUniqueCropName(
+                    cropName: proposedName,
+                  );
+                  if (validationError != null) {
+                    setDialogState(() => errorText = validationError);
+                    return;
+                  }
+
+                  final resolvedCropType = _resolveCropTypeForCard(
+                    rawCropType: rawCropType,
+                    labelKey: labelKey,
+                    summary: summary,
+                    diseaseName: diseaseName,
+                    cropName: proposedName,
+                  );
+                  if (resolvedCropType == null) {
+                    setDialogState(
+                      () => errorText =
+                          'Please include the crop type in the name, for example "Pechay Bed 1".',
+                    );
+                    return;
+                  }
+
+                  Navigator.of(ctx).pop();
+                  final cropId = await cropsProvider.addCropFromDiagnosis(
+                    userId: user.id,
+                    diseaseName: diseaseName,
+                    labelKey: labelKey,
+                    cropName: proposedName,
+                    cropType: resolvedCropType,
+                    severity: severity,
+                    treatmentSteps: steps,
+                    initialSummary: summary,
+                    modelName: modelName,
+                    imageUrl: imageUrl?.isEmpty == true ? null : imageUrl,
+                    diagnosisMode: diagnosisMode,
+                  );
+                  if (!mounted) return;
+                  if (cropId != null) {
+                    await context
+                        .read<ChatProvider>()
+                        .linkCurrentSessionToCrop(cropId);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: const Text('Crop added to My Crops!'),
+                        backgroundColor: AppColors.primary,
+                        behavior: SnackBarBehavior.floating,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                    );
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          cropsProvider.error ??
+                              'Could not add this crop right now. Please try again.',
+                        ),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  }
+                },
+                child: const Text('Add'),
+              ),
+            ],
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-            onPressed: () async {
-              Navigator.of(ctx).pop();
-              final user = context.read<AuthProvider>().currentUser;
-              if (user == null) return;
-              if (context
-                      .read<ChatProvider>()
-                      .currentSession
-                      ?.cropId
-                      ?.isNotEmpty ==
-                  true) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('This diagnosis is already in My Crops.'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-                return;
-              }
-              final severity = Severity.values.firstWhere(
-                  (s) => s.value == rawSeverity,
-                  orElse: () => Severity.moderate);
-              final cropsProvider = context.read<CropsProvider>();
-              final cropId = await cropsProvider.addCropFromDiagnosis(
-                userId: user.id,
-                diseaseName: diseaseName,
-                labelKey: labelKey,
-                cropName: cropNameCtrl.text.trim().isNotEmpty
-                    ? cropNameCtrl.text.trim()
-                    : labelKey.isNotEmpty
-                        ? labelKey.split('_').first
-                        : rawCropType.isNotEmpty
-                            ? rawCropType
-                            : 'My Crop',
-                cropType: rawCropType.isNotEmpty
-                    ? _ChatScreenState._cropTypeFromLabel(rawCropType)
-                    : _ChatScreenState._cropTypeFromLabel(labelKey),
-                severity: severity,
-                treatmentSteps: steps,
-                initialSummary: summary,
-                modelName: modelName,
-                imageUrl: imageUrl?.isEmpty == true ? null : imageUrl,
-                diagnosisMode: diagnosisMode,
-              );
-              if (!mounted) return;
-              if (cropId != null) {
-                await context
-                    .read<ChatProvider>()
-                    .linkCurrentSessionToCrop(cropId);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: const Text('Crop added to My Crops!'),
-                    backgroundColor: AppColors.primary,
-                    behavior: SnackBarBehavior.floating,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                  ),
-                );
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      cropsProvider.error ??
-                          'Could not add this crop right now. Please try again.',
-                    ),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              }
-            },
-            child: const Text('Add'),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1692,12 +1627,14 @@ class _InputBar extends StatefulWidget {
   final bool sending;
   final VoidCallback onSend;
   final void Function(List<int> imageBytes) onSendWithImage;
+  final Future<void> Function(String text, String audioPath) onSendWithVoice;
 
   const _InputBar({
     required this.controller,
     required this.sending,
     required this.onSend,
     required this.onSendWithImage,
+    required this.onSendWithVoice,
   });
 
   @override
@@ -1705,11 +1642,8 @@ class _InputBar extends StatefulWidget {
 }
 
 class _InputBarState extends State<_InputBar> {
-  final SpeechRecognitionService _speech = SpeechRecognitionService();
   final AudioRecorder _recorder = AudioRecorder();
   bool _isListening = false;
-  bool _speechAvailable = false;
-  bool _handledCurrentMicSession = false;
   bool _startingMic = false;
   bool _transcribing = false;
   bool _usingBackendFallback = false;
@@ -1717,40 +1651,6 @@ class _InputBarState extends State<_InputBar> {
   @override
   void initState() {
     super.initState();
-  }
-
-  Future<bool> _initializeSpeechClient({bool recreate = false}) async {
-    final ok = await _speech.initialize(
-      onStatus: (status) {
-        if (status == 'done' || status == 'notListening') {
-          _scheduleFinishMicSession();
-        }
-      },
-      onError: (error) {
-        if (!mounted) return;
-        final message = error.toLowerCase();
-        _handledCurrentMicSession = true;
-        setState(() => _isListening = false);
-        if (message.contains('busy') ||
-            message.contains('no match') ||
-            message.contains('no_speech')) {
-          return;
-        }
-      },
-      recreate: recreate,
-    );
-    if (mounted) {
-      setState(() => _speechAvailable = ok);
-    }
-    return ok;
-  }
-
-  Future<bool> _ensureSpeechReady() async {
-    final ready = await _initializeSpeechClient();
-    if (ready && _speech.isAvailable) {
-      return true;
-    }
-    return _initializeSpeechClient(recreate: true);
   }
 
   Future<bool> _ensureMicrophonePermission() async {
@@ -1763,55 +1663,12 @@ class _InputBarState extends State<_InputBar> {
     return requestedStatus.isGranted;
   }
 
-  void _scheduleFinishMicSession() {
-    Future<void>.delayed(const Duration(milliseconds: 150), () {
-      _finishMicSession();
-    });
-  }
-
-  void _finishMicSession() {
-    if (!mounted || _handledCurrentMicSession) return;
-    _handledCurrentMicSession = true;
-    setState(() => _isListening = false);
-    if (widget.controller.text.trim().isNotEmpty) {
-      widget.onSend();
-    }
-  }
-
-  Future<void> _resetSpeechSession({bool recreate = false}) async {
-    await _speech.reset(recreate: recreate);
-    if (mounted && recreate) {
-      setState(() => _speechAvailable = _speech.isAvailable);
-    }
-  }
-
-  Future<bool> _startListeningSession({required bool preferOnDevice}) async {
-    if (!await _ensureSpeechReady()) {
-      return false;
-    }
-
-    return _speech.startDictation(
-      preferOnDevice: preferOnDevice,
-      onResult: (transcript, _) {
-        if (!mounted) return;
-        widget.controller.text = transcript;
-        widget.controller.selection = TextSelection.fromPosition(
-          TextPosition(offset: widget.controller.text.length),
-        );
-      },
-    );
-  }
 
   Future<void> _toggleMic() async {
     if (_startingMic || _transcribing) return;
 
-    if (_isListening || _speech.isListening || _usingBackendFallback) {
-      if (_usingBackendFallback) {
-        await _stopRecordingAndTranscribe();
-        return;
-      }
-      await _speech.stop();
-      _finishMicSession();
+    if (_isListening || _usingBackendFallback) {
+      await _stopRecordingAndTranscribe();
       return;
     }
 
@@ -1827,46 +1684,31 @@ class _InputBarState extends State<_InputBar> {
 
     _startingMic = true;
     try {
-      _handledCurrentMicSession = true;
-      await _resetSpeechSession(recreate: true);
-
       var isOnline = true;
-      bool preferOnDevice = false;
       try {
         isOnline = await context.read<ConnectivityService>().isConnected;
-        preferOnDevice = !isOnline;
       } catch (_) {}
 
-      if (!mounted) return;
-      _handledCurrentMicSession = false;
-      setState(() => _isListening = true);
-
-      final didStart = await _startListeningSession(
-        preferOnDevice: preferOnDevice,
-      );
-
-      if (!didStart && isOnline) {
-        final backendFallbackStarted = await _startBackendRecordingFallback();
-        if (backendFallbackStarted) {
-          return;
-        }
+      if (!isOnline) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Voice messages require an internet connection.'),
+          ),
+        );
+        return;
       }
 
-      if (!didStart && mounted) {
-        setState(() => _isListening = false);
-        _handledCurrentMicSession = true;
+      if (!mounted) return;
+      final backendFallbackStarted = await _startBackendRecordingFallback();
+      if (!backendFallbackStarted && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              isOnline
-                  ? 'Could not start speech recognition on this device or the backend fallback.'
-                  : 'Could not start speech recognition on this device.',
-            ),
+          const SnackBar(
+            content: Text('Could not start online voice recording.'),
           ),
         );
       }
     } catch (_) {
-      _handledCurrentMicSession = true;
       if (!mounted) return;
       setState(() => _isListening = false);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1910,9 +1752,13 @@ class _InputBarState extends State<_InputBar> {
   }
 
   Future<String> _buildRecordingPath() async {
-    final tempDir = await getTemporaryDirectory();
+    final docsDir = await getApplicationDocumentsDirectory();
+    final voiceDir = Directory(path.join(docsDir.path, 'voice_messages'));
+    if (!await voiceDir.exists()) {
+      await voiceDir.create(recursive: true);
+    }
     return path.join(
-      tempDir.path,
+      voiceDir.path,
       'chat-mic-${DateTime.now().millisecondsSinceEpoch}.wav',
     );
   }
@@ -1925,7 +1771,6 @@ class _InputBarState extends State<_InputBar> {
       _isListening = false;
       _transcribing = true;
       _usingBackendFallback = false;
-      _handledCurrentMicSession = true;
     });
 
     if (recordingPath == null || recordingPath.trim().isEmpty) {
@@ -1954,7 +1799,8 @@ class _InputBarState extends State<_InputBar> {
       setState(() => _transcribing = false);
 
       if (transcript.isNotEmpty) {
-        widget.onSend();
+        widget.controller.clear();
+        await widget.onSendWithVoice(transcript, recordingPath);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('No speech was detected. Try again.')),
@@ -2052,7 +1898,6 @@ class _InputBarState extends State<_InputBar> {
 
   @override
   void dispose() {
-    _speech.dispose();
     unawaited(_recorder.dispose());
     super.dispose();
   }

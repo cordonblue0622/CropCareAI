@@ -32,15 +32,23 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   final WeatherService _weatherService = WeatherService();
+  final TextEditingController _searchCtrl = TextEditingController();
   List<DiseaseKnowledgeModel> _diseases = [];
   FarmWeatherSnapshot? _weather;
   String? _weatherLocationQuery;
+  String _searchQuery = '';
   bool _isLoadingWeather = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadDiseases());
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadDiseases() async {
@@ -128,6 +136,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final filtered =
         allActive.where((item) => cropTypes.contains(item.cropType)).toList();
     return (filtered.isNotEmpty ? filtered : allActive).take(5).toList();
+  }
+
+  List<CropModel> _filterCrops(List<CropModel> crops) {
+    final query = _searchQuery.trim().toLowerCase();
+    if (query.isEmpty) {
+      return crops;
+    }
+
+    return crops.where((crop) {
+      final haystack = [
+        crop.cropName,
+        crop.cropType.name,
+        crop.plotCode,
+        crop.locationLabel,
+        crop.notes,
+      ].whereType<String>().join(' ').toLowerCase();
+      return haystack.contains(query);
+    }).toList(growable: false);
+  }
+
+  List<CropModel> _recentActiveCrops(
+    List<CropModel> crops, {
+    int? limit,
+  }) {
+    final sorted = [...crops]
+      ..sort((a, b) {
+        final updatedCompare = b.updatedAt.compareTo(a.updatedAt);
+        if (updatedCompare != 0) {
+          return updatedCompare;
+        }
+        return b.createdAt.compareTo(a.createdAt);
+      });
+
+    if (limit == null || sorted.length <= limit) {
+      return sorted;
+    }
+    return sorted.take(limit).toList(growable: false);
+  }
+
+  List<DiseaseKnowledgeModel> _filterDiseases(
+    List<DiseaseKnowledgeModel> diseases,
+  ) {
+    final query = _searchQuery.trim().toLowerCase();
+    if (query.isEmpty) {
+      return diseases;
+    }
+
+    return diseases.where((disease) {
+      final haystack = [
+        disease.diseaseName,
+        disease.cropType.name,
+        disease.description,
+        disease.cautionNotes,
+        disease.severityNotes,
+      ].whereType<String>().join(' ').toLowerCase();
+      return haystack.contains(query);
+    }).toList(growable: false);
   }
 
   String _diseaseRiskLabel(DiseaseKnowledgeModel disease) {
@@ -286,6 +351,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final user = auth.currentUser;
     final farmLocation = _resolveFarmLocation(user, crops.activeCrops);
     _ensureWeatherLoaded(farmLocation);
+    final filteredActiveCrops = _filterCrops(crops.activeCrops);
+    final dashboardActiveCrops =
+      _recentActiveCrops(filteredActiveCrops, limit: 5);
+    final allRecentActiveCrops = _recentActiveCrops(crops.activeCrops);
+    final filteredDiseases = _filterDiseases(_dashboardDiseases(crops));
+    final hasSearchQuery = _searchQuery.trim().isNotEmpty;
     final smartTip = _buildSmartTipContent(
       crops: crops,
       notifs: notifs,
@@ -407,14 +478,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
               sliver: SliverList(
                 delegate: SliverChildListDelegate([
                   // Search
-                  _SearchBar(onScan: () => _openChat(context)),
+                  _SearchBar(
+                    controller: _searchCtrl,
+                    onChanged: (value) =>
+                        setState(() => _searchQuery = value.trimLeft()),
+                    onClear: () {
+                      _searchCtrl.clear();
+                      setState(() => _searchQuery = '');
+                    },
+                  ),
                   const SizedBox(height: 24),
 
                   // Farm Vitality
-                  const _SectionHeader(
-                      title: 'Farm Vitality', sub: 'Combined Crop Performance'),
+                  _SectionHeader(
+                    title: 'Farm Vitality',
+                    sub: 'Combined Crop Performance',
+                    onViewAll: allRecentActiveCrops.isEmpty
+                        ? null
+                        : () => _showVitalityDialog(context, allRecentActiveCrops),
+                  ),
                   const SizedBox(height: 12),
-                  _buildVitality(crops),
+                  _buildVitality(crops, dashboardActiveCrops),
                   const SizedBox(height: 24),
 
                   // Active Crops
@@ -423,8 +507,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     onViewAll: widget.onOpenMyCrops,
                   ),
                   const SizedBox(height: 12),
-                  _buildActiveCrops(context, crops),
+                  _buildActiveCrops(context, dashboardActiveCrops),
                   const SizedBox(height: 24),
+
+                  if (hasSearchQuery &&
+                      dashboardActiveCrops.isEmpty &&
+                      filteredDiseases.isEmpty)
+                    _emptyState(
+                      Icons.search_off_rounded,
+                      'No crops or diseases match "${_searchQuery.trim()}".',
+                    ),
+                  if (hasSearchQuery &&
+                      dashboardActiveCrops.isEmpty &&
+                      filteredDiseases.isEmpty)
+                    const SizedBox(height: 24),
 
                   // Today's Tasks
                   _TodayTasksCard(
@@ -454,7 +550,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     onViewAll: () => _pushLibrary(context),
                   ),
                   const SizedBox(height: 12),
-                  _buildDiseases(context, crops),
+                  _buildDiseases(context, filteredDiseases),
                 ]),
               ),
             ),
@@ -484,25 +580,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _pushLibrary(BuildContext ctx) => Navigator.push(
       ctx, MaterialPageRoute(builder: (_) => const LibraryScreen()));
 
-  Widget _buildVitality(CropsProvider crops) {
+  Widget _buildVitality(
+    CropsProvider crops,
+    List<CropModel> activeCrops,
+  ) {
     if (crops.isLoading) {
       return const Padding(
           padding: EdgeInsets.symmetric(vertical: 24),
           child: Center(
               child: CircularProgressIndicator(color: AppColors.primary)));
     }
-    if (crops.activeCrops.isEmpty) {
+    if (activeCrops.isEmpty) {
       return _emptyState(Icons.energy_savings_leaf_outlined, 'No crops yet.');
     }
     return SizedBox(
-      height: 140,
+      height: 152,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        itemCount: crops.activeCrops.length,
+        itemCount: activeCrops.length,
         separatorBuilder: (_, __) => const SizedBox(width: 12),
         itemBuilder: (_, i) => _VitalityCard(
-          crop: crops.activeCrops[i],
-          onTap: () => _openCropProgress(context, crops.activeCrops[i]),
+          crop: activeCrops[i],
+          onTap: () => _openCropProgress(context, activeCrops[i]),
         ),
       ),
     );
@@ -522,18 +621,110 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  Widget _buildActiveCrops(BuildContext ctx, CropsProvider crops) {
-    if (crops.activeCrops.isEmpty) {
+  Future<void> _showVitalityDialog(
+    BuildContext context,
+    List<CropModel> crops,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'All Active Crop Vitality',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Tap any crop to open its tracked progress.',
+                style: TextStyle(fontSize: 12, color: AppColors.textGray),
+              ),
+              const SizedBox(height: 16),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: crops.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, index) {
+                    final crop = crops[index];
+                    final score = crop.latestHealthScore ?? 0;
+                    final trend = switch (crop.latestProgressStatus) {
+                      ProgressStatus.improving => 'Improving',
+                      ProgressStatus.worsening => 'Needs attention',
+                      ProgressStatus.stable => 'Stable',
+                      _ => 'Tracking',
+                    };
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        crop.cropName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textDark,
+                        ),
+                      ),
+                      subtitle: Text(
+                        '${crop.cropType.name.toUpperCase()} • $trend',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textGray,
+                        ),
+                      ),
+                      trailing: Text(
+                        '${score.toStringAsFixed(0)}%',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textDark,
+                        ),
+                      ),
+                      onTap: () async {
+                        Navigator.of(dialogContext).pop();
+                        await _openCropProgress(context, crop);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActiveCrops(BuildContext ctx, List<CropModel> activeCrops) {
+    if (activeCrops.isEmpty) {
       return _emptyState(Icons.grass, 'No active crops.');
     }
     return SizedBox(
-      height: 190,
+      height: 148,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        itemCount: crops.activeCrops.length,
+        itemCount: activeCrops.length,
         separatorBuilder: (_, __) => const SizedBox(width: 12),
         itemBuilder: (_, i) {
-          final crop = crops.activeCrops[i];
+          final crop = activeCrops[i];
           return GestureDetector(
             onTap: () async {
               await Navigator.push(
@@ -556,8 +747,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildDiseases(BuildContext ctx, CropsProvider crops) {
-    final items = _dashboardDiseases(crops);
+  Widget _buildDiseases(BuildContext ctx, List<DiseaseKnowledgeModel> items) {
     if (items.isEmpty) {
       return Container(
         height: 160,
@@ -683,33 +873,47 @@ class _SectionHeader extends StatelessWidget {
 }
 
 class _SearchBar extends StatelessWidget {
-  final VoidCallback onScan;
-  const _SearchBar({required this.onScan});
+  final TextEditingController controller;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+
+  const _SearchBar({
+    required this.controller,
+    required this.onChanged,
+    required this.onClear,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onScan,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(30),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 8,
-                offset: const Offset(0, 2))
-          ],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(30),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 2))
+        ],
+      ),
+      child: TextField(
+        controller: controller,
+        onChanged: onChanged,
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          hintText: 'Search crops or diseases',
+          prefixIcon: const Icon(Icons.search,
+              color: AppColors.textGray, size: 20),
+          suffixIcon: controller.text.isEmpty
+              ? null
+              : IconButton(
+                  onPressed: onClear,
+                  icon: const Icon(Icons.close, color: AppColors.textGray),
+                ),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(vertical: 14),
         ),
-        child: const Row(children: [
-          Icon(Icons.search, color: AppColors.textGray, size: 20),
-          SizedBox(width: 10),
-          Expanded(
-              child: Text('Search pests, crops, or treatments',
-                  style: TextStyle(color: AppColors.textGray, fontSize: 14))),
-          Icon(Icons.qr_code_scanner, color: AppColors.primary, size: 22),
-        ]),
       ),
     );
   }
@@ -723,19 +927,22 @@ class _VitalityCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final score = crop.latestHealthScore ?? 0;
-    String trend = '→ Stable';
+    String trendLabel = 'Stable';
     Color trendColor = AppColors.textGray;
+    IconData trendIcon = Icons.trending_flat_rounded;
     if (crop.latestProgressStatus == ProgressStatus.improving) {
-      trend = '↑ Improving';
+      trendLabel = 'Improving';
       trendColor = AppColors.primary;
+      trendIcon = Icons.trending_up_rounded;
     } else if (crop.latestProgressStatus == ProgressStatus.worsening) {
-      trend = '↓ Worsening';
+      trendLabel = 'Needs attention';
       trendColor = Colors.red;
+      trendIcon = Icons.trending_down_rounded;
     }
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 140,
+        width: 168,
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           color: Colors.white,
@@ -755,23 +962,50 @@ class _VitalityCard extends StatelessWidget {
                   color: AppColors.textGray,
                   letterSpacing: 0.5)),
           const SizedBox(height: 4),
+          Text(
+            crop.cropName,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textDark,
+            ),
+          ),
+          const SizedBox(height: 8),
           Text('${score.toStringAsFixed(0)}%',
               style: const TextStyle(
-                  fontSize: 28,
+                  fontSize: 26,
                   fontWeight: FontWeight.w800,
                   color: AppColors.textDark)),
           const Spacer(),
           SizedBox(
-              height: 30,
-              child: CustomPaint(
-                  painter: _SparklinePainter(score: score),
-                  size: Size.infinite)),
-          const SizedBox(height: 4),
-          Text(trend,
-              style: TextStyle(
-                  fontSize: 11,
-                  color: trendColor,
-                  fontWeight: FontWeight.w600)),
+            height: 32,
+            child: CustomPaint(
+              painter: _SparklinePainter(score: score),
+              size: Size.infinite,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(trendIcon, size: 13, color: trendColor),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  trendLabel,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: trendColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ]),
       ),
     );
@@ -934,10 +1168,18 @@ class _DashboardCropPlaceholder extends StatelessWidget {
   }
 }
 
-class _TodayTasksCard extends StatelessWidget {
+class _TodayTasksCard extends StatefulWidget {
   final NotificationsProvider notifs;
   final VoidCallback onViewAll;
   const _TodayTasksCard({required this.notifs, required this.onViewAll});
+
+  @override
+  State<_TodayTasksCard> createState() => _TodayTasksCardState();
+}
+
+class _TodayTasksCardState extends State<_TodayTasksCard> {
+  static const int _collapsedVisibleCount = 5;
+  bool _expanded = false;
 
   Future<void> _openTask(BuildContext context, TreatmentTaskModel task) async {
     final crops = context.read<CropsProvider>();
@@ -972,9 +1214,20 @@ class _TodayTasksCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final todayTasks = notifs.todayTasks;
-    final missedTasks = notifs.missedTasks;
+    final todayTasks = widget.notifs.todayTasks;
+    final missedTasks = widget.notifs.missedTasks;
     final totalCount = todayTasks.length + missedTasks.length;
+    final showingAll = _expanded || totalCount <= _collapsedVisibleCount;
+    final visibleMissed = showingAll
+      ? missedTasks
+      : missedTasks.take(_collapsedVisibleCount).toList(growable: false);
+    final remainingSlots = showingAll
+      ? todayTasks.length
+      : (_collapsedVisibleCount - visibleMissed.length).clamp(0, _collapsedVisibleCount);
+    final visibleToday = showingAll
+      ? todayTasks
+      : todayTasks.take(remainingSlots).toList(growable: false);
+    final hiddenCount = totalCount - visibleMissed.length - visibleToday.length;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1012,7 +1265,7 @@ class _TodayTasksCard extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
                   color:
-                      missedTasks.isNotEmpty ? Colors.red : AppColors.primary,
+                  missedTasks.isNotEmpty ? Colors.red : AppColors.primary,
                   borderRadius: BorderRadius.circular(10)),
               child: Text('$totalCount',
                   style: const TextStyle(
@@ -1023,7 +1276,7 @@ class _TodayTasksCard extends StatelessWidget {
           const Spacer(),
           if (totalCount > 0)
             GestureDetector(
-              onTap: onViewAll,
+              onTap: widget.onViewAll,
               child: const Text('View All',
                   style: TextStyle(
                       fontSize: 12,
@@ -1055,16 +1308,16 @@ class _TodayTasksCard extends StatelessWidget {
                         color: Colors.red)),
               ]),
             ),
-            ...missedTasks.map((t) => _DashboardTaskRow(
+            ...visibleMissed.map((t) => _DashboardTaskRow(
                   task: t,
                   isMissed: true,
                   onDone: () => _openTask(context, t),
                 )),
-            if (todayTasks.isNotEmpty) const SizedBox(height: 8),
+            if (visibleToday.isNotEmpty) const SizedBox(height: 8),
           ],
 
           // ─── Today's pending tasks ─────────────────────────────────────
-          if (todayTasks.isNotEmpty) ...[
+          if (visibleToday.isNotEmpty) ...[
             if (missedTasks.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),
@@ -1079,11 +1332,32 @@ class _TodayTasksCard extends StatelessWidget {
                           color: AppColors.primary)),
                 ]),
               ),
-            ...todayTasks.map((t) => _DashboardTaskRow(
+            ...visibleToday.map((t) => _DashboardTaskRow(
                   task: t,
                   isMissed: false,
                   onDone: () => _openTask(context, t),
                 )),
+          ],
+          if (hiddenCount > 0 || (_expanded && totalCount > _collapsedVisibleCount)) ...[
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => setState(() => _expanded = !_expanded),
+                icon: Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                  color: AppColors.primary,
+                ),
+                label: Text(
+                  _expanded ? 'Show less' : 'See more ($hiddenCount)',
+                  style: const TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
           ],
         ],
       ]),

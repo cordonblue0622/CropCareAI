@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
@@ -13,6 +14,7 @@ import '../../../data/models/crop_model.dart';
 import '../../../data/models/diagnosis_model.dart';
 import '../../../data/models/disease_knowledge_model.dart';
 import '../../../data/remote/ai_backend_service.dart';
+import '../../../services/connectivity_service.dart';
 import '../../../services/local_classifier_service.dart';
 import '../../../services/video_diagnosis_service.dart';
 import '../../../core/utils/label_formatter.dart';
@@ -25,6 +27,7 @@ import '../chat/screens/chat_screen.dart';
 class ScanResultScreen extends StatefulWidget {
   final XFile imageFile;
   final String? cropId;
+  final CropType? cropTypeHint;
   final Uint8List? imageBytes;
   final String? initialQuery;
   final bool openChatOnComplete;
@@ -35,6 +38,7 @@ class ScanResultScreen extends StatefulWidget {
     super.key,
     required this.imageFile,
     this.cropId,
+    this.cropTypeHint,
     this.imageBytes,
     this.initialQuery,
     this.openChatOnComplete = false,
@@ -65,6 +69,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   Future<void> _analyze() async {
     final cropsProvider = context.read<CropsProvider>();
     final aiBackend = context.read<AiBackendService>();
+    final connectivity = context.read<ConnectivityService>();
     final localClassifier = context.read<LocalClassifierService>();
     try {
       if (cropsProvider.diseaseKnowledge.isEmpty) {
@@ -72,65 +77,75 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       }
 
       final selectedCrop = _resolveSelectedCrop(cropsProvider);
-      final imageBytes =
-          widget.imageBytes ?? await widget.imageFile.readAsBytes();
-      _resolvedImageBytes = imageBytes;
+      final selectedCropType = _resolveSelectedCropType(cropsProvider);
+      final stillImageBytes = widget.imageBytes ??
+          (widget.isFromVideo ? null : await widget.imageFile.readAsBytes());
+      _resolvedImageBytes = stillImageBytes;
 
       AiBackendDetectResponse detection;
       if (widget.isFromVideo && widget.videoFile != null) {
+        Uint8List? posterBytes = stillImageBytes;
         try {
           final videoResult =
               await VideoDiagnosisService(localClassifier: localClassifier)
                   .analyzeVideo(
                       videoFilePath: widget.videoFile!.path,
-                      cropTypeHint: selectedCrop?.cropType.value);
+                      cropTypeHint: selectedCropType?.value);
+          posterBytes ??= videoResult.posterBytes;
           if (videoResult.bestDetection != null) {
             detection = videoResult.bestDetection!;
-          } else {
-            // No frame returned a detection — fall back to remote on poster.
+          } else if (posterBytes != null && posterBytes.isNotEmpty) {
             detection = await aiBackend.detectImage(
-              imageBytes: imageBytes,
-              filename: widget.imageFile.name,
-              cropType: selectedCrop?.cropType.value,
+              imageBytes: posterBytes,
+              filename: 'video_frame.jpg',
+              cropType: selectedCropType?.value,
+            );
+          } else {
+            throw VideoDiagnosisException(
+              'Could not extract a usable frame from the recorded video.',
             );
           }
           // Use the best frame as the visible poster image.
-          final posterBytes = videoResult.posterBytes;
           if (posterBytes != null) {
             _resolvedImageBytes = posterBytes;
           }
         } catch (_) {
+          posterBytes ??= await _extractVideoPosterBytes(widget.videoFile!.path);
+          if (posterBytes == null || posterBytes.isEmpty) {
+            throw Exception(
+              'AI backend unavailable right now. Please analyze a clearer video or capture a still photo instead.',
+            );
+          }
+          _resolvedImageBytes = posterBytes;
           // Video pipeline failed entirely — fall back to remote on poster bytes.
           detection = await aiBackend.detectImage(
-            imageBytes: imageBytes,
-            filename: widget.imageFile.name,
-            cropType: selectedCrop?.cropType.value,
+            imageBytes: posterBytes,
+            filename: 'video_frame.jpg',
+            cropType: selectedCropType?.value,
           );
         }
       } else {
-        try {
-          detection = await localClassifier.classifyImage(
-            imageBytes: imageBytes,
-            filename: widget.imageFile.name,
-            cropType: selectedCrop?.cropType.value,
-          );
-        } catch (_) {
-          detection = await aiBackend.detectImage(
-            imageBytes: imageBytes,
-            filename: widget.imageFile.name,
-            cropType: selectedCrop?.cropType.value,
-          );
+        final imageBytes = stillImageBytes;
+        if (imageBytes == null || imageBytes.isEmpty) {
+          throw Exception('No scan image was available for analysis.');
         }
+        detection = await _detectStillImage(
+          aiBackend: aiBackend,
+          connectivity: connectivity,
+          localClassifier: localClassifier,
+          imageBytes: imageBytes,
+          selectedCropType: selectedCropType,
+        );
       }
 
       final rejectionMessage = _rejectionMessageForDetection(
         detection: detection,
-        selectedCrop: selectedCrop,
+        selectedCropType: selectedCropType,
       );
       final match = _resolveDiseaseMatch(
         detection: detection,
         cropsProvider: cropsProvider,
-        selectedCrop: selectedCrop,
+        selectedCropType: selectedCropType,
         rejectionMessage: rejectionMessage,
       );
       final infoMessage = rejectionMessage ??
@@ -182,6 +197,19 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     }
   }
 
+  Future<Uint8List?> _extractVideoPosterBytes(String videoPath) async {
+    try {
+      return await VideoThumbnail.thumbnailData(
+        video: videoPath,
+        imageFormat: ImageFormat.JPEG,
+        timeMs: 0,
+        quality: 85,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _openChat({DiagnosisModel? diagnosis}) async {
     if (!widget.openChatOnComplete || _redirectingToChat || !mounted) {
       return;
@@ -201,7 +229,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
     final cropsProvider = context.read<CropsProvider>();
     final hintCropType = _resolveChatHintCropType(
-      selectedCrop: _resolveSelectedCrop(cropsProvider),
+      selectedCropType: _resolveSelectedCropType(cropsProvider),
       diagnosis: diagnosis,
     );
 
@@ -216,6 +244,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
           initialDiagnosis: diagnosis,
           initialImageBytes: _resolvedImageBytes ?? widget.imageBytes,
           initialIsVideoFrame: widget.isFromVideo,
+          initialVideoPath: widget.isFromVideo ? widget.videoFile?.path : null,
           hintCropType: hintCropType,
         ),
       ),
@@ -279,6 +308,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final previewBytes = _resolvedImageBytes ?? widget.imageBytes;
+
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
       bottomNavigationBar: const AppPushedScreenBottomNav(currentIndex: 2),
@@ -338,12 +369,36 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                     // Captured image thumb
                     ClipRRect(
                       borderRadius: BorderRadius.circular(14),
-                      child: _XFileImageView(
-                        widget.imageFile,
-                        height: 180,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                      ),
+                      child: previewBytes != null && previewBytes.isNotEmpty
+                          ? Image.memory(
+                              previewBytes,
+                              height: 180,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              gaplessPlayback: true,
+                            )
+                          : widget.isFromVideo
+                              ? Container(
+                                  height: 180,
+                                  width: double.infinity,
+                                  color: AppColors.backgroundGreenLight,
+                                  alignment: Alignment.center,
+                                  padding: const EdgeInsets.all(20),
+                                  child: const Text(
+                                    'No video preview frame was available for this result.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: AppColors.textGray,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                )
+                          : _XFileImageView(
+                              widget.imageFile,
+                              height: 180,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                            ),
                     ),
                     const SizedBox(height: 20),
 
@@ -703,15 +758,15 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   }
 
   String? _resolveChatHintCropType({
-    required CropModel? selectedCrop,
+    required CropType? selectedCropType,
     required DiagnosisModel? diagnosis,
   }) {
     if (diagnosis != null) {
       return ChatProvider.resolveHintCropType(attachedDiagnosis: diagnosis);
     }
 
-    if (selectedCrop != null) {
-      return selectedCrop.cropType.value;
+    if (selectedCropType != null) {
+      return selectedCropType.value;
     }
 
     final primary = _detection?.primaryDetection;
@@ -728,16 +783,16 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
   /// User message when the on-device scan did not attach a confident diagnosis.
   String _buildUncertainScanPrompt() {
-    return 'The automatic scan could not confidently match this photo to a '
-        'disease in our current model. Please analyze the attached image, '
-        'say whether it is one of our supported crops (tomato, pepper, squash, '
-        'eggplant, or pechay), and tell me what you observe plus what I should do next.';
+    return 'Please analyze the attached crop image, identify whether it is '
+      'tomato, pepper, squash, eggplant, or pechay, then explain what you '
+      'observe and what the farmer should do next. If the crop looks healthy, '
+      'say so clearly and still give brief care guidance.';
   }
 
   DiseaseKnowledgeModel? _resolveDiseaseMatch({
     required AiBackendDetectResponse detection,
     required CropsProvider cropsProvider,
-    required CropModel? selectedCrop,
+    required CropType? selectedCropType,
     required String? rejectionMessage,
   }) {
     if (rejectionMessage != null) {
@@ -751,8 +806,10 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
     final targetLabel = _normalizeLabel(primary.label);
     final targetLabelKey = primary.labelKey?.trim();
-    final cropType =
-        _tryParseCropType(detection.cropType) ?? selectedCrop?.cropType;
+    final cropType = _preferredCropTypeForDetection(
+      detection: detection,
+      selectedCropType: selectedCropType,
+    );
 
     for (final knowledge in cropsProvider.diseaseKnowledge) {
       final sameCrop = cropType == null || knowledge.cropType == cropType;
@@ -784,7 +841,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
   String? _rejectionMessageForDetection({
     required AiBackendDetectResponse detection,
-    required CropModel? selectedCrop,
+    required CropType? selectedCropType,
   }) {
     if (detection.status.toLowerCase() == 'no_match') {
       return detection.notes.isNotEmpty
@@ -799,17 +856,21 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
     final isLocalDetection = detection.source.toLowerCase().contains('local');
     final confidence = primary.confidence;
-    if (selectedCrop == null &&
-        isLocalDetection &&
-        confidence < AppConstants.temporaryScannerAcceptedConfidence) {
-      return 'This photo could not be confidently verified as a supported crop image. Upload a clear close-up of the affected crop leaf and try again.';
+    final minimumConfidence = selectedCropType != null
+        ? AppConstants.temporaryScannerHintedAcceptedConfidence
+        : AppConstants.temporaryScannerAcceptedConfidence;
+    if (isLocalDetection && confidence < minimumConfidence) {
+      return selectedCropType != null
+          ? 'This photo is too unclear to confidently confirm your selected ${_cropTypeLabel(selectedCropType)} crop offline. Upload a clearer close-up of the affected crop leaf and try again.'
+          : 'This photo could not be confidently verified as a supported crop image. Upload a clear close-up of the affected crop leaf and try again.';
     }
 
     final predictedCropType = _tryParseCropType(detection.cropType);
-    if (selectedCrop != null &&
+    if (selectedCropType != null &&
         predictedCropType != null &&
-        predictedCropType != selectedCrop.cropType) {
-      return 'This photo looks like ${_cropTypeLabel(predictedCropType)}, but you are scanning ${_cropTypeLabel(selectedCrop.cropType)}. Upload a photo of the selected crop or switch crops first.';
+        !isLocalDetection &&
+        predictedCropType != selectedCropType) {
+      return 'This photo looks like ${_cropTypeLabel(predictedCropType)}, but you are scanning ${_cropTypeLabel(selectedCropType)}. Upload a photo of the selected crop or switch crops first.';
     }
 
     return null;
@@ -824,6 +885,87 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         return cropType;
       }
     }
+    return null;
+  }
+
+  CropType? _resolveSelectedCropType(CropsProvider cropsProvider) {
+    final selectedCrop = _resolveSelectedCrop(cropsProvider);
+    if (selectedCrop != null) {
+      return selectedCrop.cropType;
+    }
+
+    if (widget.cropTypeHint != null) {
+      return widget.cropTypeHint;
+    }
+
+    return _inferCropTypeFromPrompt(widget.initialQuery);
+  }
+
+  Future<AiBackendDetectResponse> _detectStillImage({
+    required AiBackendService aiBackend,
+    required ConnectivityService connectivity,
+    required LocalClassifierService localClassifier,
+    required Uint8List imageBytes,
+    required CropType? selectedCropType,
+  }) async {
+    final cropType = selectedCropType?.value;
+    final isConnected = await connectivity.isConnected;
+
+    if (isConnected) {
+      try {
+        return await aiBackend.detectImage(
+          imageBytes: imageBytes,
+          filename: widget.imageFile.name,
+          cropType: cropType,
+        );
+      } catch (_) {
+        // Fall through to the local model when the backend/OpenAI path is unavailable.
+      }
+    }
+
+    return localClassifier.classifyImage(
+      imageBytes: imageBytes,
+      filename: widget.imageFile.name,
+      cropType: cropType,
+    );
+  }
+
+  CropType? _preferredCropTypeForDetection({
+    required AiBackendDetectResponse detection,
+    required CropType? selectedCropType,
+  }) {
+    if (detection.source.toLowerCase().contains('local') &&
+        selectedCropType != null) {
+      return selectedCropType;
+    }
+
+    return _tryParseCropType(detection.cropType) ?? selectedCropType;
+  }
+
+  CropType? _inferCropTypeFromPrompt(String? value) {
+    final normalized = (value ?? '').trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    if (normalized.contains('pepper') || normalized.contains('capsicum')) {
+      return CropType.pepper;
+    }
+    if (normalized.contains('pechay') ||
+        normalized.contains('bok choy') ||
+        normalized.contains('bokchoy')) {
+      return CropType.pechay;
+    }
+    if (normalized.contains('eggplant') || normalized.contains('talong')) {
+      return CropType.eggplant;
+    }
+    if (normalized.contains('squash') || normalized.contains('kalabasa')) {
+      return CropType.squash;
+    }
+    if (normalized.contains('tomato') || normalized.contains('kamatis')) {
+      return CropType.tomato;
+    }
+
     return null;
   }
 
