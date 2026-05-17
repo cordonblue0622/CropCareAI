@@ -290,7 +290,7 @@ class ChatProvider extends ChangeNotifier {
     _isTyping = true;
     notifyListeners();
 
-    late final String aiContent;
+    String aiContent = '';
     Map<String, dynamic>? aiMetadata;
 
     if (requiresFreshImage) {
@@ -346,28 +346,38 @@ class ChatProvider extends ChangeNotifier {
                     diseaseName: inferredDiseaseName,
                     cropType: effectiveCropType,
                   );
-        final normalizedActions = backendResponse.recommendedActions.isNotEmpty
-            ? backendResponse.recommendedActions
-            : _extractTreatmentActionsFromContent(
-                backendResponse.answer,
-                inferredCropType: effectiveCropType,
-                inferredDiseaseName: inferredDiseaseName,
-              );
+        final requiresMoreInput =
+            _needsAdditionalInputResponse(backendResponse.answer);
+        final backendAllowsPlan =
+            backendResponse.showTreatmentUi && !requiresMoreInput;
+        final normalizedActions = backendAllowsPlan
+            ? (backendResponse.recommendedActions.isNotEmpty
+                ? backendResponse.recommendedActions
+                : _extractTreatmentActionsFromContent(
+                    backendResponse.answer,
+                    inferredCropType: effectiveCropType,
+                    inferredDiseaseName: inferredDiseaseName,
+                  ))
+            : const <String>[];
         final effectiveActions = _resolveRecommendedActions(
           recommendedActions: normalizedActions,
           inferredDiseaseName: inferredDiseaseName,
           inferredCropType: effectiveCropType,
+          allowHealthyFallback: backendAllowsPlan,
         );
+        final planTitle = _planTitleForDiagnosis(inferredDiseaseName);
         // Store recommended_actions in metadata but DON'T append them to text
         // — they are rendered as an interactive checklist in the UI.
         aiContent = _formatBackendResponse(backendResponse);
-        final showTreatmentCard = backendResponse.inAppCropScope &&
+        final showTreatmentCard = backendAllowsPlan &&
+          backendResponse.inAppCropScope &&
           !hasShownAddCropSuggestion &&
             _shouldShowTreatmentCard(
               attachedDiagnosis: attachedDiagnosis,
               recommendedActions: effectiveActions,
               inferredDiseaseName: inferredDiseaseName,
               inferredCropType: effectiveCropType,
+              aiContent: backendResponse.answer,
             );
         aiMetadata = {
           'model': backendResponse.model,
@@ -386,6 +396,7 @@ class ChatProvider extends ChangeNotifier {
           ).value,
           'in_app_crop_scope': backendResponse.inAppCropScope,
           'show_treatment_card': showTreatmentCard,
+          if (showTreatmentCard) 'plan_title': planTitle,
         };
       } catch (error) {
         await Future.delayed(const Duration(milliseconds: 500));
@@ -412,18 +423,7 @@ class ChatProvider extends ChangeNotifier {
           inferredDiseaseName: fallbackDiseaseName,
           inferredCropType: fallbackCropType,
         );
-        final effectiveFallbackActions = _resolveRecommendedActions(
-          recommendedActions: fallbackActions,
-          inferredDiseaseName: fallbackDiseaseName,
-          inferredCropType: fallbackCropType,
-        );
-        final showTreatmentCard = !hasShownAddCropSuggestion &&
-            _shouldShowTreatmentCard(
-              attachedDiagnosis: attachedDiagnosis,
-              recommendedActions: effectiveFallbackActions,
-              inferredDiseaseName: fallbackDiseaseName,
-              inferredCropType: fallbackCropType,
-            );
+        // Assign aiContent first so downstream checks can safely read it.
         aiContent = _buildBackendUnavailableResponse(
           content,
           attachedDiagnosis: attachedDiagnosis,
@@ -431,6 +431,22 @@ class ChatProvider extends ChangeNotifier {
           hintCropType: resolvedHintCropType,
           error: error,
         );
+        final requiresMoreInput = _needsAdditionalInputResponse(aiContent);
+        final effectiveFallbackActions = _resolveRecommendedActions(
+          recommendedActions: requiresMoreInput ? const [] : fallbackActions,
+          inferredDiseaseName: fallbackDiseaseName,
+          inferredCropType: fallbackCropType,
+          allowHealthyFallback: !requiresMoreInput,
+        );
+        final showTreatmentCard = !requiresMoreInput &&
+            !hasShownAddCropSuggestion &&
+            _shouldShowTreatmentCard(
+              attachedDiagnosis: attachedDiagnosis,
+              recommendedActions: effectiveFallbackActions,
+              inferredDiseaseName: fallbackDiseaseName,
+              inferredCropType: fallbackCropType,
+              aiContent: aiContent,
+            );
         aiMetadata = {
           'model': 'local-fallback',
           'sources': const <String>[],
@@ -453,6 +469,8 @@ class ChatProvider extends ChangeNotifier {
           ).value,
           'in_app_crop_scope': attachedDiagnosis != null || hasAttachedImage,
           'show_treatment_card': showTreatmentCard,
+          if (showTreatmentCard)
+            'plan_title': _planTitleForDiagnosis(fallbackDiseaseName),
         };
       }
     }
@@ -597,8 +615,13 @@ class ChatProvider extends ChangeNotifier {
     required List<String> recommendedActions,
     required String inferredDiseaseName,
     required String inferredCropType,
+    required String aiContent,
   }) {
     if (recommendedActions.isEmpty) {
+      return false;
+    }
+
+    if (_needsAdditionalInputResponse(aiContent)) {
       return false;
     }
 
@@ -631,6 +654,12 @@ class ChatProvider extends ChangeNotifier {
   }) {
     final lower = userMessage.toLowerCase();
     final normalizedHint = (hintCropType ?? '').trim().toLowerCase();
+    final inferredHint = _inferCropType(
+      labelKey: null,
+      diseaseName: '',
+      aiContent: userMessage,
+    );
+    final effectiveHint = normalizedHint.isNotEmpty ? normalizedHint : inferredHint;
 
     // If there's an attached diagnosis, provide treatment advice
     if (attachedDiagnosis != null) {
@@ -663,12 +692,12 @@ class ChatProvider extends ChangeNotifier {
 
     if (!hasAttachedImage) {
       if (_looksLikeGreeting(lower) || _looksLikeGeneralHelpQuestion(lower)) {
-        return _buildGreetingResponse(normalizedHint);
+        return _buildGreetingResponse(effectiveHint);
       }
 
-      if (normalizedHint.isNotEmpty) {
+      if (effectiveHint.isNotEmpty) {
         final cropKnowledge = _knowledgeBase
-            .where((kb) => kb.cropType.value == normalizedHint)
+            .where((kb) => kb.cropType.value == effectiveHint)
             .toList();
 
         for (final kb in cropKnowledge) {
@@ -679,18 +708,25 @@ class ChatProvider extends ChangeNotifier {
         }
 
         if (_looksLikeProductQuestion(lower)) {
-          return _buildProductFallbackResponse(normalizedHint, cropKnowledge);
+          return _buildProductFallbackResponse(effectiveHint, cropKnowledge);
         }
 
         if (cropKnowledge.isNotEmpty) {
-          return _buildCropFollowUpResponse(normalizedHint, cropKnowledge);
+          return _buildCropFollowUpResponse(effectiveHint, cropKnowledge);
         }
+      }
+
+      if (_looksLikeProductQuestion(lower)) {
+        return 'I can help with fertilizer and crop-product questions. Tell me the crop name or the product you want to check, or send a close leaf photo if you want a diagnosis.';
       }
 
       return _buildImageRequiredResponse();
     }
 
-    return _buildUncertainImageResponse();
+    return _buildUncertainImageResponse(
+      userMessage,
+      hintCropType: effectiveHint,
+    );
   }
 
   String _formatKbResponse(DiseaseKnowledgeModel kb) {
@@ -785,10 +821,38 @@ class ChatProvider extends ChangeNotifier {
 
   String _buildGreetingResponse(String normalizedHint) {
     if (normalizedHint.isNotEmpty) {
-      return 'Hello. I can help with your $normalizedHint crop. Ask about symptoms, treatment timing, or a product you want to check, or upload a close leaf photo when you want a diagnosis.';
+      return 'Hi. I\'m CropCare AI. Tell me what you need help with on your $normalizedHint crop, ask about care or products, or send a close leaf photo if you want a diagnosis.';
     }
 
-    return 'Hello. I can help with tomato, bell pepper, squash, eggplant, and pechay. Tell me which crop you want help with, ask a crop question, or upload a close leaf photo when you are ready.';
+    return 'Hi. I\'m CropCare AI. Tell me the crop and the problem you need help with, or send a close leaf photo if you want a diagnosis.';
+  }
+
+  bool _needsAdditionalInputResponse(String text) {
+    final normalized = text.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return false;
+    }
+
+    const phrases = [
+      'clearer photo',
+      'closer photo',
+      'well-lit photo',
+      'upload a clear',
+      'retake the photo',
+      'cannot verify',
+      'can\'t verify',
+      'cannot confirm',
+      'can\'t confirm',
+      'too unclear',
+      'not a crop plant',
+      'not a live plant',
+      'picture of bell peppers on a screen',
+      'photo of the actual plant',
+      'need a closer photo',
+      'need another photo',
+    ];
+
+    return phrases.any(normalized.contains);
   }
 
   String _buildImageRequiredResponse() {
@@ -800,13 +864,50 @@ class ChatProvider extends ChangeNotifier {
         'Once the model has an image to analyze, I can give a more accurate diagnosis and next steps.';
   }
 
-  String _buildUncertainImageResponse() {
+  String _buildUncertainImageResponse(
+    String userMessage, {
+    required String hintCropType,
+  }) {
+    final topGuess = _extractTopGuessFromPrompt(userMessage);
+    final cropLabel = hintCropType.isNotEmpty ? hintCropType : 'the selected crop';
+
+    if (topGuess != null) {
+      return 'I could not confidently confirm $cropLabel from this image offline.\n\n'
+          'Top offline guess: ${topGuess.label} (${topGuess.confidenceLabel}).\n\n'
+          'Please try one of these next steps:\n'
+          '1. Retake the photo with a closer, sharper view of the affected area\n'
+          '2. Capture the front and back of the leaf in good lighting\n'
+          '3. Go online for a more comprehensive AI review\n\n'
+          'I will avoid guessing a disease or showing a treatment plan until the crop can be identified more reliably.';
+    }
+
     return 'I could not confidently confirm a diagnosis from this image offline.\n\n'
         'Please try one of these next steps:\n'
         '1. Retake the photo with a closer, sharper view of the affected area\n'
         '2. Capture the front and back of the leaf in good lighting\n'
         '3. If you are online, try again for a more comprehensive AI review\n\n'
         'I will avoid guessing a disease or treatment until the model can identify the crop more reliably.';
+  }
+
+  _OfflineTopGuess? _extractTopGuessFromPrompt(String text) {
+    final match = RegExp(
+      r'Top offline guess:\s*([^\n]+?)\s+at\s+(\d{1,3})% confidence',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (match == null) {
+      return null;
+    }
+
+    final label = (match.group(1) ?? '').trim();
+    final confidence = (match.group(2) ?? '').trim();
+    if (label.isEmpty || confidence.isEmpty) {
+      return null;
+    }
+
+    return _OfflineTopGuess(
+      label: label,
+      confidenceLabel: '$confidence% confidence',
+    );
   }
 
   String _buildCropFollowUpResponse(
@@ -854,10 +955,10 @@ class ChatProvider extends ChangeNotifier {
             .join('\n')
         : 'Tell me the product name or active ingredient and I will compare it against the offline crop guidance I have for $cropType.';
 
-    return 'I can still help review a product for your $cropType crop offline, but I cannot verify live web listings right now.\n\n'
-        'Share the product name or active ingredient and I will compare it against the crop guidance I already have.\n\n'
-        'Examples from my $cropType knowledge base:\n$examplesText\n\n'
-        'Please still verify the label for crop registration, dosage, and pre-harvest interval before applying it.';
+    return 'I can still help with fertilizers and crop products for your $cropType crop offline.\n\n'
+      'Share the product name, fertilizer grade, or active ingredient and I will compare it against the crop guidance I already have.\n\n'
+      'Examples from my $cropType knowledge base:\n$examplesText\n\n'
+      'Please still verify the label, dosage, and pre-harvest interval before applying it.';
   }
 
   bool _looksLikeProductQuestion(String text) {
@@ -1375,6 +1476,11 @@ class ChatProvider extends ChangeNotifier {
       return const [];
     }
 
+    if (_isHealthyDiagnosisName(inferredDiseaseName) &&
+        _supportedTreatmentCardCrops.contains(inferredCropType)) {
+      return _healthyDailyPlanForCrop(inferredCropType);
+    }
+
     final steps = <String>[
       ...?knowledge.treatmentSteps,
       ...?knowledge.preventionSteps,
@@ -1393,6 +1499,7 @@ class ChatProvider extends ChangeNotifier {
     required List<String> recommendedActions,
     required String inferredDiseaseName,
     required String inferredCropType,
+    bool allowHealthyFallback = true,
   }) {
     final deduped = <String>[];
     for (final action in recommendedActions) {
@@ -1406,17 +1513,65 @@ class ChatProvider extends ChangeNotifier {
       return deduped.take(7).toList();
     }
 
-    if (_isHealthyDiagnosisName(inferredDiseaseName) &&
+    if (allowHealthyFallback &&
+        _isHealthyDiagnosisName(inferredDiseaseName) &&
         _supportedTreatmentCardCrops.contains(inferredCropType)) {
-      final cropLabel = _titleCaseWords(inferredCropType);
-      return [
-        'Inspect $cropLabel leaves each day for new spots, pests, or sudden wilting.',
-        'Keep the soil evenly moist and water early so the foliage dries quickly.',
-        'Remove weeds and damaged leaves to maintain airflow and keep the crop healthy.',
-      ];
+      return _healthyDailyPlanForCrop(inferredCropType);
     }
 
     return const [];
+  }
+
+  List<String> _healthyDailyPlanForCrop(String cropType) {
+    switch (cropType.trim().toLowerCase()) {
+      case 'tomato':
+        return const [
+          'Day 1: Water at the base and keep the stems supported on stakes or a trellis.',
+          'Day 2: Inspect the leaves for early blight spots, wilting, or pest damage.',
+          'Day 3: Feed with balanced fertilizer, or shift to a higher-potassium feed once fruiting starts.',
+          'Day 4: Remove weeds and keep lower leaves away from wet soil to maintain airflow.',
+        ];
+      case 'pepper':
+        return const [
+          'Day 1: Water at the base and keep the soil evenly moist.',
+          'Day 2: Check leaves and young shoots for thrips, aphids, and fresh spots.',
+          'Day 3: Check flowers and fruits for blossom-end rot and apply calcium-magnesium feed only if needed.',
+          'Day 4: Remove weeds and keep the plant area open so air can move through the canopy.',
+        ];
+      case 'eggplant':
+        return const [
+          'Day 1: Keep the soil evenly moist without waterlogging the roots.',
+          'Day 2: Inspect leaf undersides for mites, aphids, and thrips.',
+          'Day 3: Apply balanced fertilizer only on the planned feeding day during fruiting.',
+          'Day 4: Remove damaged leaves and keep the bed clean to reduce pest pressure.',
+        ];
+      case 'squash':
+        return const [
+          'Day 1: Water at the base early so the leaves dry quickly.',
+          'Day 2: Check the leaves for powdery patches, pests, or sudden yellowing.',
+          'Day 3: Keep vines open and avoid excess nitrogen that pushes overly lush growth.',
+          'Day 4: Remove weak or heavily shaded leaves to improve airflow around the plant.',
+        ];
+      case 'pechay':
+        return const [
+          'Day 1: Water lightly at the base and avoid splashing soil onto the leaves.',
+          'Day 2: Check leaves for chewing pests, aphids, or soft rot.',
+          'Day 3: Apply a light balanced fertilizer only on the planned feeding day.',
+          'Day 4: Keep the bed weed-free and remove damaged outer leaves early.',
+        ];
+      default:
+        return const [
+          'Day 1: Water at the base and keep the soil evenly moist.',
+          'Day 2: Inspect leaves for pests, new spots, or sudden wilting.',
+          'Day 3: Keep weeds down and maintain good airflow around the crop.',
+        ];
+    }
+  }
+
+  String _planTitleForDiagnosis(String inferredDiseaseName) {
+    return _isHealthyDiagnosisName(inferredDiseaseName)
+        ? 'Daily Care Plan'
+        : 'Treatment Steps';
   }
 
   Severity _resolveConversationSeverity({
@@ -1698,4 +1853,14 @@ class ChatProvider extends ChangeNotifier {
 
     return null;
   }
+}
+
+class _OfflineTopGuess {
+  final String label;
+  final String confidenceLabel;
+
+  const _OfflineTopGuess({
+    required this.label,
+    required this.confidenceLabel,
+  });
 }

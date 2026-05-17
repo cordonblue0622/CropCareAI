@@ -76,7 +76,6 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         await cropsProvider.fetchDiseaseKnowledge();
       }
 
-      final selectedCrop = _resolveSelectedCrop(cropsProvider);
       final selectedCropType = _resolveSelectedCropType(cropsProvider);
       final stillImageBytes = widget.imageBytes ??
           (widget.isFromVideo ? null : await widget.imageFile.readAsBytes());
@@ -671,24 +670,69 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   }
 
   Widget _noMatchCard() {
+    final topGuess = _primaryDetection;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
       ),
-      child: const Column(children: [
-        Icon(Icons.help_outline, size: 48, color: AppColors.textLightGray),
-        SizedBox(height: 12),
-        Text('Unsupported or unclear photo',
+      child: Column(children: [
+        const Icon(Icons.help_outline, size: 48, color: AppColors.textLightGray),
+        const SizedBox(height: 12),
+        const Text('Unclear offline result',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-        SizedBox(height: 8),
-        Text(
-            'We could not confidently match this upload to a supported crop disease. Use a clear close-up of the affected crop leaf and try again.',
+        const SizedBox(height: 8),
+        const Text(
+            'The offline model could not confidently confirm a supported diagnosis from this upload. Try a clearer close-up or go online for a stronger review.',
             textAlign: TextAlign.center,
             style: TextStyle(
                 color: AppColors.textGray, fontSize: 13, height: 1.4)),
+        if (topGuess != null) ...[
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.backgroundGreenLight,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Top offline guess',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.primary,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  humanizeDiseaseLabel(topGuess.label),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.textDark,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${(topGuess.confidence * 100).toStringAsFixed(0)}% confidence',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textGray,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ]),
     );
   }
@@ -783,10 +827,24 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
   /// User message when the on-device scan did not attach a confident diagnosis.
   String _buildUncertainScanPrompt() {
-    return 'Please analyze the attached crop image, identify whether it is '
-      'tomato, pepper, squash, eggplant, or pechay, then explain what you '
-      'observe and what the farmer should do next. If the crop looks healthy, '
-      'say so clearly and still give brief care guidance.';
+    final selectedCropType =
+      _resolveSelectedCropType(context.read<CropsProvider>());
+    final topGuess = _primaryDetection;
+    final cropLabel = selectedCropType != null
+      ? _cropTypeLabel(selectedCropType)
+      : 'the selected crop';
+
+    if (topGuess != null) {
+      return 'The offline scan could not confidently confirm $cropLabel from the attached photo. '
+        'Top offline guess: ${humanizeDiseaseLabel(topGuess.label)} at '
+        '${(topGuess.confidence * 100).toStringAsFixed(0)}% confidence. '
+        'Please analyze the image carefully, explain whether the top guess looks correct, '
+        'and tell the farmer whether to retry with a clearer photo or continue online for better help.';
+    }
+
+    return 'The offline scan could not confidently confirm the attached crop image. '
+      'Please analyze the image carefully, explain what you observe, and tell '
+      'the farmer whether to retry with a clearer photo or continue online for better help.';
   }
 
   DiseaseKnowledgeModel? _resolveDiseaseMatch({
@@ -843,13 +901,26 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     required AiBackendDetectResponse detection,
     required CropType? selectedCropType,
   }) {
+    final primary = detection.primaryDetection;
+    final topGuess = primary == null
+        ? null
+        : '${humanizeDiseaseLabel(primary.label)} '
+            '(${(primary.confidence * 100).toStringAsFixed(0)}% confidence)';
+
     if (detection.status.toLowerCase() == 'no_match') {
+      if (selectedCropType != null && topGuess != null) {
+        return 'I can\'t confidently confirm your selected ${_cropTypeLabel(selectedCropType)} crop offline from this photo. '
+            'Top offline guess: $topGuess. Upload a clearer close-up or go online for better assistance.';
+      }
+      if (topGuess != null) {
+        return 'I can\'t confidently confirm a supported crop diagnosis offline from this photo. '
+            'Top offline guess: $topGuess. Upload a clearer close-up or go online for better assistance.';
+      }
       return detection.notes.isNotEmpty
           ? detection.notes.first
           : 'This photo does not clearly match a supported crop disease. Upload a clear crop-leaf photo and try again.';
     }
 
-    final primary = detection.primaryDetection;
     if (primary == null) {
       return 'This photo does not clearly match a supported crop disease. Upload a clear crop-leaf photo and try again.';
     }
@@ -861,16 +932,17 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         : AppConstants.temporaryScannerAcceptedConfidence;
     if (isLocalDetection && confidence < minimumConfidence) {
       return selectedCropType != null
-          ? 'This photo is too unclear to confidently confirm your selected ${_cropTypeLabel(selectedCropType)} crop offline. Upload a clearer close-up of the affected crop leaf and try again.'
-          : 'This photo could not be confidently verified as a supported crop image. Upload a clear close-up of the affected crop leaf and try again.';
+          ? 'I can\'t confidently confirm your selected ${_cropTypeLabel(selectedCropType)} crop offline from this photo. ${topGuess != null ? 'Top offline guess: $topGuess. ' : ''}Upload a clearer close-up or go online for better assistance.'
+          : 'I can\'t confidently confirm a supported crop diagnosis offline from this photo. ${topGuess != null ? 'Top offline guess: $topGuess. ' : ''}Upload a clearer close-up or go online for better assistance.';
     }
 
     final predictedCropType = _tryParseCropType(detection.cropType);
     if (selectedCropType != null &&
         predictedCropType != null &&
-        !isLocalDetection &&
         predictedCropType != selectedCropType) {
-      return 'This photo looks like ${_cropTypeLabel(predictedCropType)}, but you are scanning ${_cropTypeLabel(selectedCropType)}. Upload a photo of the selected crop or switch crops first.';
+      return 'I can\'t confidently confirm your selected ${_cropTypeLabel(selectedCropType)} crop from this photo. '
+          'Top ${isLocalDetection ? 'offline ' : ''}guess: ${topGuess ?? _cropTypeLabel(predictedCropType)}. '
+          'Upload a photo of the selected crop or go online for better assistance.';
     }
 
     return null;
@@ -973,20 +1045,20 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     final source = detection.source.toLowerCase();
     final modelName = detection.model.name.toLowerCase();
     final label = detection.primaryDetection?.label.toLowerCase() ?? '';
+    final selectedCropType = _resolveSelectedCropType(context.read<CropsProvider>());
+    final predictedCropType = _tryParseCropType(detection.cropType);
+
+    if (selectedCropType != null &&
+        predictedCropType != null &&
+        predictedCropType != selectedCropType) {
+      return false;
+    }
 
     return detection.status.toLowerCase() == 'ok' &&
         detection.primaryDetection != null &&
         !source.contains('mock') &&
         !modelName.contains('mock') &&
         label != 'sample_disease_region';
-  }
-
-  double _minimumAcceptedConfidence(AiBackendDetectResponse? detection) {
-    final source = detection?.source.toLowerCase() ?? '';
-    if (source.contains('local')) {
-      return AppConstants.temporaryScannerMinConfidence;
-    }
-    return AppConstants.temporaryScannerAcceptedConfidence;
   }
 
   DiagnosisMode _diagnosisModeFor(AiBackendDetectResponse? detection) {

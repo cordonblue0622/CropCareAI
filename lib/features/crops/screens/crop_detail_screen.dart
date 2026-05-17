@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -318,9 +319,35 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     return _diagnoses.isNotEmpty ? _diagnoses.first : null;
   }
 
+  ProgressUpdateModel? _latestProgressUpdateForTask(TreatmentTaskModel task) {
+    final treatmentId = task.treatmentId;
+    final sorted = [..._progress]
+      ..sort((a, b) => b.updateDate.compareTo(a.updateDate));
+
+    for (final update in sorted) {
+      if (update.isDeleted) {
+        continue;
+      }
+      if (treatmentId.isNotEmpty &&
+          update.treatmentId != null &&
+          update.treatmentId != treatmentId) {
+        continue;
+      }
+      final hasUsefulContext =
+          (update.imageUrl?.trim().isNotEmpty ?? false) ||
+          (update.note?.trim().isNotEmpty ?? false) ||
+          update.healthScore != null;
+      if (hasUsefulContext) {
+        return update;
+      }
+    }
+    return null;
+  }
+
   Future<void> _showCheckInSheetForTask(TreatmentTaskModel task) async {
     final cropsProvider = context.read<CropsProvider>();
     final activeTreatment = _treatmentForTask(task);
+    final previousUpdate = _latestProgressUpdateForTask(task);
     double? submittedScore;
     ProgressStatus? submittedStatus;
     ProgressUpdateModel? submittedUpdate;
@@ -334,14 +361,19 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         checkedTasks: [task],
         activeTreatment: _treatmentForTask(task),
         latestDiagnosis: _diagnosisForTask(task),
+        previousUpdate: previousUpdate,
         onSubmitted: (newScore, newStatus, update) async {
           submittedScore = newScore;
           submittedStatus = newStatus;
           submittedUpdate = update;
           final completedAt = update.createdAt;
-          await cropsProvider.saveProgressUpdate(update);
+          await cropsProvider.saveProgressUpdate(update, syncNow: false);
           await cropsProvider.updateCropHealthScore(
-              _crop.id, newScore, newStatus);
+            _crop.id,
+            newScore,
+            newStatus,
+            syncNow: false,
+          );
           if (!mounted) return;
           setState(() {
             _crop = _crop.copyWith(
@@ -361,11 +393,14 @@ class _CropDetailScreenState extends State<CropDetailScreen>
             _progress = [update, ..._progress]
               ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
           });
+          unawaited(cropsProvider.flushPendingSync());
         },
       ),
     );
 
     if (didSubmit == true && mounted) {
+      await _showTaskCelebration(task.title);
+
       final latestScore = submittedScore;
       final latestStatus = submittedStatus;
       final latestUpdate = submittedUpdate;
@@ -383,8 +418,6 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         );
         return;
       }
-
-      await _showTaskCelebration(task.title);
     }
   }
 
@@ -2210,6 +2243,7 @@ class _CheckInSheet extends StatefulWidget {
   final List<TreatmentTaskModel> checkedTasks;
   final TreatmentModel? activeTreatment;
   final DiagnosisModel? latestDiagnosis;
+  final ProgressUpdateModel? previousUpdate;
   final Future<void> Function(
     double score,
     ProgressStatus status,
@@ -2222,6 +2256,7 @@ class _CheckInSheet extends StatefulWidget {
     required this.checkedTasks,
     required this.activeTreatment,
     required this.latestDiagnosis,
+    required this.previousUpdate,
     required this.onSubmitted,
   });
 
@@ -2267,14 +2302,6 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       final submittedAt = DateTime.now();
       final imageUrl = buildInlineImageDataUrl(_photoBytes!);
 
-      final validationDetection = await _validateCheckInPhoto();
-      if (validationDetection == null) {
-        if (mounted) {
-          setState(() => _submitting = false);
-        }
-        return;
-      }
-
       final days = widget.activeTreatment?.startedAt != null
           ? DateTime.now().difference(widget.activeTreatment!.startedAt!).inDays
           : 0;
@@ -2290,10 +2317,30 @@ class _CheckInSheetState extends State<_CheckInSheet> {
           daysSinceTreatment: days,
           imageBytes: _photoBytes!.toList(),
           imageMimeType: 'image/jpeg',
+          previousImageReference: widget.previousUpdate?.imageUrl,
+          previousAssessment: widget.previousUpdate?.note,
+          previousProgressStatus: widget.previousUpdate?.progressStatus.value,
+          previousUpdateDate:
+              widget.previousUpdate?.updateDate.toIso8601String(),
           completedTasks: widget.checkedTasks.map((t) => t.title).toList(),
           note: _noteCtrl.text.trim().isNotEmpty ? _noteCtrl.text.trim() : null,
           currentHealthScore: widget.crop.latestHealthScore,
         );
+        if (!aiResponse.accepted) {
+          if (mounted) {
+            setState(() => _submitting = false);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  aiResponse.rejectionReason ??
+                      'This photo does not match your tracked crop well enough. Please retake the check-in photo.',
+                ),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+          return;
+        }
         newScore = aiResponse.healthScore;
         newStatus = _progressStatusFromBackend(aiResponse.progressStatus);
         assessment = aiResponse.assessment;
@@ -2327,6 +2374,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         await cropsProvider.markTaskDone(
           task.id,
           recomputeHealthScore: false,
+          syncNow: false,
         );
       }
 
@@ -2339,8 +2387,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         updateSource: UpdateSource.image,
         healthScore: newScore,
         progressStatus: newStatus,
-        detectedDiseaseName: validationDetection.primaryDetection?.label ??
-          widget.latestDiagnosis?.diseaseName ??
+        detectedDiseaseName: widget.latestDiagnosis?.diseaseName ??
           widget.activeTreatment?.diseaseName,
         detectedSeverity: widget.latestDiagnosis?.severity,
         note: _noteCtrl.text.trim().isNotEmpty
@@ -2365,101 +2412,6 @@ class _CheckInSheetState extends State<_CheckInSheet> {
             .showSnackBar(SnackBar(content: Text('Error: $e')));
       }
     }
-  }
-
-  Future<AiBackendDetectResponse?> _validateCheckInPhoto() async {
-    final imageBytes = _photoBytes;
-    if (imageBytes == null || imageBytes.isEmpty) {
-      return null;
-    }
-
-    final localClassifier = context.read<LocalClassifierService>();
-    final aiBackend = context.read<AiBackendService>();
-    final expectedCropType = widget.crop.cropType.value;
-    AiBackendDetectResponse? lastDetection;
-
-    final detectionAttempts = <Future<AiBackendDetectResponse> Function()>[
-      () => localClassifier.classifyImage(
-            imageBytes: imageBytes,
-            filename: 'progress-checkin.jpg',
-            cropType: expectedCropType,
-          ),
-      () => aiBackend.detectImage(
-            imageBytes: imageBytes,
-            filename: 'progress-checkin.jpg',
-            cropType: expectedCropType,
-          ),
-    ];
-
-    for (final attempt in detectionAttempts) {
-      try {
-        final detection = await attempt();
-        lastDetection = detection;
-        final validationError = _validationErrorForDetection(detection);
-        if (validationError == null) {
-          return detection;
-        }
-      } catch (_) {
-        // Try the next detector before failing the check-in entirely.
-      }
-    }
-
-    if (!mounted) {
-      return null;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          lastDetection != null
-              ? (_validationErrorForDetection(lastDetection) ??
-                  'This photo could not be validated for today\'s check-in.')
-              : 'This photo could not be validated for today\'s check-in.',
-        ),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-    return null;
-  }
-
-  String? _validationErrorForDetection(AiBackendDetectResponse detection) {
-    if (detection.status.toLowerCase() != 'ok' ||
-        detection.primaryDetection == null) {
-      return detection.notes.isNotEmpty
-          ? detection.notes.first
-          : 'This photo does not clearly show the crop you are tracking. Use a close-up of the crop leaf and try again.';
-    }
-
-    final detectedCropType = _tryParseCropType(detection.cropType);
-    if (detectedCropType != null && detectedCropType != widget.crop.cropType) {
-      return 'This photo looks like ${_cropTypeLabel(detectedCropType)}, not ${_cropTypeLabel(widget.crop.cropType)}. Upload a photo of the tracked crop and try again.';
-    }
-
-    final confidence = detection.primaryDetection?.confidence ?? 0;
-    if (confidence < AppConstants.temporaryScannerAcceptedConfidence) {
-      return 'This photo is too unclear to validate today\'s check-in. Use a clearer close-up of the affected crop leaf and try again.';
-    }
-
-    return null;
-  }
-
-  CropType? _tryParseCropType(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return null;
-    }
-
-    for (final cropType in CropType.values) {
-      if (cropType.value == value.trim()) {
-        return cropType;
-      }
-    }
-
-    return null;
-  }
-
-  String _cropTypeLabel(CropType cropType) {
-    final name = cropType.name;
-    return '${name[0].toUpperCase()}${name.substring(1)}';
   }
 
   ProgressStatus _progressStatusFromBackend(String raw) {
