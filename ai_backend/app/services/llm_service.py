@@ -43,23 +43,25 @@ TOMATO: Bacterial Spot · Early Blight · Late Blight · Leaf Mold · Septoria L
 Rules for the farmer-visible answer:
 1. Treat scanner output as a hint. If the image contradicts it, say so and correct.
 2. If knowledge excerpts match the verified problem, use their treatment wording (including any day-by-day steps given in the excerpt).
-3. Structure the first diagnosis reply as plain text sections in this order, with labels exactly like this (no markdown, no bullets):
+3. If you clearly verified a disease, pest, or a healthy crop and no more input is needed, structure the first diagnosis reply as plain text sections in this order, with labels exactly like this (no markdown, no bullets):
 What it is:
 Key symptoms:
 Immediate action:
 Treatment:
 Prevention tip:
-4. If the photo is unclear, ask for a closer, well-lit leaf photo.
-5. Prefer organic/IPM first; if you mention chemicals, add brief safety cautions in the answer body.
-6. Keep under 260 words unless the farmer explicitly asks for more detail.
-7. If scanner confidence is below 60%, say the result is uncertain and suggest a clearer photo.
+4. If the photo is unclear, unrelated, only shows another screen/image, or you need another angle before diagnosing, do NOT use the diagnosis template. Reply briefly in plain text asking for a clearer actual crop photo and stop there.
+5. For a clearly healthy crop, keep the answer practical and brief. In treatment_actions, give 3 to 5 concrete daily care actions rooted in the knowledge excerpts. Do NOT include "upload another photo" as a treatment action.
+6. Prefer organic/IPM first; if you mention chemicals, add brief safety cautions in the answer body.
+7. Keep under 220 words unless the farmer explicitly asks for more detail.
+8. If scanner confidence is below 60%, say the result is uncertain and suggest a clearer photo.
 
 After your answer, output exactly one extra final line and nothing after it. That line must start with CCAI_JSON: followed by compact JSON (no line breaks inside the JSON) with these keys:
 in_app_crop_scope (boolean), show_treatment_ui (boolean), verified_crop (string: tomato, pepper, squash, eggplant, pechay, or empty), verified_disease (string or empty), treatment_actions (array of 3-7 short imperative steps, or empty array).
 
 JSON rules:
 - in_app_crop_scope false if the subject is outside the five crops or not a plant/crop photo.
-- show_treatment_ui true only if in_app_crop_scope AND you identified a specific disease/pests/problem that merits a plan (not for a clearly healthy plant with no action). When true, treatment_actions must be non-empty.
+- show_treatment_ui true only if in_app_crop_scope AND you verified either a specific disease/pest/problem OR a clearly healthy crop with a concrete daily care plan. When true, treatment_actions must be non-empty.
+- If you need another photo or more input before diagnosing, show_treatment_ui must be false and treatment_actions must be [].
 - If in_app_crop_scope is false, show_treatment_ui must be false and treatment_actions must be []."""
 
 _CONVERSATIONAL_PROMPT = """You are CropCare AI helping a smallholder vegetable farmer.
@@ -69,6 +71,7 @@ The farmer is continuing an earlier chat (they may have already received a diagn
 Rules:
 - Stay focused on the active crop context. Do not drift to another crop unless the farmer explicitly changes crops.
 - If the farmer asks about a product, brand, spray, or active ingredient, explain whether it fits the active crop and likely problem, what it is mainly used for, and when it would not be a good fit.
+- If the farmer asks about fertilizer, feeding, or nutrients, answer directly for the named crop and growth stage. If web search results are available, use them to strengthen product-specific guidance.
 - If web search results are available, use them to verify what a named product is for or what active ingredient it contains. If reliable web results are not available, use your own crop-protection knowledge and clearly tell the farmer to verify the label, crop registration, dosage, and pre-harvest interval locally.
 - Do NOT repeat the full diagnosis template (no required "What it is / Treatment" sections) unless they explicitly ask you to restate the plan.
 - Do NOT add generic warning footers or tip lists unless the question is about safety or compliance.
@@ -168,6 +171,25 @@ class LlmService:
         _ = current_user
         if not self._settings.openai_api_key:
             return self._fallback_response(payload, knowledge_records)
+
+        # Early-exit for simple greetings with no image and no diagnosis context —
+        # skip GPT entirely and return a short intro without structured output.
+        if (
+            not payload.image_data_url
+            and not payload.diagnosis
+            and len(payload.conversation_history) < 2
+            and self._is_greeting(payload.user_message)
+        ):
+            active_crop = self._resolve_active_crop(payload, knowledge_records)
+            return ChatResponse(
+                answer=self._intro_response(payload.user_message, active_crop),
+                recommended_actions=[],
+                warnings=[],
+                sources=[],
+                model="local-greeting",
+                in_app_crop_scope=False,
+                show_treatment_ui=False,
+            )
 
         from openai import OpenAI
 
@@ -271,6 +293,7 @@ class LlmService:
                 meta=meta,
                 is_follow_up=is_follow_up,
                 recommended_actions=recommended_actions,
+                answer=answer_body,
             )
 
             return ChatResponse(
@@ -428,23 +451,23 @@ class LlmService:
         if self._is_greeting(user_message):
             if active_crop:
                 return (
-                    f"Hello. I can help with your {active_crop} crop. Ask about symptoms, "
-                    "treatment timing, or a product you want to check, or upload a close leaf photo when you want a diagnosis."
+                    f"Hi. I\'m CropCare AI. Tell me what you need help with on your {active_crop} crop, "
+                    "ask about care or products, or send a close leaf photo if you want a diagnosis."
                 )
             return (
-                "Hello. I can help with tomato, bell pepper, squash, eggplant, and pechay. "
-                "Tell me which crop you want help with, ask a crop question, or upload a close leaf photo when you are ready."
+                "Hi. I\'m CropCare AI. Tell me the crop and the problem you need help with, "
+                "or send a close leaf photo if you want a diagnosis."
             )
 
         if active_crop:
             return (
-                f"I can help with your {active_crop} crop. Tell me the symptom, treatment step, "
-                "or product you want to check, or upload a close leaf photo when you want a diagnosis."
+                f"I can help with your {active_crop} crop. Ask about symptoms, care, or products, "
+                "or send a close leaf photo if you want a diagnosis."
             )
 
         return (
             "I can help with tomato, bell pepper, squash, eggplant, and pechay. "
-            "Tell me which crop you are working on, describe the symptom, or upload a close leaf photo when you want a diagnosis."
+            "Tell me which crop you are working on, describe the problem, or send a close leaf photo if you want a diagnosis."
         )
 
     def _scope_flags_from_meta(
@@ -453,6 +476,7 @@ class LlmService:
         meta: dict[str, Any],
         is_follow_up: bool,
         recommended_actions: list[str],
+        answer: str,
     ) -> tuple[bool, bool]:
         if is_follow_up:
             return True, False
@@ -463,6 +487,9 @@ class LlmService:
             show_ui = bool(recommended_actions)
         else:
             show_ui = bool(show_raw)
+
+        if self._needs_more_input_response(answer):
+            show_ui = False
 
         if not in_scope:
             show_ui = False
@@ -477,7 +504,7 @@ class LlmService:
         meta: dict[str, Any],
         is_follow_up: bool,
     ) -> list[str]:
-        if is_follow_up:
+        if is_follow_up or self._needs_more_input_response(answer):
             return []
 
         in_scope = bool(meta.get("in_app_crop_scope", True))
@@ -505,18 +532,40 @@ class LlmService:
         if crop_type not in _SUPPORTED_TREATMENT_CARD_CROPS:
             return []
 
-        return self._actions_from_knowledge(knowledge_records, answer, crop_type)
+        disease_name = self._normalize_verified_crop(str(meta.get("verified_disease") or ""))
+        if not disease_name and payload.diagnosis:
+            disease_name = str(payload.diagnosis.disease_name or "").strip().lower()
+
+        return self._actions_from_knowledge(
+            knowledge_records,
+            answer,
+            crop_type,
+            disease_name=disease_name,
+        )
 
     def _actions_from_knowledge(
         self,
         knowledge_records: list[dict[str, Any]],
         answer: str,
         crop_type: str,
+        *,
+        disease_name: str = "",
     ) -> list[str]:
         if crop_type not in _SUPPORTED_TREATMENT_CARD_CROPS:
             return []
+        target_disease = (disease_name or "").strip().lower()
+        candidate_records = knowledge_records
+        if target_disease:
+            matching = []
+            for record in knowledge_records:
+                label = str(record.get("disease_name") or record.get("title") or "").strip().lower()
+                if target_disease in label or label in target_disease:
+                    matching.append(record)
+            if matching:
+                candidate_records = matching
+
         actions: list[str] = []
-        for record in knowledge_records:
+        for record in candidate_records:
             actions.extend(self._normalize_string_list(record.get("treatment_steps")))
             day_lines = self._normalize_string_list(record.get("treatment_day_lines"))
             for line in day_lines:
@@ -535,6 +584,30 @@ class LlmService:
             if action not in deduped:
                 deduped.append(action)
         return deduped[:7]
+
+    def _needs_more_input_response(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+        if not normalized:
+            return False
+
+        phrases = (
+            "clearer photo",
+            "closer photo",
+            "well-lit photo",
+            "upload a clear",
+            "retake the photo",
+            "cannot verify",
+            "can't verify",
+            "cannot confirm",
+            "can't confirm",
+            "too unclear",
+            "not a crop plant",
+            "not a live plant",
+            "screen, not a live plant",
+            "need a closer photo",
+            "need another photo",
+        )
+        return any(phrase in normalized for phrase in phrases)
 
     def _warnings(self, payload: ChatRequest, *, is_follow_up: bool, in_scope: bool) -> list[str]:
         if is_follow_up or not in_scope:
