@@ -173,8 +173,8 @@ class LlmService:
 
         client = OpenAI(api_key=self._settings.openai_api_key)
 
-        is_follow_up = len(payload.conversation_history) >= 2
         active_crop = self._resolve_active_crop(payload, knowledge_records)
+        is_follow_up = len(payload.conversation_history) >= 2 or not self._should_use_diagnosis_template(payload)
         is_product_query = self._is_product_query(payload.user_message)
         system_prompt = self._build_system_prompt(
             is_follow_up=is_follow_up,
@@ -403,6 +403,50 @@ class LlmService:
             )
         )
 
+    def _should_use_diagnosis_template(self, payload: ChatRequest) -> bool:
+        return bool(payload.image_data_url or payload.diagnosis)
+
+    def _is_greeting(self, user_message: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (user_message or "").strip().lower())
+        if not normalized:
+            return False
+
+        greetings = (
+            "hi",
+            "hello",
+            "hey",
+            "good morning",
+            "good afternoon",
+            "good evening",
+        )
+        return any(
+            normalized == greeting or normalized.startswith(f"{greeting} ")
+            for greeting in greetings
+        )
+
+    def _intro_response(self, user_message: str, active_crop: str) -> str:
+        if self._is_greeting(user_message):
+            if active_crop:
+                return (
+                    f"Hello. I can help with your {active_crop} crop. Ask about symptoms, "
+                    "treatment timing, or a product you want to check, or upload a close leaf photo when you want a diagnosis."
+                )
+            return (
+                "Hello. I can help with tomato, bell pepper, squash, eggplant, and pechay. "
+                "Tell me which crop you want help with, ask a crop question, or upload a close leaf photo when you are ready."
+            )
+
+        if active_crop:
+            return (
+                f"I can help with your {active_crop} crop. Tell me the symptom, treatment step, "
+                "or product you want to check, or upload a close leaf photo when you want a diagnosis."
+            )
+
+        return (
+            "I can help with tomato, bell pepper, squash, eggplant, and pechay. "
+            "Tell me which crop you are working on, describe the symptom, or upload a close leaf photo when you want a diagnosis."
+        )
+
     def _scope_flags_from_meta(
         self,
         *,
@@ -511,6 +555,22 @@ class LlmService:
         payload: ChatRequest,
         knowledge_records: list[dict[str, Any]],
     ) -> ChatResponse:
+        active_crop = self._resolve_active_crop(payload, knowledge_records)
+        if not self._should_use_diagnosis_template(payload):
+            return ChatResponse(
+                answer=self._intro_response(payload.user_message, active_crop),
+                recommended_actions=[],
+                warnings=[],
+                sources=self._response_sources(
+                    payload,
+                    knowledge_records,
+                    include_openai=False,
+                ),
+                model="knowledge-fallback",
+                in_app_crop_scope=bool(active_crop),
+                show_treatment_ui=False,
+            )
+
         disease = payload.diagnosis.disease_name if payload.diagnosis else None
         label_key = payload.diagnosis.label_key if payload.diagnosis else None
         disease_label = _TRAINED_LABEL_NAMES.get(label_key or "", disease or "")
