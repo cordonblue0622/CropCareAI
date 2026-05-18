@@ -42,6 +42,7 @@ app.*.map.json
 
 # Root release artifact
 /CropCareAI-release.apk
+*.apk
 
 # Android Studio will place build artifacts here
 /android/app/debug
