@@ -9,7 +9,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
-import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/image_reference.dart';
@@ -25,7 +24,7 @@ import '../../../data/models/treatment_task_model.dart';
 import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../services/health_score_service.dart';
-import '../../../services/local_classifier_service.dart';
+import '../../../services/connectivity_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../chat/screens/chat_screen.dart';
 import '../../home/home_screen.dart';
@@ -250,9 +249,134 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         _chatHistory = historyMessages;
         _loading = false;
       });
+      // Re-analyse any offline check-ins that are still pending GPT analysis.
+      unawaited(_analyzePendingCheckIns());
     } catch (_) {
       if (!mounted) return;
       setState(() => _loading = false);
+    }
+  }
+
+  /// Finds progress updates saved offline (progressStatus == insufficientData
+  /// with a stored image) and, when online, sends them to GPT for analysis,
+  /// then updates the stored record and the crop's health score.
+  Future<void> _analyzePendingCheckIns() async {
+    final pending = _progress
+        .where(
+          (u) =>
+              u.progressStatus == ProgressStatus.insufficientData &&
+              u.imageUrl != null &&
+              u.imageUrl!.isNotEmpty &&
+              isInlineImageDataUrl(u.imageUrl),
+        )
+        .toList();
+    if (pending.isEmpty) return;
+
+    final connectivity = context.read<ConnectivityService>();
+    final isOnline = await connectivity.isConnected;
+    if (!isOnline) return;
+
+    final aiBackend = context.read<AiBackendService>();
+    final cropsProvider = context.read<CropsProvider>();
+
+    for (final update in pending) {
+      if (!mounted) return;
+      final imageBytes = decodeInlineImageDataUrl(update.imageUrl);
+      if (imageBytes == null) continue;
+
+      try {
+        final aiResponse = await aiBackend.assessCropHealth(
+          cropType: _crop.cropType.name,
+          diseaseName:
+              update.detectedDiseaseName?.trim().isNotEmpty == true
+                  ? update.detectedDiseaseName!
+                  : _crop.cropName,
+          imageBytes: imageBytes.toList(),
+          imageMimeType: 'image/jpeg',
+          previousAssessment: update.note,
+          currentHealthScore: _crop.latestHealthScore,
+        );
+
+        if (!aiResponse.accepted) continue;
+
+        final newStatus = _parseProgressStatus(aiResponse.progressStatus);
+        final updatedRecord = ProgressUpdateModel(
+          id: update.id,
+          cropId: update.cropId,
+          treatmentId: update.treatmentId,
+          diagnosisId: update.diagnosisId,
+          userId: update.userId,
+          updateSource: update.updateSource,
+          note: aiResponse.assessment.trim().isNotEmpty
+              ? aiResponse.assessment
+              : update.note,
+          imageUrl: update.imageUrl,
+          videoUrl: update.videoUrl,
+          observedSymptoms: update.observedSymptoms,
+          detectedDiseaseName: update.detectedDiseaseName,
+          detectedSeverity: update.detectedSeverity,
+          progressStatus: newStatus,
+          healthScore: aiResponse.healthScore,
+          completedTaskCount: update.completedTaskCount,
+          missedTaskCount: update.missedTaskCount,
+          updateDate: update.updateDate,
+          syncVersion: update.syncVersion,
+          isDeleted: update.isDeleted,
+          createdAt: update.createdAt,
+          updatedAt: DateTime.now(),
+        );
+
+        await cropsProvider.saveProgressUpdate(updatedRecord, syncNow: false);
+
+        // Update crop health score if this is the most recent update.
+        final isMostRecent =
+            _progress.isNotEmpty && _progress.first.id == update.id;
+        if (isMostRecent && mounted) {
+          await cropsProvider.updateCropHealthScore(
+            _crop.id,
+            aiResponse.healthScore,
+            newStatus,
+            syncNow: false,
+          );
+        }
+
+        if (mounted) {
+          setState(() {
+            final idx = _progress.indexWhere((u) => u.id == updatedRecord.id);
+            if (idx != -1) _progress[idx] = updatedRecord;
+            if (isMostRecent) {
+              _crop = _crop.copyWith(
+                latestHealthScore: aiResponse.healthScore,
+                latestProgressStatus: newStatus,
+              );
+            }
+          });
+        }
+      } catch (_) {
+        // Skip this update — will retry on next load.
+      }
+    }
+
+    if (mounted) {
+      unawaited(cropsProvider.flushPendingSync());
+    }
+  }
+
+  /// Converts a raw backend progress-status string to [ProgressStatus],
+  /// handling aliases returned by the GPT backend (e.g. "declining").
+  ProgressStatus _parseProgressStatus(String raw) {
+    switch (raw.trim().toLowerCase()) {
+      case 'improving':
+        return ProgressStatus.improving;
+      case 'declining':
+      case 'critical':
+      case 'worsening':
+        return ProgressStatus.worsening;
+      case 'insufficient_data':
+        return ProgressStatus.insufficientData;
+      case 'stable':
+      default:
+        return ProgressStatus.stable;
     }
   }
 
@@ -1527,6 +1651,8 @@ class _ProgressTab extends StatelessWidget {
           onTaskToggled: onTaskSelected,
         ),
         const SizedBox(height: 16),
+        _buildAiAnalysisCard(),
+        const SizedBox(height: 16),
         HealthScoreGraph(
           points: healthCurve,
           selectedDate: selectedDate,
@@ -1571,6 +1697,139 @@ class _ProgressTab extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+
+  Widget _buildAiAnalysisCard() {
+    // Find the most recent progress update that has a real AI assessment
+    // (i.e. not an offline/pending stub).
+    final latestUpdate = progress
+        .where((u) =>
+            u.progressStatus != ProgressStatus.insufficientData &&
+            u.note != null &&
+            u.note!.trim().isNotEmpty)
+        .fold<ProgressUpdateModel?>(
+          null,
+          (prev, u) =>
+              prev == null || u.updateDate.isAfter(prev.updateDate) ? u : prev,
+        );
+
+    final assessment = latestUpdate?.note;
+    final score = latestUpdate?.healthScore;
+    final status = latestUpdate?.progressStatus;
+    final updateDate = latestUpdate?.updateDate;
+
+    Color scoreColor(double s) {
+      if (s >= 70) return Colors.green;
+      if (s >= 40) return Colors.orange;
+      return Colors.red;
+    }
+
+    String statusLabel(ProgressStatus s) {
+      switch (s) {
+        case ProgressStatus.improving:
+          return 'Improving';
+        case ProgressStatus.worsening:
+          return 'Needs Attention';
+        case ProgressStatus.stable:
+          return 'Stable';
+        default:
+          return '';
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.psychology_outlined,
+                  color: AppColors.primary, size: 18),
+              const SizedBox(width: 8),
+              const Text(
+                'AI Analysis',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+              const Spacer(),
+              if (updateDate != null)
+                Text(
+                  DateFormat('MMM d, y').format(updateDate),
+                  style: const TextStyle(
+                      color: AppColors.textGray, fontSize: 12),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (assessment != null) ...[
+            Text(
+              assessment,
+              style: const TextStyle(
+                  fontSize: 13, color: AppColors.textDark, height: 1.4),
+            ),
+            if (score != null || status != null) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  if (score != null)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: scoreColor(score).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        '${score.toStringAsFixed(0)}% health',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: scoreColor(score),
+                        ),
+                      ),
+                    ),
+                  if (status != null && status != ProgressStatus.insufficientData)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        statusLabel(status),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ] else
+            const Text(
+              'No AI analysis yet. Complete a daily check-in to see the latest assessment here.',
+              style:
+                  TextStyle(fontSize: 13, color: AppColors.textGray, height: 1.4),
+            ),
+        ],
+      ),
     );
   }
 
@@ -1955,7 +2214,18 @@ class _DiagnosesTab extends StatelessWidget {
               if (hasDiagnoses) ...[
                 const _SectionHeader('AI Diagnoses'),
                 const SizedBox(height: 8),
-                ...diagnoses.map((d) => Container(
+                ...diagnoses.map((d) => InkWell(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ChatScreen(
+                            cropId: crop.id,
+                            startFreshSession: false,
+                          ),
+                        ),
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
                       margin: const EdgeInsets.only(bottom: 12),
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
@@ -2019,7 +2289,22 @@ class _DiagnosesTab extends StatelessWidget {
                                   maxLines: 4,
                                   overflow: TextOverflow.ellipsis),
                             ],
+                            const SizedBox(height: 6),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                Text('View conversation',
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: AppColors.primary,
+                                        fontWeight: FontWeight.w600)),
+                                const SizedBox(width: 4),
+                                Icon(Icons.chevron_right,
+                                    size: 16, color: AppColors.primary),
+                              ],
+                            ),
                           ]),
+                      ),
                     )),
                 const SizedBox(height: 8),
               ],
@@ -2309,65 +2594,63 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       late final double newScore;
       late final ProgressStatus newStatus;
       late final String assessment;
-      try {
-        final aiResponse = await aiBackend.assessCropHealth(
-          cropType: widget.crop.cropType.name,
-          diseaseName:
-              widget.activeTreatment?.diseaseName ?? widget.crop.cropName,
-          daysSinceTreatment: days,
-          imageBytes: _photoBytes!.toList(),
-          imageMimeType: 'image/jpeg',
-          previousImageReference: widget.previousUpdate?.imageUrl,
-          previousAssessment: widget.previousUpdate?.note,
-          previousProgressStatus: widget.previousUpdate?.progressStatus.value,
-          previousUpdateDate:
-              widget.previousUpdate?.updateDate.toIso8601String(),
-          completedTasks: widget.checkedTasks.map((t) => t.title).toList(),
-          note: _noteCtrl.text.trim().isNotEmpty ? _noteCtrl.text.trim() : null,
-          currentHealthScore: widget.crop.latestHealthScore,
-        );
-        if (!aiResponse.accepted) {
-          if (mounted) {
-            setState(() => _submitting = false);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  aiResponse.rejectionReason ??
-                      'This photo does not match your tracked crop well enough. Please retake the check-in photo.',
-                ),
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-          }
-          return;
-        }
-        newScore = aiResponse.healthScore;
-        newStatus = _progressStatusFromBackend(aiResponse.progressStatus);
-        assessment = aiResponse.assessment;
-      } catch (_) {
-        final checkedIds = widget.checkedTasks.map((task) => task.id).toSet();
-        final estimatedTasks = widget.allTasks.map((task) {
-          if (!checkedIds.contains(task.id)) return task;
-          return task.copyWith(
-            status: TaskStatus.completed,
-            completedAt: submittedAt,
-            updatedAt: submittedAt,
+      final connectivity = context.read<ConnectivityService>();
+      final isOnline = await connectivity.isConnected;
+      if (!isOnline) {
+        // Offline – store the photo without GPT analysis; score unchanged
+        // until the user is back online and re-analysis runs.
+        newScore = widget.crop.latestHealthScore ?? 50.0;
+        newStatus = ProgressStatus.insufficientData;
+        assessment = 'Offline check-in — AI analysis pending. Will be updated when online.';
+      } else {
+        // Avoid sending a huge base64 data URL as the previous reference —
+        // only pass real remote URLs to keep the request payload small.
+        final prevImgUrl = widget.previousUpdate?.imageUrl;
+        final safePrevImgRef = (prevImgUrl != null && isInlineImageDataUrl(prevImgUrl))
+            ? null
+            : prevImgUrl;
+        try {
+          final aiResponse = await aiBackend.assessCropHealth(
+            cropType: widget.crop.cropType.name,
+            diseaseName:
+                widget.activeTreatment?.diseaseName ?? widget.crop.cropName,
+            daysSinceTreatment: days,
+            imageBytes: _photoBytes!.toList(),
+            imageMimeType: 'image/jpeg',
+            previousImageReference: safePrevImgRef,
+            previousAssessment: widget.previousUpdate?.note,
+            previousProgressStatus: widget.previousUpdate?.progressStatus.value,
+            previousUpdateDate:
+                widget.previousUpdate?.updateDate.toIso8601String(),
+            completedTasks: widget.checkedTasks.map((t) => t.title).toList(),
+            note: _noteCtrl.text.trim().isNotEmpty ? _noteCtrl.text.trim() : null,
+            currentHealthScore: widget.crop.latestHealthScore,
           );
-        }).toList();
-        final estimatedScore = HealthScoreService.computeCurrentScore(
-          tasks: estimatedTasks,
-          diagnoses: [
-            if (widget.latestDiagnosis != null) widget.latestDiagnosis!,
-          ],
-          now: submittedAt,
-        ).toDouble();
-        newScore = estimatedScore;
-        newStatus = HealthScoreService.statusForScoreChange(
-          previousScore: widget.crop.latestHealthScore ?? estimatedScore,
-          currentScore: estimatedScore,
-        );
-        assessment =
-            'AI backend unavailable; score estimated from completed treatment tasks.';
+          if (!aiResponse.accepted) {
+            if (mounted) {
+              setState(() => _submitting = false);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    aiResponse.rejectionReason ??
+                        'This photo does not match your tracked crop well enough. Please retake the check-in photo.',
+                  ),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+            return;
+          }
+          newScore = aiResponse.healthScore;
+          newStatus = _progressStatusFromBackend(aiResponse.progressStatus);
+          assessment = aiResponse.assessment;
+        } catch (_) {
+          // Online but AI call failed (timeout, server error, etc.).
+          // Save the check-in and let _analyzePendingCheckIns re-analyse later.
+          newScore = widget.crop.latestHealthScore ?? 50.0;
+          newStatus = ProgressStatus.insufficientData;
+          assessment = 'Check-in saved — AI analysis pending. Score will update automatically.';
+        }
       }
 
       for (final task in widget.checkedTasks) {

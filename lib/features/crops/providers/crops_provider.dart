@@ -99,7 +99,31 @@ class CropsProvider extends ChangeNotifier {
       }
 
       final remoteRows = await _supabase.getCrops(userId);
-      await _db.upsertRows(AppConstants.cropsTable, remoteRows);
+
+      // Build a map of local updated_at by crop id so we only overwrite local
+      // records when the remote version is strictly newer. This prevents a
+      // recent check-in (saved locally, not yet synced) from being clobbered
+      // by the older remote copy during a dashboard refresh.
+      final localUpdatedAtById = <String, String>{};
+      for (final row in localRows) {
+        final id = (row['id'] as String?)?.trim() ?? '';
+        if (id.isNotEmpty) {
+          localUpdatedAtById[id] = (row['updated_at'] as String?) ?? '';
+        }
+      }
+
+      final rowsToUpsert = remoteRows.where((remoteRow) {
+        final id = (remoteRow['id'] as String?)?.trim() ?? '';
+        if (id.isEmpty) return true;
+        final localUpdatedAt = localUpdatedAtById[id] ?? '';
+        final remoteUpdatedAt = (remoteRow['updated_at'] as String?) ?? '';
+        // Upsert remote only when it is at least as new as the local copy.
+        return remoteUpdatedAt.compareTo(localUpdatedAt) >= 0;
+      }).toList();
+
+      if (rowsToUpsert.isNotEmpty) {
+        await _db.upsertRows(AppConstants.cropsTable, rowsToUpsert);
+      }
 
       final mergedRows = await _db.queryByUserId(AppConstants.cropsTable, userId);
       _crops = mergedRows.map(CropModel.fromMap).toList();
@@ -166,7 +190,7 @@ class CropsProvider extends ChangeNotifier {
 
   // ─── Update ───────────────────────────────────────────────────────────────
 
-  Future<bool> updateCrop(CropModel crop) async {
+  Future<bool> updateCrop(CropModel crop, {bool syncNow = true}) async {
     try {
       _error = validateUniqueCropName(
         cropName: crop.cropName,
@@ -187,7 +211,9 @@ class CropsProvider extends ChangeNotifier {
       final idx = _crops.indexWhere((c) => c.id == updated.id);
       if (idx != -1) _crops[idx] = updated;
       notifyListeners();
-      await _attemptSync();
+      if (syncNow) {
+        await _attemptSync();
+      }
       return true;
     } catch (e) {
       _error = e.toString();
@@ -499,7 +525,7 @@ class CropsProvider extends ChangeNotifier {
 
       // Initial health score based on severity
       final initialScore = switch (severity) {
-        Severity.healthy => 95.0,
+        Severity.healthy => 100.0,
         Severity.severe => 25.0,
         Severity.moderate => 50.0,
         Severity.mild => 70.0,
@@ -563,13 +589,17 @@ class CropsProvider extends ChangeNotifier {
       // Create treatment
       if (treatmentSteps.isNotEmpty) {
         final treatmentId = const Uuid().v4();
+        final isHealthyPlan = severity == Severity.healthy ||
+            normalizedDiseaseName.toLowerCase().contains('healthy');
         final treatment = TreatmentModel(
           id: treatmentId,
           cropId: cropId,
           diagnosisId: diagnosis.id,
           userId: userId,
           diseaseName: normalizedDiseaseName,
-          treatmentTitle: 'Treatment Plan — $normalizedDiseaseName',
+          treatmentTitle: isHealthyPlan
+              ? 'Daily Care Plan — ${cropType.name[0].toUpperCase()}${cropType.name.substring(1)}'
+              : 'Treatment Plan — $normalizedDiseaseName',
           treatmentSteps: treatmentSteps,
           expectedDurationDays: 14,
           status: TreatmentStatus.ongoing,
@@ -621,7 +651,11 @@ class CropsProvider extends ChangeNotifier {
 
   /// Updates crop health score after a progress check-in.
   Future<void> updateCropHealthScore(
-      String cropId, double score, ProgressStatus status) async {
+    String cropId,
+    double score,
+    ProgressStatus status, {
+    bool syncNow = true,
+  }) async {
     final idx = _crops.indexWhere((c) => c.id == cropId);
     if (idx == -1) return;
     final updated = _crops[idx].copyWith(
@@ -630,7 +664,7 @@ class CropsProvider extends ChangeNotifier {
       lastCheckedAt: DateTime.now(),
       updatedAt: DateTime.now(),
     );
-    await updateCrop(updated);
+    await updateCrop(updated, syncNow: syncNow);
   }
 
   /// Mark a treatment task as completed both remotely (via Supabase) and
@@ -641,6 +675,7 @@ class CropsProvider extends ChangeNotifier {
   Future<TreatmentTaskModel?> markTaskDone(
     String taskId, {
     bool recomputeHealthScore = true,
+    bool syncNow = true,
   }) async {
     final now = DateTime.now();
     try {
@@ -669,7 +704,9 @@ class CropsProvider extends ChangeNotifier {
         await recomputeHealthScoreForCrop(updated.cropId);
       }
       notifyListeners();
-      await _attemptSync();
+      if (syncNow) {
+        await _attemptSync();
+      }
       return updated;
     } catch (e) {
       _error = e.toString();
@@ -678,7 +715,10 @@ class CropsProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> saveProgressUpdate(ProgressUpdateModel update) async {
+  Future<void> saveProgressUpdate(
+    ProgressUpdateModel update, {
+    bool syncNow = true,
+  }) async {
     _error = null;
     await _upsertLocallyAndQueue(
       table: AppConstants.progressUpdatesTable,
@@ -686,6 +726,12 @@ class CropsProvider extends ChangeNotifier {
       localData: update.toMap(),
       remoteData: update.toMap()..['is_deleted'] = update.isDeleted,
     );
+    if (syncNow) {
+      await _attemptSync();
+    }
+  }
+
+  Future<void> flushPendingSync() async {
     await _attemptSync();
   }
 

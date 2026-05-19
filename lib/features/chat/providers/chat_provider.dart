@@ -833,6 +833,19 @@ class ChatProvider extends ChangeNotifier {
       return false;
     }
 
+    // If the response contains diagnosis template markers it is a complete
+    // diagnosis — never block the treatment card even when a secondary
+    // photo-suggestion phrase also appears in the same reply.
+    const diagnosisMarkers = [
+      'what it is:',
+      'immediate action:',
+      'key symptoms:',
+      'treatment:',
+    ];
+    if (diagnosisMarkers.any(normalized.contains)) {
+      return false;
+    }
+
     const phrases = [
       'clearer photo',
       'closer photo',
@@ -1295,14 +1308,28 @@ class ChatProvider extends ChangeNotifier {
 
   String _inferDiseaseName(String aiContent) {
     final normalized = aiContent.toLowerCase();
-    if (_looksHealthyAnswer(normalized)) {
-      return 'Healthy';
-    }
 
+    // Check knowledge base first (exact substring match).
     for (final knowledge in _knowledgeBase) {
       final diseaseName = knowledge.diseaseName.trim();
       if (diseaseName.isNotEmpty &&
           normalized.contains(diseaseName.toLowerCase())) {
+        return diseaseName;
+      }
+    }
+
+    // Keyword-based fallback: all significant words in the disease name must
+    // appear somewhere in the response (handles "powdery mildew" matching
+    // "Squash Powdery Mildew" when the crop context is already known).
+    for (final knowledge in _knowledgeBase) {
+      final diseaseName = knowledge.diseaseName.trim();
+      if (diseaseName.isEmpty) continue;
+      final keywords = diseaseName
+          .toLowerCase()
+          .split(RegExp(r'[\s_\-]+'))
+          .where((w) => w.length > 3)
+          .toList();
+      if (keywords.length >= 2 && keywords.every(normalized.contains)) {
         return diseaseName;
       }
     }
@@ -1328,6 +1355,13 @@ class ChatProvider extends ChangeNotifier {
       if (candidate.isNotEmpty) {
         return candidate;
       }
+    }
+
+    // Only classify as Healthy when no specific disease was found AND the
+    // response genuinely describes a healthy crop — preventing phrases like
+    // "the rest of the plant appears healthy" from overriding a disease name.
+    if (_looksHealthyAnswer(normalized)) {
+      return 'Healthy';
     }
 
     return '';
