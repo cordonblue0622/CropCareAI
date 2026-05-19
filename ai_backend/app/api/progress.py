@@ -58,6 +58,10 @@ async def _assess(
         "ONLY reject the check-in if the current photo is clearly NOT showing the tracked crop at all (e.g., a random selfie, a completely unrelated object, or obviously a different type of plant entirely), "
         "or if it is obviously a screenshot or screen photo of another image. "
         "Accept genuine crop photos even if the crop looks healthy, partially recovered, blurry, at an unusual angle, or the disease is no longer visible — these are all valid progress check-ins. "
+        "DISEASE SCORING RULE: If 'Known condition' names a specific disease (not just the crop name or 'None'), "
+        "and the current check-in photo shows visible disease symptoms (discoloration, lesions, wilting, mold, spots, etc.), "
+        "the health score MUST reflect the active disease burden — score between 20 and 65 for active visible disease. "
+        "Do NOT score above 70 unless the photo clearly shows the disease symptoms have substantially resolved or are absent. "
         "Return ONLY valid JSON with this exact structure: "
         '{"accepted": <true|false>, '
         '"rejection_reason": "<short redo instruction or empty>", '

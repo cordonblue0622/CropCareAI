@@ -49,7 +49,8 @@ Key symptoms:
 Immediate action:
 Treatment:
 Prevention tip:
-4. If the photo is unclear, unrelated, only shows another screen/image, or you need another angle before diagnosing, do NOT use the diagnosis template. Reply briefly in plain text asking for a clearer actual crop photo and stop there.
+4. If the photo is unclear, unrelated, only shows another screen/image, or you need another angle before diagnosing, do NOT use the diagnosis template. Reply briefly in plain text asking for a clearer actual crop photo and stop there. CRITICAL: Once you have committed to a diagnosis using the template format (i.e., you have written the "What it is:" section), you MUST NOT ask for another photo in that same response. A template diagnosis and a photo request must never appear together in one reply.
+4a. For pechay (bok choy): there is no on-device scanner model for pechay, so rely entirely on your GPT vision. If you can see pechay or bok choy leaves in the image, you MUST commit to a diagnosis based on the visible symptoms — even if image quality is imperfect. Do NOT ask for another photo when pechay/bok choy leaves are clearly visible.
 5. For a clearly healthy crop, keep the answer practical and brief. In treatment_actions, give 3 to 5 concrete daily care actions rooted in the knowledge excerpts. Do NOT include "upload another photo" as a treatment action.
 6. Prefer organic/IPM first; if you mention chemicals, add brief safety cautions in the answer body.
 7. Keep under 220 words unless the farmer explicitly asks for more detail.
@@ -588,6 +589,13 @@ class LlmService:
     def _needs_more_input_response(self, text: str) -> bool:
         normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
         if not normalized:
+            return False
+
+        # If the response contains diagnosis template markers it is a complete
+        # diagnosis — never block the treatment card even when a secondary
+        # photo-suggestion phrase also appears in the same reply.
+        diagnosis_markers = ("what it is:", "immediate action:", "key symptoms:", "treatment:")
+        if any(marker in normalized for marker in diagnosis_markers):
             return False
 
         phrases = (
