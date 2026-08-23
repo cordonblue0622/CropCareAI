@@ -52,6 +52,16 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
+    def cors_origin_regex(self) -> str | None:
+        if self.app_env.lower() not in {"development", "test"}:
+            return None
+        return (
+            r"https?://(?:localhost|127\.0\.0\.1|"
+            r"192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+            r"172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(?::\d+)?"
+        )
+
+    @property
     def project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
 

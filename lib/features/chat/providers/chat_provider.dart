@@ -59,7 +59,9 @@ class ChatProvider extends ChangeNotifier {
     try {
       final rows = await _supabase.getDiseaseKnowledge();
       if (rows.isNotEmpty) {
-        _knowledgeBase = rows.map(DiseaseKnowledgeModel.fromMap).toList();
+        _knowledgeBase = _mergeBundledKnowledge(
+          rows.map(DiseaseKnowledgeModel.fromMap).toList(),
+        );
         await _db.upsertRows(
           AppConstants.diseaseKnowledgeTable,
           _knowledgeBase.map((knowledge) => knowledge.toMap()),
@@ -71,7 +73,13 @@ class ChatProvider extends ChangeNotifier {
 
     final cachedRows = await _db.queryDiseaseKnowledge('');
     if (cachedRows.isNotEmpty) {
-      _knowledgeBase = cachedRows.map(DiseaseKnowledgeModel.fromMap).toList();
+      _knowledgeBase = _mergeBundledKnowledge(
+        cachedRows.map(DiseaseKnowledgeModel.fromMap).toList(),
+      );
+      await _db.upsertRows(
+        AppConstants.diseaseKnowledgeTable,
+        _knowledgeBase.map((knowledge) => knowledge.toMap()),
+      );
       notifyListeners();
       return;
     }
@@ -86,6 +94,20 @@ class ChatProvider extends ChangeNotifier {
     }
 
     notifyListeners();
+  }
+
+  List<DiseaseKnowledgeModel> _mergeBundledKnowledge(
+    List<DiseaseKnowledgeModel> records,
+  ) {
+    final knownLabelKeys = records
+        .map((record) => record.labelKey?.trim().toLowerCase() ?? '')
+        .where((labelKey) => labelKey.isNotEmpty)
+        .toSet();
+    final additions = BundledDiseaseKnowledge.records().where((record) {
+      final labelKey = record.labelKey?.trim().toLowerCase() ?? '';
+      return labelKey.isNotEmpty && !knownLabelKeys.contains(labelKey);
+    });
+    return [...records, ...additions];
   }
 
   Future<void> fetchSessions(String userId) async {
@@ -147,19 +169,24 @@ class ChatProvider extends ChangeNotifier {
       _currentMessages = rows.map(ChatMessageModel.fromMap).toList();
     }
 
-    // Restore images from Supabase Storage URLs stored in metadata
+    // Restore images from Supabase Storage URLs stored in metadata.
     for (var i = 0; i < _currentMessages.length; i++) {
-      final url = _currentMessages[i].imageUrl;
-      if (url != null && url.isNotEmpty) {
+      final imageBytesList = <Uint8List>[];
+      for (final url in _currentMessages[i].imageUrls) {
         try {
           final res = await http
               .get(Uri.parse(url))
               .timeout(const Duration(seconds: 15));
           if (res.statusCode == 200) {
-            _currentMessages[i] =
-                _currentMessages[i].copyWith(imageBytes: res.bodyBytes);
+            imageBytesList.add(res.bodyBytes);
           }
         } catch (_) {}
+      }
+      if (imageBytesList.isNotEmpty) {
+        _currentMessages[i] = _currentMessages[i].copyWith(
+          imageBytes: imageBytesList.first,
+          imageBytesList: imageBytesList,
+        );
       }
     }
 
@@ -200,6 +227,7 @@ class ChatProvider extends ChangeNotifier {
     bool hideMessageTextInUi = false,
     DiagnosisModel? attachedDiagnosis,
     List<int>? attachedImageBytes,
+    List<List<int>> attachedImageBytesList = const [],
     String? attachedAudioPath,
     String? attachedVideoPath,
     String? attachedImageMimeType,
@@ -224,8 +252,16 @@ class ChatProvider extends ChangeNotifier {
           m.role == MessageRole.system &&
           m.metadata?['type'] == 'add_crop_suggestion',
     );
-    final hasAttachedImage =
-        attachedImageBytes != null && attachedImageBytes.isNotEmpty;
+    final imageAttachments = attachedImageBytesList
+        .where((bytes) => bytes.isNotEmpty)
+        .map(Uint8List.fromList)
+        .toList(growable: false);
+    if (imageAttachments.isEmpty &&
+        attachedImageBytes != null &&
+        attachedImageBytes.isNotEmpty) {
+      imageAttachments.add(Uint8List.fromList(attachedImageBytes));
+    }
+    final hasAttachedImage = imageAttachments.isNotEmpty;
     final resolvedHintCropType = _resolveConversationCropHint(
       attachedDiagnosis: attachedDiagnosis,
       explicitHint: hintCropType,
@@ -241,20 +277,29 @@ class ChatProvider extends ChangeNotifier {
 
     // Upload image to Supabase Storage so it survives history loads
     final msgId = const Uuid().v4();
-    String? uploadedImageUrl;
+    final uploadedImageUrls = <String>[];
     if (online && hasAttachedImage) {
-      uploadedImageUrl = await _supabase.uploadChatImage(
-        userId: userId,
-        messageId: msgId,
-        bytes: attachedImageBytes,
-      );
+      for (var index = 0; index < imageAttachments.length; index++) {
+        final uploadedImageUrl = await _supabase.uploadChatImage(
+          userId: userId,
+          messageId: '$msgId-$index',
+          bytes: imageAttachments[index],
+        );
+        if (uploadedImageUrl != null) uploadedImageUrls.add(uploadedImageUrl);
+      }
     }
-    final localImageReference =
-        hasAttachedImage ? buildInlineImageDataUrl(attachedImageBytes) : null;
-    final persistedImageReference = uploadedImageUrl ?? localImageReference;
+    final localImageReferences =
+        imageAttachments.map(buildInlineImageDataUrl).toList(growable: false);
+    final persistedImageReferences =
+        uploadedImageUrls.isNotEmpty ? uploadedImageUrls : localImageReferences;
+    final persistedImageReference = persistedImageReferences.isEmpty
+        ? null
+        : persistedImageReferences.first;
     final normalizedVideoPath = attachedVideoPath?.trim();
     final userMetadata = <String, dynamic>{
       if (persistedImageReference != null) 'image_url': persistedImageReference,
+      if (persistedImageReferences.isNotEmpty)
+        'image_urls': persistedImageReferences,
       if (normalizedVideoPath != null && normalizedVideoPath.isNotEmpty)
         'video_url': normalizedVideoPath,
       if (normalizedVideoPath != null &&
@@ -273,10 +318,14 @@ class ChatProvider extends ChangeNotifier {
       role: MessageRole.user,
       content: content,
       createdAt: DateTime.now(),
-        metadata: userMetadata.isEmpty ? null : userMetadata,
+      metadata: userMetadata.isEmpty ? null : userMetadata,
       imageBytes: hasAttachedImage &&
               (normalizedVideoPath == null || normalizedVideoPath.isEmpty)
-          ? Uint8List.fromList(attachedImageBytes)
+          ? imageAttachments.first
+          : null,
+      imageBytesList: hasAttachedImage &&
+              (normalizedVideoPath == null || normalizedVideoPath.isEmpty)
+          ? imageAttachments
           : null,
       isVideoFrame: isVideoFrame &&
           (normalizedVideoPath == null || normalizedVideoPath.isEmpty),
@@ -314,7 +363,8 @@ class ChatProvider extends ChangeNotifier {
               ? attachedDiagnosis!.cropId
               : _currentSession?.cropId,
           diagnosis: attachedDiagnosis,
-          imageBytes: attachedImageBytes,
+          imageBytes: imageAttachments.isEmpty ? null : imageAttachments.first,
+          imageBytesList: imageAttachments,
           imageMimeType: attachedImageMimeType,
           conversationHistory: conversationHistory,
           hintCropType: resolvedHintCropType,
@@ -348,8 +398,10 @@ class ChatProvider extends ChangeNotifier {
                   );
         final requiresMoreInput =
             _needsAdditionalInputResponse(backendResponse.answer);
-        final backendAllowsPlan =
-            backendResponse.showTreatmentUi && !requiresMoreInput;
+        final attachedDiagnosisCanShowPlan = attachedDiagnosis != null &&
+            _supportedTreatmentCardCrops.contains(effectiveCropType);
+        final backendAllowsPlan = !requiresMoreInput &&
+            (backendResponse.showTreatmentUi || attachedDiagnosisCanShowPlan);
         final normalizedActions = backendAllowsPlan
             ? (backendResponse.recommendedActions.isNotEmpty
                 ? backendResponse.recommendedActions
@@ -359,8 +411,17 @@ class ChatProvider extends ChangeNotifier {
                     inferredDiseaseName: inferredDiseaseName,
                   ))
             : const <String>[];
+        final verifiedFallbackActions = backendAllowsPlan
+            ? _fallbackRecommendedActions(
+                attachedDiagnosis: attachedDiagnosis,
+                inferredDiseaseName: inferredDiseaseName,
+                inferredCropType: effectiveCropType,
+              )
+            : const <String>[];
         final effectiveActions = _resolveRecommendedActions(
-          recommendedActions: normalizedActions,
+          recommendedActions: normalizedActions.isNotEmpty
+              ? normalizedActions
+              : verifiedFallbackActions,
           inferredDiseaseName: inferredDiseaseName,
           inferredCropType: effectiveCropType,
           allowHealthyFallback: backendAllowsPlan,
@@ -370,8 +431,8 @@ class ChatProvider extends ChangeNotifier {
         // — they are rendered as an interactive checklist in the UI.
         aiContent = _formatBackendResponse(backendResponse);
         final showTreatmentCard = backendAllowsPlan &&
-          backendResponse.inAppCropScope &&
-          !hasShownAddCropSuggestion &&
+            backendResponse.inAppCropScope &&
+            !hasShownAddCropSuggestion &&
             _shouldShowTreatmentCard(
               attachedDiagnosis: attachedDiagnosis,
               recommendedActions: effectiveActions,
@@ -394,7 +455,8 @@ class ChatProvider extends ChangeNotifier {
             inferredDiseaseName: inferredDiseaseName,
             aiContent: backendResponse.answer,
           ).value,
-          'in_app_crop_scope': backendResponse.inAppCropScope,
+          'in_app_crop_scope':
+              backendResponse.inAppCropScope || attachedDiagnosis != null,
           'show_treatment_card': showTreatmentCard,
           if (showTreatmentCard) 'plan_title': planTitle,
         };
@@ -548,7 +610,7 @@ class ChatProvider extends ChangeNotifier {
           'type': 'add_crop_suggestion',
           'disease_name': inferredDiseaseName,
           'label_key': inferredLabelKey,
-            'severity': aiMetadata['severity'] ??
+          'severity': aiMetadata['severity'] ??
               attachedDiagnosis?.severity.value ??
               'moderate',
           'diagnosis_mode': preferAssistantDiagnosis
@@ -659,7 +721,8 @@ class ChatProvider extends ChangeNotifier {
       diseaseName: '',
       aiContent: userMessage,
     );
-    final effectiveHint = normalizedHint.isNotEmpty ? normalizedHint : inferredHint;
+    final effectiveHint =
+        normalizedHint.isNotEmpty ? normalizedHint : inferredHint;
 
     // If there's an attached diagnosis, provide treatment advice
     if (attachedDiagnosis != null) {
@@ -776,13 +839,13 @@ class ChatProvider extends ChangeNotifier {
       hintCropType: hintCropType,
     );
     final requiresSignIn = error is AiBackendHttpException &&
-      (error.statusCode == 401 || error.statusCode == 403);
+        (error.statusCode == 401 || error.statusCode == 403);
     final detail = kDebugMode && error != null
         ? '\n\nDebug: ${_aiBackend.baseUrl} failed with $error'
         : '';
     final intro = requiresSignIn
-      ? 'Online AI requires a signed-in account right now, so I am using offline crop guidance only.'
-      : 'Online AI is unavailable right now, so I am using offline crop guidance only.';
+        ? 'Online AI requires a signed-in account right now, so I am using offline crop guidance only.'
+        : 'Online AI is unavailable right now, so I am using offline crop guidance only.';
     return '$intro\n\n'
         '$fallback$detail';
   }
@@ -882,7 +945,8 @@ class ChatProvider extends ChangeNotifier {
     required String hintCropType,
   }) {
     final topGuess = _extractTopGuessFromPrompt(userMessage);
-    final cropLabel = hintCropType.isNotEmpty ? hintCropType : 'the selected crop';
+    final cropLabel =
+        hintCropType.isNotEmpty ? hintCropType : 'the selected crop';
 
     if (topGuess != null) {
       return 'I could not confidently confirm $cropLabel from this image offline.\n\n'
@@ -969,9 +1033,9 @@ class ChatProvider extends ChangeNotifier {
         : 'Tell me the product name or active ingredient and I will compare it against the offline crop guidance I have for $cropType.';
 
     return 'I can still help with fertilizers and crop products for your $cropType crop offline.\n\n'
-      'Share the product name, fertilizer grade, or active ingredient and I will compare it against the crop guidance I already have.\n\n'
-      'Examples from my $cropType knowledge base:\n$examplesText\n\n'
-      'Please still verify the label, dosage, and pre-harvest interval before applying it.';
+        'Share the product name, fertilizer grade, or active ingredient and I will compare it against the crop guidance I already have.\n\n'
+        'Examples from my $cropType knowledge base:\n$examplesText\n\n'
+        'Please still verify the label, dosage, and pre-harvest interval before applying it.';
   }
 
   bool _looksLikeProductQuestion(String text) {
@@ -1139,7 +1203,8 @@ class ChatProvider extends ChangeNotifier {
     _currentSession = updated;
 
     final hasVisibleInput = _hasVisibleUserInput(_currentMessages);
-    final existingIndex = _sessions.indexWhere((session) => session.id == updated.id);
+    final existingIndex =
+        _sessions.indexWhere((session) => session.id == updated.id);
     if (existingIndex != -1) {
       _sessions.removeAt(existingIndex);
     }
@@ -1212,13 +1277,13 @@ class ChatProvider extends ChangeNotifier {
     required Map<String, dynamic>? aiMetadata,
     required String? hintCropType,
   }) {
-    final diseaseName =
-        (aiMetadata?['disease_name'] as String? ?? attachedDiagnosis?.diseaseName ?? '')
-            .trim();
-    final cropType =
-        (aiMetadata?['crop_type'] as String? ?? hintCropType ?? '')
-            .trim()
-            .toLowerCase();
+    final diseaseName = (aiMetadata?['disease_name'] as String? ??
+            attachedDiagnosis?.diseaseName ??
+            '')
+        .trim();
+    final cropType = (aiMetadata?['crop_type'] as String? ?? hintCropType ?? '')
+        .trim()
+        .toLowerCase();
 
     if (diseaseName.isNotEmpty && cropType.isNotEmpty) {
       final cropLabel = _titleCaseWords(cropType);
@@ -1253,7 +1318,8 @@ class ChatProvider extends ChangeNotifier {
       return 'Crop consultation';
     }
 
-    final words = normalized.split(' ').where((word) => word.isNotEmpty).toList();
+    final words =
+        normalized.split(' ').where((word) => word.isNotEmpty).toList();
     final summary = words.take(6).join(' ');
     return _titleCaseWords(summary);
   }
@@ -1262,7 +1328,8 @@ class ChatProvider extends ChangeNotifier {
     return value
         .split(RegExp(r'\s+'))
         .where((part) => part.isNotEmpty)
-        .map((part) => '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}')
+        .map((part) =>
+            '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}')
         .join(' ');
   }
 
@@ -1392,13 +1459,15 @@ class ChatProvider extends ChangeNotifier {
     }
 
     value = value.replaceAll(RegExp(r'[\.,;:!?].*$'), '').trim();
-    value = value.replaceAll(
-      RegExp(
-        r'\b(on|in|with|because|from|caused by|which|that|for)\b.*$',
-        caseSensitive: false,
-      ),
-      '',
-    ).trim();
+    value = value
+        .replaceAll(
+          RegExp(
+            r'\b(on|in|with|because|from|caused by|which|that|for)\b.*$',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .trim();
     value = value.replaceAll(RegExp(r'\s+'), ' ');
 
     if (value.length < 3 || value.split(' ').length > 6) {

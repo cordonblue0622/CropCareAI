@@ -47,11 +47,11 @@ class NotificationsProvider extends ChangeNotifier {
     _isLoading = false;
     notifyListeners();
 
-    // Schedule browser notifications for today's pending tasks.
-    // ignore: discarded_futures
-    NotificationService.instance.requestPermission();
-    // ignore: discarded_futures
-    NotificationService.instance.scheduleForTasks(_upcomingTasks);
+    final notificationsAllowed =
+        await NotificationService.instance.requestPermission();
+    if (notificationsAllowed) {
+      await NotificationService.instance.scheduleForTasks(_upcomingTasks);
+    }
   }
 
   Future<void> _fetchNotifications(String userId) async {
@@ -63,8 +63,9 @@ class NotificationsProvider extends ChangeNotifier {
         _notifications.map((notification) => notification.toMap()),
       );
     } catch (_) {
-      final rows =
-          await _db.queryByUserId(AppConstants.notificationsTable, userId, includeDeleted: true);
+      final rows = await _db.queryByUserId(
+          AppConstants.notificationsTable, userId,
+          includeDeleted: true);
       _notifications = rows.map(NotificationModel.fromMap).toList();
     }
   }
@@ -79,7 +80,8 @@ class NotificationsProvider extends ChangeNotifier {
       );
       _bucketTasks(allTasks);
     } catch (_) {
-      final rows = await _db.queryByUserId(AppConstants.treatmentTasksTable, userId);
+      final rows =
+          await _db.queryByUserId(AppConstants.treatmentTasksTable, userId);
       final allTasks = rows.map(TreatmentTaskModel.fromMap).toList();
       _bucketTasks(allTasks);
     }
@@ -106,11 +108,11 @@ class NotificationsProvider extends ChangeNotifier {
         .toList();
 
     _tomorrowTasks = allTasks
-      .where((task) =>
-        !task.dueAt.isBefore(todayEnd) &&
-        task.dueAt.isBefore(tomorrowEnd) &&
-        task.status == TaskStatus.pending)
-      .toList();
+        .where((task) =>
+            !task.dueAt.isBefore(todayEnd) &&
+            task.dueAt.isBefore(tomorrowEnd) &&
+            task.status == TaskStatus.pending)
+        .toList();
 
     _upcomingTasks = allTasks
         .where((task) =>
@@ -149,23 +151,27 @@ class NotificationsProvider extends ChangeNotifier {
       await _supabase.markTreatmentTaskCompleted(taskId, completedAt: now);
 
       TreatmentTaskModel? completedTask;
-      final todayIdx = _todayTasks.indexWhere((task) => task.id == taskId);
-      if (todayIdx != -1) {
-        completedTask = _todayTasks.removeAt(todayIdx).copyWith(
+      TreatmentTaskModel? removeFrom(List<TreatmentTaskModel> tasks) {
+        final index = tasks.indexWhere((task) => task.id == taskId);
+        if (index == -1) return null;
+        return tasks.removeAt(index).copyWith(
               status: TaskStatus.completed,
               completedAt: now,
               updatedAt: now,
             );
       }
 
-      final missedIdx = _missedTasks.indexWhere((task) => task.id == taskId);
-      if (missedIdx != -1) {
-        completedTask = _missedTasks.removeAt(missedIdx).copyWith(
-              status: TaskStatus.completed,
-              completedAt: now,
-              updatedAt: now,
-            );
-      }
+      completedTask = removeFrom(_todayTasks) ??
+          removeFrom(_missedTasks) ??
+          removeFrom(_tomorrowTasks) ??
+          removeFrom(_upcomingTasks);
+
+      // The same task can appear in both a day bucket and Upcoming. Remove
+      // it from every remaining bucket before rebuilding reminders.
+      _todayTasks.removeWhere((task) => task.id == taskId);
+      _missedTasks.removeWhere((task) => task.id == taskId);
+      _tomorrowTasks.removeWhere((task) => task.id == taskId);
+      _upcomingTasks.removeWhere((task) => task.id == taskId);
 
       if (completedTask != null) {
         await _db.upsertRow(
@@ -175,8 +181,7 @@ class NotificationsProvider extends ChangeNotifier {
       }
 
       // Reschedule so the completed task no longer fires reminders.
-      // ignore: discarded_futures
-      NotificationService.instance.scheduleForTasks(_upcomingTasks);
+      await NotificationService.instance.scheduleForTasks(_upcomingTasks);
       notifyListeners();
 
       return completedTask?.cropId;

@@ -84,6 +84,7 @@ class _FakeAiBackendService implements AiBackendService {
     int daysSinceTreatment = 0,
     List<int>? imageBytes,
     String? imageMimeType,
+    String? imageDataUrl,
     String? previousImageReference,
     String? previousAssessment,
     String? previousProgressStatus,

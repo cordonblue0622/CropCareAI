@@ -10,13 +10,31 @@ class ChatMessageModel {
   final String content;
   final Map<String, dynamic>? metadata;
   final DateTime createdAt;
+
   /// In-memory only — not persisted to the database.
   final Uint8List? imageBytes;
+
+  /// In-memory only — all images attached to this message.
+  final List<Uint8List>? imageBytesList;
+
   /// In-memory only — marks this message's image as a video frame capture.
   final bool isVideoFrame;
 
   /// URL of the image stored in Supabase Storage. Persisted via metadata.
   String? get imageUrl => metadata?['image_url'] as String?;
+
+  /// URLs of all images stored in Supabase Storage. Persisted via metadata.
+  List<String> get imageUrls {
+    final rawUrls = metadata?['image_urls'];
+    if (rawUrls is List) {
+      return rawUrls
+          .map((url) => url.toString().trim())
+          .where((url) => url.isNotEmpty)
+          .toList(growable: false);
+    }
+    final url = imageUrl?.trim();
+    return url == null || url.isEmpty ? const [] : [url];
+  }
 
   const ChatMessageModel({
     required this.id,
@@ -27,6 +45,7 @@ class ChatMessageModel {
     this.metadata,
     required this.createdAt,
     this.imageBytes,
+    this.imageBytesList,
     this.isVideoFrame = false,
   });
 
@@ -39,6 +58,7 @@ class ChatMessageModel {
     Map<String, dynamic>? metadata,
     DateTime? createdAt,
     Uint8List? imageBytes,
+    List<Uint8List>? imageBytesList,
     bool? isVideoFrame,
   }) {
     return ChatMessageModel(
@@ -50,6 +70,7 @@ class ChatMessageModel {
       metadata: metadata ?? this.metadata,
       createdAt: createdAt ?? this.createdAt,
       imageBytes: imageBytes ?? this.imageBytes,
+      imageBytesList: imageBytesList ?? this.imageBytesList,
       isVideoFrame: isVideoFrame ?? this.isVideoFrame,
     );
   }

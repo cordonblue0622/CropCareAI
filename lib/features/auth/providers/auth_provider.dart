@@ -17,6 +17,7 @@ class AuthProvider extends ChangeNotifier {
   String? _errorMessage;
   String? _infoMessage;
   StreamSubscription<AuthState>? _authStateSubscription;
+  bool _passwordRecoveryRequested = false;
 
   AuthProvider({required this.authRepository}) {
     _init();
@@ -29,6 +30,7 @@ class AuthProvider extends ChangeNotifier {
   bool get isLoading => _status == AuthStatus.loading;
   bool get isAuthenticated => _status == AuthStatus.authenticated;
   bool get isResolved => _status != AuthStatus.unknown;
+  bool get passwordRecoveryRequested => _passwordRecoveryRequested;
 
   Future<void> _restoreSession() async {
     _status = AuthStatus.loading;
@@ -39,12 +41,14 @@ class AuthProvider extends ChangeNotifier {
           ? await authRepository.loadCurrentUser()
           : null;
       _currentUser = restoredUser ?? authRepository.currentUser;
-      _status =
-          _currentUser != null ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+      _status = _currentUser != null
+          ? AuthStatus.authenticated
+          : AuthStatus.unauthenticated;
     } catch (_) {
       _currentUser = authRepository.currentUser;
-      _status =
-          _currentUser != null ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+      _status = _currentUser != null
+          ? AuthStatus.authenticated
+          : AuthStatus.unauthenticated;
     }
 
     notifyListeners();
@@ -54,16 +58,24 @@ class AuthProvider extends ChangeNotifier {
 
   void _init() {
     // Listen to Supabase auth state changes
-    _authStateSubscription = authRepository.authStateChanges.listen((AuthState state) async {
-      if (state.event == AuthChangeEvent.signedIn && state.session != null) {
+    _authStateSubscription =
+        authRepository.authStateChanges.listen((AuthState state) async {
+      if (state.event == AuthChangeEvent.passwordRecovery) {
+        _currentUser = null;
+        _status = AuthStatus.unauthenticated;
+        _passwordRecoveryRequested = true;
+        _errorMessage = null;
+      } else if (state.event == AuthChangeEvent.signedIn &&
+          state.session != null) {
         try {
-          _currentUser =
-              await authRepository.loadCurrentUser() ?? authRepository.currentUser;
+          _currentUser = await authRepository.loadCurrentUser() ??
+              authRepository.currentUser;
         } catch (_) {
           _currentUser = authRepository.currentUser;
         }
-        _status =
-            _currentUser != null ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+        _status = _currentUser != null
+            ? AuthStatus.authenticated
+            : AuthStatus.unauthenticated;
       } else if (state.event == AuthChangeEvent.signedOut) {
         _currentUser = null;
         _status = AuthStatus.unauthenticated;
@@ -97,6 +109,7 @@ class AuthProvider extends ChangeNotifier {
       email: email,
       password: password,
       fullName: fullName,
+      emailRedirectTo: _emailConfirmationRedirectUrl,
       barangay: barangay,
       municipality: municipality,
       province: province,
@@ -252,10 +265,45 @@ class AuthProvider extends ChangeNotifier {
   // ─── Password Reset ───────────────────────────────────────────────────────
 
   Future<bool> sendPasswordReset(String email) async {
+    _setLoading();
     try {
-      await authRepository.sendPasswordReset(email);
+      await authRepository.sendPasswordReset(
+        email,
+        redirectTo: _passwordResetRedirectUrl,
+      );
+      _status = AuthStatus.unauthenticated;
+      _errorMessage = null;
+      _infoMessage = 'Check your email for the password reset link.';
+      notifyListeners();
       return true;
+    } on AuthException catch (error) {
+      _setError(error.message);
+      return false;
     } catch (_) {
+      _setError('Could not send the password reset email. Please try again.');
+      return false;
+    }
+  }
+
+  Future<bool> updatePassword(String password) async {
+    _setLoading();
+    try {
+      await authRepository.updatePassword(password);
+      _currentUser =
+          await authRepository.loadCurrentUser() ?? authRepository.currentUser;
+      _status = _currentUser != null
+          ? AuthStatus.authenticated
+          : AuthStatus.unauthenticated;
+      _passwordRecoveryRequested = false;
+      _errorMessage = null;
+      _infoMessage = 'Password updated successfully.';
+      notifyListeners();
+      return true;
+    } on AuthException catch (error) {
+      _setError(error.message);
+      return false;
+    } catch (_) {
+      _setError('Could not update the password. Please request a new link.');
       return false;
     }
   }
@@ -267,6 +315,12 @@ class AuthProvider extends ChangeNotifier {
     final path = uri.path.isEmpty ? '/' : uri.path;
     return uri.replace(path: path, query: null, fragment: null).toString();
   }
+
+  String get _passwordResetRedirectUrl =>
+      kIsWeb ? _webRedirectUrl : AppConstants.passwordResetRedirectUrl;
+
+  String get _emailConfirmationRedirectUrl =>
+      kIsWeb ? _webRedirectUrl : AppConstants.emailConfirmationRedirectUrl;
 
   void _setLoading() {
     _status = AuthStatus.loading;
@@ -314,6 +368,11 @@ class AuthProvider extends ChangeNotifier {
   void clearError() {
     _errorMessage = null;
     _infoMessage = null;
+    notifyListeners();
+  }
+
+  void clearPasswordRecoveryRequest() {
+    _passwordRecoveryRequested = false;
     notifyListeners();
   }
 }

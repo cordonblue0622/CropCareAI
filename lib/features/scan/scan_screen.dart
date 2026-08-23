@@ -110,8 +110,10 @@ class _ScanScreenState extends State<ScanScreen> {
       await _openPreview(file);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Capture failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Could not capture the photo. Please try again.')),
+        );
       }
     }
   }
@@ -132,7 +134,8 @@ class _ScanScreenState extends State<ScanScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not start recording: $e')),
+          const SnackBar(
+              content: Text('Could not start recording. Please try again.')),
         );
       }
       return;
@@ -162,7 +165,9 @@ class _ScanScreenState extends State<ScanScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not finalize recording: $e')),
+          const SnackBar(
+              content:
+                  Text('Could not finish the recording. Please try again.')),
         );
       }
     }
@@ -200,7 +205,8 @@ class _ScanScreenState extends State<ScanScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not save video: $e')),
+          const SnackBar(
+              content: Text('Could not save the video. Please try again.')),
         );
       }
       return null;
@@ -240,7 +246,8 @@ class _ScanScreenState extends State<ScanScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Camera capture failed: $e')),
+          const SnackBar(
+              content: Text('Could not capture the photo. Please try again.')),
         );
       }
     }
@@ -270,7 +277,8 @@ class _ScanScreenState extends State<ScanScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Unable to open preview: $e')),
+          const SnackBar(
+              content: Text('Could not open the preview. Please try again.')),
         );
       }
     }
@@ -298,13 +306,13 @@ class _ScanScreenState extends State<ScanScreen> {
                     const SizedBox(height: 16),
                     Text(_error!,
                         textAlign: TextAlign.center,
-                        style:
-                            const TextStyle(color: Colors.white70, fontSize: 14)),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 14)),
                     const SizedBox(height: 20),
                     ElevatedButton.icon(
                       onPressed: _pickFallbackImage,
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary),
+                          backgroundColor: AppColors.primary),
                       icon: const Icon(
                         kIsWeb ? Icons.upload_file : Icons.photo_camera,
                         color: Colors.white,
@@ -320,7 +328,8 @@ class _ScanScreenState extends State<ScanScreen> {
                         onPressed: _pickFromGallery,
                         style: ElevatedButton.styleFrom(
                             backgroundColor: AppColors.primary),
-                        icon: const Icon(Icons.photo_library, color: Colors.white),
+                        icon: const Icon(Icons.photo_library,
+                            color: Colors.white),
                         label: const Text('Upload from Gallery',
                             style: TextStyle(color: Colors.white)),
                       ),
@@ -346,8 +355,8 @@ class _ScanScreenState extends State<ScanScreen> {
               right: 0,
               child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 7),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                   decoration: BoxDecoration(
                     color: Colors.black.withOpacity(0.65),
                     borderRadius: BorderRadius.circular(20),
@@ -389,8 +398,8 @@ class _ScanScreenState extends State<ScanScreen> {
                       color: Colors.black38,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: const Icon(Icons.close,
-                        color: Colors.white, size: 20),
+                    child:
+                        const Icon(Icons.close, color: Colors.white, size: 20),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -401,8 +410,8 @@ class _ScanScreenState extends State<ScanScreen> {
                           fontWeight: FontWeight.w800,
                           fontSize: 16)),
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 3),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
                         color: AppColors.primary,
                         borderRadius: BorderRadius.circular(4)),
@@ -416,12 +425,15 @@ class _ScanScreenState extends State<ScanScreen> {
                 const Spacer(),
                 GestureDetector(
                   onTap: () async {
-                    if (_cameras != null && _cameras!.length > 1 && _controller != null) {
+                    if (_cameras != null &&
+                        _cameras!.length > 1 &&
+                        _controller != null) {
                       final current = _controller!.description;
                       final next = _cameras!.firstWhere(
                           (c) => c.lensDirection != current.lensDirection,
                           orElse: () => current);
-                      _controller = CameraController(next, ResolutionPreset.high);
+                      _controller =
+                          CameraController(next, ResolutionPreset.high);
                       await _controller!.initialize();
                       if (mounted) setState(() {});
                     }
@@ -451,14 +463,14 @@ class _ScanScreenState extends State<ScanScreen> {
               if (!_initializing && _error == null)
                 Container(
                   margin: const EdgeInsets.symmetric(horizontal: 40),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   decoration: BoxDecoration(
                     color: Colors.black45,
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: const Text(
-                    'Center the affected plant area within the frame',
+                    'Frame the whole affected leaf. Avoid zoomed-in or cropped captures.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.white70, fontSize: 12),
                   ),
@@ -531,19 +543,35 @@ class _CornerPainter extends CustomPainter {
       ..color = AppColors.primary
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
-    const d = 28.0;   // corner arm length
+    const d = 28.0; // corner arm length
     const hPad = 72.0; // horizontal inset — narrows the frame
     const vPadTop = 100.0; // top inset — clears the top bar
     const vPadBottom = 160.0; // bottom inset — clears the button row
     final corners = [
       // top-left
-      [const Offset(hPad, vPadTop + d), const Offset(hPad, vPadTop), const Offset(hPad + d, vPadTop)],
+      [
+        const Offset(hPad, vPadTop + d),
+        const Offset(hPad, vPadTop),
+        const Offset(hPad + d, vPadTop)
+      ],
       // top-right
-      [Offset(size.width - hPad - d, vPadTop), Offset(size.width - hPad, vPadTop), Offset(size.width - hPad, vPadTop + d)],
+      [
+        Offset(size.width - hPad - d, vPadTop),
+        Offset(size.width - hPad, vPadTop),
+        Offset(size.width - hPad, vPadTop + d)
+      ],
       // bottom-left
-      [Offset(hPad, size.height - vPadBottom - d), Offset(hPad, size.height - vPadBottom), Offset(hPad + d, size.height - vPadBottom)],
+      [
+        Offset(hPad, size.height - vPadBottom - d),
+        Offset(hPad, size.height - vPadBottom),
+        Offset(hPad + d, size.height - vPadBottom)
+      ],
       // bottom-right
-      [Offset(size.width - hPad - d, size.height - vPadBottom), Offset(size.width - hPad, size.height - vPadBottom), Offset(size.width - hPad, size.height - vPadBottom - d)],
+      [
+        Offset(size.width - hPad - d, size.height - vPadBottom),
+        Offset(size.width - hPad, size.height - vPadBottom),
+        Offset(size.width - hPad, size.height - vPadBottom - d)
+      ],
     ];
     for (final pts in corners) {
       final path = Path()
@@ -586,7 +614,8 @@ class _ControlBtn extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         Text(label,
-            style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+            style: TextStyle(
+                color: color, fontSize: 11, fontWeight: FontWeight.w600)),
       ]),
     );
   }

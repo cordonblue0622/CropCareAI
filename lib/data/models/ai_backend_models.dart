@@ -1,10 +1,14 @@
 class AiBackendProgressResponse {
+  final bool accepted;
+  final String? rejectionReason;
   final double healthScore;
   final String progressStatus;
   final String assessment;
   final List<String> nextSteps;
 
   const AiBackendProgressResponse({
+    required this.accepted,
+    required this.rejectionReason,
     required this.healthScore,
     required this.progressStatus,
     required this.assessment,
@@ -12,7 +16,12 @@ class AiBackendProgressResponse {
   });
 
   factory AiBackendProgressResponse.fromMap(Map<String, dynamic> map) {
+    final rejectionReason = (map['rejection_reason'] as String?)?.trim();
     return AiBackendProgressResponse(
+      accepted: (map['accepted'] as Object?) != false &&
+          (map['accepted'] as Object?) != 0,
+      rejectionReason:
+          rejectionReason == null || rejectionReason.isEmpty ? null : rejectionReason,
       healthScore: (map['health_score'] as num?)?.toDouble() ?? 50.0,
       progressStatus: map['progress_status'] as String? ?? 'stable',
       assessment: map['assessment'] as String? ?? '',

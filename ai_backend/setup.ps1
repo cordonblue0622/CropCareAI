@@ -93,8 +93,7 @@ Write-Host 'Installing backend dependencies...' -ForegroundColor Green
 & $venvPython -m pip install -r requirements.txt
 
 if (-not (Test-Path '.env')) {
-    Copy-Item '.env.example' '.env'
-    Write-Host 'Created .env from .env.example.' -ForegroundColor Green
+    Write-Host 'WARNING: .env file not found. Please create it with your keys before running the backend.' -ForegroundColor Yellow
 }
 else {
     Write-Host '.env already exists. Keeping current values.' -ForegroundColor Green

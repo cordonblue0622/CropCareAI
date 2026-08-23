@@ -29,16 +29,15 @@ async def _assess(
     prev_score = payload.current_health_score or 50.0
 
     if not api_key:
-        boost = min(10.0, len(payload.completed_tasks) * 2.5)
         return ProgressCheckInResponse(
             accepted=True,
             rejection_reason=None,
-            health_score=round(min(95.0, prev_score + boost), 1),
-            progress_status="stable",
+            health_score=prev_score,
+            progress_status="insufficient_data",
             assessment=(
-                "AI model unavailable — score estimated from completed tasks."
+                "AI analysis is unavailable. Your photo is saved and will be reassessed when the service is back online."
             ),
-            next_steps=["Continue your treatment plan", "Re-scan in 2–3 days"],
+            next_steps=["Keep following your treatment plan"],
         )
 
     from openai import OpenAI
@@ -143,8 +142,11 @@ async def _assess(
         return ProgressCheckInResponse(
             accepted=True,
             rejection_reason=None,
-            health_score=round(min(95.0, prev_score + len(payload.completed_tasks) * 2.0), 1),
-            progress_status="stable",
-            assessment=f"AI unavailable: {str(exc)[:80]}. Score estimated from tasks.",
-            next_steps=["Continue treatment", "Try scanning again in 2 days"],
+            health_score=prev_score,
+            progress_status="insufficient_data",
+            assessment=(
+                f"AI analysis is temporarily unavailable: {str(exc)[:80]}. "
+                "Your photo is saved and will be reassessed automatically."
+            ),
+            next_steps=["Continue treatment"],
         )

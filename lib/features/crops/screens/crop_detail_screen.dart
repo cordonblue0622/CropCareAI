@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 
 import '../../../core/constants/app_enums.dart';
 import '../../../core/theme/app_colors.dart';
@@ -25,6 +26,7 @@ import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../services/health_score_service.dart';
 import '../../../services/connectivity_service.dart';
+import '../../../services/speech_recognition_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../chat/screens/chat_screen.dart';
 import '../../home/home_screen.dart';
@@ -74,6 +76,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       HealthScoreService.compute14DayCurve(
         tasks: _tasks,
         diagnoses: _diagnoses,
+        progressUpdates: _progress,
         now: DateTime.now(),
       );
 
@@ -251,7 +254,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       });
       // Re-analyse any offline check-ins that are still pending GPT analysis.
       unawaited(_analyzePendingCheckIns());
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('[CropDetail] _loadData failed: $e\n$st');
       if (!mounted) return;
       setState(() => _loading = false);
     }
@@ -287,10 +291,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       try {
         final aiResponse = await aiBackend.assessCropHealth(
           cropType: _crop.cropType.name,
-          diseaseName:
-              update.detectedDiseaseName?.trim().isNotEmpty == true
-                  ? update.detectedDiseaseName!
-                  : _crop.cropName,
+          diseaseName: update.detectedDiseaseName?.trim().isNotEmpty == true
+              ? update.detectedDiseaseName!
+              : _crop.cropName,
           imageBytes: imageBytes.toList(),
           imageMimeType: 'image/jpeg',
           previousAssessment: update.note,
@@ -457,8 +460,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           update.treatmentId != treatmentId) {
         continue;
       }
-      final hasUsefulContext =
-          (update.imageUrl?.trim().isNotEmpty ?? false) ||
+      final hasUsefulContext = (update.imageUrl?.trim().isNotEmpty ?? false) ||
           (update.note?.trim().isNotEmpty ?? false) ||
           update.healthScore != null;
       if (hasUsefulContext) {
@@ -468,7 +470,32 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     return null;
   }
 
-  Future<void> _showCheckInSheetForTask(TreatmentTaskModel task) async {
+  Future<void> _completeDailyTask(TreatmentTaskModel task) async {
+    final completedTask = await context.read<CropsProvider>().markTaskDone(
+          task.id,
+          recomputeHealthScore: false,
+          syncNow: false,
+        );
+    if (completedTask == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _tasks = _tasks
+          .map((currentTask) =>
+              currentTask.id == completedTask.id ? completedTask : currentTask)
+          .toList();
+    });
+    unawaited(context.read<CropsProvider>().flushPendingSync());
+  }
+
+  Future<void> _showDailyCheckIn(
+    List<TreatmentTaskModel> checkedTasks,
+  ) async {
+    if (checkedTasks.isEmpty) {
+      return;
+    }
+    final task = checkedTasks.first;
     final cropsProvider = context.read<CropsProvider>();
     final activeTreatment = _treatmentForTask(task);
     final previousUpdate = _latestProgressUpdateForTask(task);
@@ -482,7 +509,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       builder: (_) => _CheckInSheet(
         crop: _crop,
         allTasks: _tasks,
-        checkedTasks: [task],
+        checkedTasks: checkedTasks,
         activeTreatment: _treatmentForTask(task),
         latestDiagnosis: _diagnosisForTask(task),
         previousUpdate: previousUpdate,
@@ -490,7 +517,6 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           submittedScore = newScore;
           submittedStatus = newStatus;
           submittedUpdate = update;
-          final completedAt = update.createdAt;
           await cropsProvider.saveProgressUpdate(update, syncNow: false);
           await cropsProvider.updateCropHealthScore(
             _crop.id,
@@ -503,27 +529,21 @@ class _CropDetailScreenState extends State<CropDetailScreen>
             _crop = _crop.copyWith(
               latestHealthScore: newScore,
               latestProgressStatus: newStatus,
-              lastCheckedAt: completedAt,
+              lastCheckedAt: update.createdAt,
             );
-            _tasks = _tasks
-                .map((currentTask) => currentTask.id == task.id
-                    ? currentTask.copyWith(
-                        status: TaskStatus.completed,
-                        completedAt: completedAt,
-                        updatedAt: completedAt,
-                      )
-                    : currentTask)
-                .toList();
             _progress = [update, ..._progress]
               ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
           });
           unawaited(cropsProvider.flushPendingSync());
+          if (newStatus == ProgressStatus.insufficientData) {
+            unawaited(_analyzePendingCheckIns());
+          }
         },
       ),
     );
 
     if (didSubmit == true && mounted) {
-      await _showTaskCelebration(task.title);
+      await _showTaskCelebration('Daily check-in');
 
       final latestScore = submittedScore;
       final latestStatus = submittedStatus;
@@ -698,8 +718,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                 : current,
           ),
         ];
-        _tasks = [..._tasks, ...extension.tasks]
-          ..sort((a, b) {
+        _tasks = [..._tasks, ...extension.tasks]..sort((a, b) {
             final dueCompare = a.dueAt.compareTo(b.dueAt);
             if (dueCompare != 0) return dueCompare;
             return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
@@ -710,7 +729,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       _tabs.animateTo(1);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Treatment tracking extended with a new recovery plan.'),
+          content:
+              Text('Treatment tracking extended with a new recovery plan.'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -798,9 +818,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     }
 
     for (final rawLine in suggestion.answer.split(RegExp(r'[\r\n]+'))) {
-      final cleaned = rawLine
-          .replaceFirst(RegExp(r'^[-•*\d\.)\s]+'), '')
-          .trim();
+      final cleaned =
+          rawLine.replaceFirst(RegExp(r'^[-•*\d\.)\s]+'), '').trim();
       if (cleaned.isEmpty ||
           cleaned.toLowerCase().startsWith('source') ||
           cleaned.length < 10 ||
@@ -875,7 +894,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       return;
     }
 
-    final taskDate = DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
+    final taskDate =
+        DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
     final today = _todayDate();
 
     if (taskDate.isAfter(today)) {
@@ -893,7 +913,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     _tabs.animateTo(1);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Open the Daily Plan tab to upload your update for this task.'),
+        content: Text(
+            'Open the Daily Plan tab to upload your update for this task.'),
       ),
     );
   }
@@ -1150,7 +1171,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                       crop: _crop,
                       tasks: _tasks,
                       treatments: _treatments,
-                      onTaskComplete: _showCheckInSheetForTask,
+                      progress: _progress,
+                      onTaskComplete: _completeDailyTask,
+                      onDailyCheckIn: _showDailyCheckIn,
                     ),
                     _ProgressTab(
                       tasks: _tasks,
@@ -1393,13 +1416,17 @@ class _DailyPlanTab extends StatelessWidget {
   final CropModel crop;
   final List<TreatmentTaskModel> tasks;
   final List<TreatmentModel> treatments;
+  final List<ProgressUpdateModel> progress;
   final Future<void> Function(TreatmentTaskModel task) onTaskComplete;
+  final Future<void> Function(List<TreatmentTaskModel> tasks) onDailyCheckIn;
 
   const _DailyPlanTab({
     required this.crop,
     required this.tasks,
     required this.treatments,
+    required this.progress,
     required this.onTaskComplete,
+    required this.onDailyCheckIn,
   });
 
   @override
@@ -1413,6 +1440,21 @@ class _DailyPlanTab extends StatelessWidget {
     final completedCount = orderedTasks
         .where((task) => task.status == TaskStatus.completed)
         .length;
+    final scheduledDays = _scheduledDays(orderedTasks);
+    final activeDay = _activeDay(scheduledDays, orderedTasks);
+    final activeTasks = activeDay == null
+        ? const <TreatmentTaskModel>[]
+        : orderedTasks
+            .where((task) => _isSameDay(task.dueAt, activeDay))
+            .toList();
+    final activeDayNumber =
+        activeDay == null ? null : scheduledDays.indexOf(activeDay) + 1;
+    final activeDayComplete = activeTasks.isNotEmpty &&
+        activeTasks.every((task) => task.status == TaskStatus.completed);
+    final activeDayCheckedIn = _hasCheckInAfterTasks(activeTasks);
+    final lockedUntilTomorrow = activeDay != null &&
+        !activeDayCheckedIn &&
+        _hasCheckInToday(activeTasks);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
@@ -1439,7 +1481,7 @@ class _DailyPlanTab extends StatelessWidget {
                               fontWeight: FontWeight.bold,
                               fontSize: 14)),
                       Text(
-                        'Day ${_daysSince(activeTreatment)} of '
+                        'Day ${activeDayNumber ?? _daysSince(activeTreatment)} of '
                         '${activeTreatment.expectedDurationDays ?? '?'}',
                         style: const TextStyle(
                             color: Colors.white70, fontSize: 12),
@@ -1450,15 +1492,15 @@ class _DailyPlanTab extends StatelessWidget {
           ),
           const SizedBox(height: 16),
         ],
-        const _SectionHeader("Today's Tasks"),
+        const _SectionHeader('Daily Treatment Schedule'),
         const SizedBox(height: 4),
         Text(
-          '$completedCount/${orderedTasks.length} completed',
+          '$completedCount/${orderedTasks.length} required actions completed',
           style: const TextStyle(color: AppColors.textGray, fontSize: 13),
         ),
         const SizedBox(height: 6),
         const Text(
-          'Tap the task circle to submit a photo check-in and mark it done.',
+          'Complete today\'s actions, then send one daily crop check-in for AI review.',
           style: TextStyle(
             color: AppColors.textLightGray,
             fontSize: 12,
@@ -1487,14 +1529,130 @@ class _DailyPlanTab extends StatelessWidget {
                   ),
                 ]),
           )
-        else
-          ...orderedTasks.map((task) => _TaskCard(
+        else if (activeDay == null)
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: AppColors.backgroundGreenLight,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Row(children: [
+              Icon(Icons.task_alt, color: AppColors.primary),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'All treatment days are complete.',
+                  style: TextStyle(
+                    color: AppColors.textDark,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ]),
+          )
+        else ...[
+          _PlanDayHeader(
+            date: DateTime.now(),
+            dayNumber: activeDayNumber,
+          ),
+          const SizedBox(height: 8),
+          ...activeTasks.map((task) => _TaskCard(
                 task: task,
+                locked: lockedUntilTomorrow,
                 onComplete: () => onTaskComplete(task),
               )),
+          if (activeDayComplete && !activeDayCheckedIn) ...[
+            const SizedBox(height: 4),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: lockedUntilTomorrow
+                    ? null
+                    : () => onDailyCheckIn(activeTasks),
+                icon: Icon(
+                  lockedUntilTomorrow
+                      ? Icons.lock_outline
+                      : Icons.add_a_photo_outlined,
+                ),
+                label: Text(
+                  lockedUntilTomorrow
+                      ? 'Next treatment day unlocks tomorrow'
+                      : 'Submit daily check-in',
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 6),
+        ],
       ],
     );
   }
+
+  List<DateTime> _scheduledDays(List<TreatmentTaskModel> tasks) {
+    final days = <DateTime>[];
+    for (final task in tasks) {
+      final day = DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
+      if (!days.any((existing) => _isSameDay(existing, day))) {
+        days.add(day);
+      }
+    }
+    return days;
+  }
+
+  DateTime? _activeDay(
+    List<DateTime> scheduledDays,
+    List<TreatmentTaskModel> orderedTasks,
+  ) {
+    for (final day in scheduledDays) {
+      final dayTasks =
+          orderedTasks.where((task) => _isSameDay(task.dueAt, day)).toList();
+      if (dayTasks.any((task) => task.status != TaskStatus.completed) ||
+          !_hasCheckInAfterTasks(dayTasks)) {
+        return day;
+      }
+    }
+    return null;
+  }
+
+  bool _hasCheckInAfterTasks(List<TreatmentTaskModel> dayTasks) {
+    if (dayTasks.isEmpty ||
+        dayTasks.any((task) => task.status != TaskStatus.completed)) {
+      return false;
+    }
+    final latestCompletion = dayTasks
+        .map((task) => task.completedAt)
+        .whereType<DateTime>()
+        .reduce((latest, value) => value.isAfter(latest) ? value : latest);
+    final treatmentIds = dayTasks.map((task) => task.treatmentId).toSet();
+    return progress.any(
+      (update) =>
+          !update.isDeleted &&
+          treatmentIds.contains(update.treatmentId) &&
+          !update.createdAt.isBefore(latestCompletion),
+    );
+  }
+
+  bool _hasCheckInToday(List<TreatmentTaskModel> dayTasks) {
+    final treatmentIds = dayTasks.map((task) => task.treatmentId).toSet();
+    final now = DateTime.now();
+    return progress.any((update) {
+      final date = update.updateDate;
+      return !update.isDeleted &&
+          treatmentIds.contains(update.treatmentId) &&
+          date.year == now.year &&
+          date.month == now.month &&
+          date.day == now.day;
+    });
+  }
+
+  bool _isSameDay(DateTime left, DateTime right) =>
+      left.year == right.year &&
+      left.month == right.month &&
+      left.day == right.day;
 
   int _daysSince(TreatmentModel t) {
     if (t.startedAt == null) return 1;
@@ -1502,22 +1660,49 @@ class _DailyPlanTab extends StatelessWidget {
   }
 }
 
+class _PlanDayHeader extends StatelessWidget {
+  final DateTime date;
+  final int? dayNumber;
+
+  const _PlanDayHeader({required this.date, required this.dayNumber});
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final isToday =
+        date.year == now.year && date.month == now.month && date.day == now.day;
+    final dayLabel = dayNumber == null ? '' : 'Day $dayNumber - ';
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        isToday
+            ? '${dayLabel}Today'
+            : '$dayLabel${DateFormat('EEEE, MMM d').format(date)}',
+        style: TextStyle(
+          color: isToday ? AppColors.primary : AppColors.textDark,
+          fontSize: 13,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
 class _TaskCard extends StatelessWidget {
   final TreatmentTaskModel task;
+  final bool locked;
   final Future<void> Function() onComplete;
 
   const _TaskCard({
     required this.task,
+    required this.locked,
     required this.onComplete,
   });
 
   @override
   Widget build(BuildContext context) {
     final isCompleted = task.status == TaskStatus.completed;
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final taskDay = DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
-    final isFutureTask = taskDay.isAfter(today);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 240),
       margin: const EdgeInsets.only(bottom: 10),
@@ -1533,7 +1718,7 @@ class _TaskCard extends StatelessWidget {
       ),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         InkWell(
-          onTap: isCompleted || isFutureTask
+          onTap: isCompleted || locked
               ? null
               : () {
                   onComplete();
@@ -1596,14 +1781,14 @@ class _TaskCard extends StatelessWidget {
               Text(
                 isCompleted
                     ? 'Completed ${task.completedAt != null ? DateFormat('MMM d').format(task.completedAt!) : 'today'}'
-                    : isFutureTask
-                        ? 'Available: ${DateFormat('MMM d').format(task.dueAt)}'
-                        : 'Due: ${DateFormat('MMM d').format(task.dueAt)}',
+                    : locked
+                        ? 'Available tomorrow'
+                        : 'Due today',
                 style: TextStyle(
                   fontSize: 11,
                   color: isCompleted
                       ? AppColors.primary
-                      : isFutureTask
+                      : locked
                           ? Colors.orange
                           : AppColors.textLightGray,
                 ),
@@ -1767,8 +1952,8 @@ class _ProgressTab extends StatelessWidget {
               if (updateDate != null)
                 Text(
                   DateFormat('MMM d, y').format(updateDate),
-                  style: const TextStyle(
-                      color: AppColors.textGray, fontSize: 12),
+                  style:
+                      const TextStyle(color: AppColors.textGray, fontSize: 12),
                 ),
             ],
           ),
@@ -1802,7 +1987,8 @@ class _ProgressTab extends StatelessWidget {
                         ),
                       ),
                     ),
-                  if (status != null && status != ProgressStatus.insufficientData)
+                  if (status != null &&
+                      status != ProgressStatus.insufficientData)
                     Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 4),
@@ -1825,8 +2011,8 @@ class _ProgressTab extends StatelessWidget {
           ] else
             const Text(
               'No AI analysis yet. Complete a daily check-in to see the latest assessment here.',
-              style:
-                  TextStyle(fontSize: 13, color: AppColors.textGray, height: 1.4),
+              style: TextStyle(
+                  fontSize: 13, color: AppColors.textGray, height: 1.4),
             ),
         ],
       ),
@@ -2001,7 +2187,9 @@ class _VisualEvolutionCard extends StatelessWidget {
                     fontSize: 15,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 1.1,
-                    color: entry.isToday ? AppColors.primaryDark : AppColors.textDark,
+                    color: entry.isToday
+                        ? AppColors.primaryDark
+                        : AppColors.textDark,
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -2039,136 +2227,6 @@ class _VisualEvolutionCard extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _ProgressCard extends StatelessWidget {
-  final ProgressUpdateModel update;
-  const _ProgressCard({required this.update});
-
-  Color get _statusColor {
-    switch (update.progressStatus) {
-      case ProgressStatus.improving:
-        return Colors.green;
-      case ProgressStatus.worsening:
-        return Colors.red;
-      case ProgressStatus.stable:
-        return Colors.orange;
-      default:
-        return AppColors.textGray;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border(left: BorderSide(color: _statusColor, width: 4)),
-      ),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (update.imageUrl != null && update.imageUrl!.isNotEmpty)
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: AppImageReference(
-              imageRef: update.imageUrl!,
-              width: 64,
-              height: 64,
-              fit: BoxFit.cover,
-              placeholder: Container(
-                  width: 64,
-                  height: 64,
-                  color: Colors.grey[200],
-                  child: const Icon(Icons.image, color: Colors.grey)),
-              errorWidget: Container(
-                  width: 64,
-                  height: 64,
-                  color: Colors.grey[200],
-                  child: const Icon(Icons.broken_image, color: Colors.grey)),
-            ),
-          )
-        else
-          Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: Colors.grey[100],
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(Icons.image_not_supported,
-                color: Colors.grey, size: 28),
-          ),
-        const SizedBox(width: 12),
-        Expanded(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Text(
-                '${(update.healthScore ?? 0).toStringAsFixed(0)}%',
-                style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 16,
-                    color: AppColors.textDark),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: _statusColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  update.progressStatus.name,
-                  style: TextStyle(
-                      fontSize: 11,
-                      color: _statusColor,
-                      fontWeight: FontWeight.w600),
-                ),
-              ),
-            ]),
-            const SizedBox(height: 4),
-            Text(
-              DateFormat('MMM d, yyyy  HH:mm').format(update.createdAt),
-              style:
-                  const TextStyle(fontSize: 12, color: AppColors.textLightGray),
-            ),
-            if ((update.detectedDiseaseName ?? '').isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                humanizeDiseaseLabel(update.detectedDiseaseName!),
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark,
-                ),
-              ),
-            ],
-            if (update.completedTaskCount > 0 ||
-                update.missedTaskCount > 0) ...[
-              const SizedBox(height: 6),
-              Text(
-                'Tasks completed: ${update.completedTaskCount} • Missed: ${update.missedTaskCount}',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textGray,
-                ),
-              ),
-            ],
-            if (update.note != null && update.note!.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(update.note!,
-                  style: const TextStyle(
-                      fontSize: 13, color: AppColors.textGray, height: 1.4),
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis),
-            ],
-          ]),
-        ),
-      ]),
     );
   }
 }
@@ -2226,84 +2284,87 @@ class _DiagnosesTab extends StatelessWidget {
                       ),
                       borderRadius: BorderRadius.circular(12),
                       child: Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border(
-                            left: BorderSide(
-                                color: _severityColor(d.severity), width: 4)),
-                      ),
-                      child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(children: [
-                              Expanded(
-                                child: Text(humanizeDiseaseLabel(d.diseaseName),
-                                    style: const TextStyle(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border(
+                              left: BorderSide(
+                                  color: _severityColor(d.severity), width: 4)),
+                        ),
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(children: [
+                                Expanded(
+                                  child: Text(
+                                      humanizeDiseaseLabel(d.diseaseName),
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 15)),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: _severityColor(d.severity)
+                                        .withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                        color: _severityColor(d.severity)
+                                            .withOpacity(0.4)),
+                                  ),
+                                  child: Text(
+                                    d.severity.name.toUpperCase(),
+                                    style: TextStyle(
+                                        fontSize: 11,
                                         fontWeight: FontWeight.w700,
-                                        fontSize: 15)),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: _severityColor(d.severity)
-                                      .withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(
-                                      color: _severityColor(d.severity)
-                                          .withOpacity(0.4)),
+                                        color: _severityColor(d.severity)),
+                                  ),
                                 ),
-                                child: Text(
-                                  d.severity.name.toUpperCase(),
-                                  style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: _severityColor(d.severity)),
+                              ]),
+                              if (d.confidenceScore != null) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Confidence: ${(d.confidenceScore! * 100).toStringAsFixed(1)}%',
+                                  style: const TextStyle(
+                                      fontSize: 12, color: AppColors.textGray),
                                 ),
-                              ),
-                            ]),
-                            if (d.confidenceScore != null) ...[
+                              ],
                               const SizedBox(height: 4),
                               Text(
-                                'Confidence: ${(d.confidenceScore! * 100).toStringAsFixed(1)}%',
+                                DateFormat('MMM d, yyyy').format(d.diagnosedAt),
                                 style: const TextStyle(
-                                    fontSize: 12, color: AppColors.textGray),
+                                    fontSize: 12,
+                                    color: AppColors.textLightGray),
                               ),
-                            ],
-                            const SizedBox(height: 4),
-                            Text(
-                              DateFormat('MMM d, yyyy').format(d.diagnosedAt),
-                              style: const TextStyle(
-                                  fontSize: 12, color: AppColors.textLightGray),
-                            ),
-                            if (d.summary != null && d.summary!.isNotEmpty) ...[
-                              const SizedBox(height: 8),
-                              Text(d.summary!,
-                                  style: const TextStyle(
-                                      color: AppColors.textGray,
-                                      fontSize: 13,
-                                      height: 1.4),
-                                  maxLines: 4,
-                                  overflow: TextOverflow.ellipsis),
-                            ],
-                            const SizedBox(height: 6),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.end,
-                              children: [
-                                Text('View conversation',
-                                    style: TextStyle(
-                                        fontSize: 12,
-                                        color: AppColors.primary,
-                                        fontWeight: FontWeight.w600)),
-                                const SizedBox(width: 4),
-                                Icon(Icons.chevron_right,
-                                    size: 16, color: AppColors.primary),
+                              if (d.summary != null &&
+                                  d.summary!.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Text(d.summary!,
+                                    style: const TextStyle(
+                                        color: AppColors.textGray,
+                                        fontSize: 13,
+                                        height: 1.4),
+                                    maxLines: 4,
+                                    overflow: TextOverflow.ellipsis),
                               ],
-                            ),
-                          ]),
+                              const SizedBox(height: 6),
+                              const Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  Text('View conversation',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          color: AppColors.primary,
+                                          fontWeight: FontWeight.w600)),
+                                  SizedBox(width: 4),
+                                  Icon(Icons.chevron_right,
+                                      size: 16, color: AppColors.primary),
+                                ],
+                              ),
+                            ]),
                       ),
                     )),
                 const SizedBox(height: 8),
@@ -2551,22 +2612,145 @@ class _CheckInSheet extends StatefulWidget {
 
 class _CheckInSheetState extends State<_CheckInSheet> {
   Uint8List? _photoBytes;
+  String? _videoPath;
   final _noteCtrl = TextEditingController();
+  final _speech = SpeechRecognitionService();
+  bool _isDictating = false;
   bool _submitting = false;
 
   @override
   void dispose() {
+    _speech.stop();
     _noteCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _pickPhoto() async {
+  Future<void> _pickPhoto(ImageSource source) async {
     final picker = ImagePicker();
-    final file =
-        await picker.pickImage(source: ImageSource.camera, imageQuality: 75);
+    final file = await picker.pickImage(source: source, imageQuality: 75);
     if (file == null) return;
     final bytes = await file.readAsBytes();
-    setState(() => _photoBytes = bytes);
+    setState(() {
+      _photoBytes = bytes;
+      _videoPath = null;
+    });
+  }
+
+  Future<void> _pickVideo(ImageSource source) async {
+    final picker = ImagePicker();
+    final file = await picker.pickVideo(source: source);
+    if (file == null) return;
+
+    final frame = await VideoThumbnail.thumbnailData(
+      video: file.path,
+      imageFormat: ImageFormat.JPEG,
+      timeMs: 0,
+      quality: 80,
+    );
+    if (frame == null || frame.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not read a frame from that video. Try again.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+    setState(() {
+      _photoBytes = frame;
+      _videoPath = file.path;
+    });
+  }
+
+  Future<void> _showEvidenceSourceSheet() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined),
+              title: const Text('Take a photo'),
+              onTap: () => Navigator.pop(context, 'camera_photo'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Choose a photo from gallery'),
+              onTap: () => Navigator.pop(context, 'gallery_photo'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.videocam_outlined),
+              title: const Text('Record a video'),
+              onTap: () => Navigator.pop(context, 'camera_video'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.video_library_outlined),
+              title: const Text('Choose a video from gallery'),
+              onTap: () => Navigator.pop(context, 'gallery_video'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    switch (choice) {
+      case 'camera_photo':
+        await _pickPhoto(ImageSource.camera);
+      case 'gallery_photo':
+        await _pickPhoto(ImageSource.gallery);
+      case 'camera_video':
+        await _pickVideo(ImageSource.camera);
+      case 'gallery_video':
+        await _pickVideo(ImageSource.gallery);
+    }
+  }
+
+  Future<void> _toggleDictation() async {
+    if (_isDictating) {
+      await _speech.stop();
+      if (mounted) setState(() => _isDictating = false);
+      return;
+    }
+
+    final started = await _speech.initialize(
+      onStatus: (status) {
+        if (mounted && status != 'listening') {
+          setState(() => _isDictating = false);
+        }
+      },
+      onError: (_) {
+        if (mounted) setState(() => _isDictating = false);
+      },
+    );
+    if (!started) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Voice dictation is unavailable on this device.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    final baseNote = _noteCtrl.text.trim();
+    final didStart = await _speech.startDictation(
+      onResult: (transcript, _) {
+        if (!mounted || transcript.isEmpty) return;
+        _noteCtrl.value = TextEditingValue(
+          text: baseNote.isEmpty ? transcript : '$baseNote $transcript',
+          selection: TextSelection.collapsed(
+            offset: (baseNote.isEmpty ? transcript : '$baseNote $transcript')
+                .length,
+          ),
+        );
+      },
+    );
+    if (mounted) setState(() => _isDictating = didStart);
   }
 
   Future<void> _submit() async {
@@ -2583,7 +2767,6 @@ class _CheckInSheetState extends State<_CheckInSheet> {
     try {
       final user = context.read<AuthProvider>().currentUser;
       final aiBackend = context.read<AiBackendService>();
-      final cropsProvider = context.read<CropsProvider>();
       final submittedAt = DateTime.now();
       final imageUrl = buildInlineImageDataUrl(_photoBytes!);
 
@@ -2601,14 +2784,16 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         // until the user is back online and re-analysis runs.
         newScore = widget.crop.latestHealthScore ?? 50.0;
         newStatus = ProgressStatus.insufficientData;
-        assessment = 'Offline check-in — AI analysis pending. Will be updated when online.';
+        assessment =
+            'Offline check-in — AI analysis pending. Will be updated when online.';
       } else {
         // Avoid sending a huge base64 data URL as the previous reference —
         // only pass real remote URLs to keep the request payload small.
         final prevImgUrl = widget.previousUpdate?.imageUrl;
-        final safePrevImgRef = (prevImgUrl != null && isInlineImageDataUrl(prevImgUrl))
-            ? null
-            : prevImgUrl;
+        final safePrevImgRef =
+            (prevImgUrl != null && isInlineImageDataUrl(prevImgUrl))
+                ? null
+                : prevImgUrl;
         try {
           final aiResponse = await aiBackend.assessCropHealth(
             cropType: widget.crop.cropType.name,
@@ -2623,7 +2808,8 @@ class _CheckInSheetState extends State<_CheckInSheet> {
             previousUpdateDate:
                 widget.previousUpdate?.updateDate.toIso8601String(),
             completedTasks: widget.checkedTasks.map((t) => t.title).toList(),
-            note: _noteCtrl.text.trim().isNotEmpty ? _noteCtrl.text.trim() : null,
+            note:
+                _noteCtrl.text.trim().isNotEmpty ? _noteCtrl.text.trim() : null,
             currentHealthScore: widget.crop.latestHealthScore,
           );
           if (!aiResponse.accepted) {
@@ -2649,16 +2835,9 @@ class _CheckInSheetState extends State<_CheckInSheet> {
           // Save the check-in and let _analyzePendingCheckIns re-analyse later.
           newScore = widget.crop.latestHealthScore ?? 50.0;
           newStatus = ProgressStatus.insufficientData;
-          assessment = 'Check-in saved — AI analysis pending. Score will update automatically.';
+          assessment =
+              'Check-in saved — AI analysis pending. Score will update automatically.';
         }
-      }
-
-      for (final task in widget.checkedTasks) {
-        await cropsProvider.markTaskDone(
-          task.id,
-          recomputeHealthScore: false,
-          syncNow: false,
-        );
       }
 
       final progressUpdate = ProgressUpdateModel(
@@ -2671,12 +2850,13 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         healthScore: newScore,
         progressStatus: newStatus,
         detectedDiseaseName: widget.latestDiagnosis?.diseaseName ??
-          widget.activeTreatment?.diseaseName,
+            widget.activeTreatment?.diseaseName,
         detectedSeverity: widget.latestDiagnosis?.severity,
-        note: _noteCtrl.text.trim().isNotEmpty
-            ? _noteCtrl.text.trim()
-            : assessment,
+        note: assessment,
+        observedSymptoms:
+            _noteCtrl.text.trim().isNotEmpty ? [_noteCtrl.text.trim()] : null,
         imageUrl: imageUrl,
+        videoUrl: _videoPath,
         completedTaskCount: widget.checkedTasks.length,
         missedTaskCount: 0,
         updateDate: submittedAt,
@@ -2691,8 +2871,12 @@ class _CheckInSheetState extends State<_CheckInSheet> {
     } catch (e) {
       if (mounted) {
         setState(() => _submitting = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not save this check-in. Please try again.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     }
   }
@@ -2795,12 +2979,12 @@ class _CheckInSheetState extends State<_CheckInSheet> {
                   ),
                   const SizedBox(height: 16),
                 ],
-                const Text('Crop Photo *',
+                const Text('Crop Photo or Video *',
                     style:
                         TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
                 const SizedBox(height: 8),
                 GestureDetector(
-                  onTap: _pickPhoto,
+                  onTap: _showEvidenceSourceSheet,
                   child: Container(
                     height: 180,
                     decoration: BoxDecoration(
@@ -2839,16 +3023,62 @@ class _CheckInSheetState extends State<_CheckInSheet> {
                 ),
                 if (_photoBytes != null) ...[
                   const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      TextButton.icon(
+                        onPressed: _showEvidenceSourceSheet,
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('Change evidence'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => _pickVideo(ImageSource.camera),
+                        icon: const Icon(Icons.videocam_outlined, size: 16),
+                        label: const Text('Record video'),
+                      ),
+                    ],
+                  ),
+                  if (_videoPath != null)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child: Text(
+                        'Video attached. Its first frame will be analyzed.',
+                        style: TextStyle(
+                          color: AppColors.textGray,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                ] else ...[
                   TextButton.icon(
-                    onPressed: _pickPhoto,
-                    icon: const Icon(Icons.refresh, size: 16),
-                    label: const Text('Retake'),
+                    onPressed: _showEvidenceSourceSheet,
+                    icon: const Icon(Icons.videocam_outlined, size: 16),
+                    label: const Text('Choose photo or video'),
                   ),
                 ],
                 const SizedBox(height: 16),
-                const Text('Notes (optional)',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Notes (optional)',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _toggleDictation,
+                      tooltip: _isDictating
+                          ? 'Stop voice dictation'
+                          : 'Dictate a note',
+                      icon: Icon(
+                        _isDictating ? Icons.stop_circle : Icons.mic_none,
+                        color: _isDictating ? Colors.red : AppColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 8),
                 TextField(
                   controller: _noteCtrl,
@@ -3485,7 +3715,8 @@ class _TreatmentArchivedDialog extends StatelessWidget {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(_CompletionDialogAction.done),
+          onPressed: () =>
+              Navigator.of(context).pop(_CompletionDialogAction.done),
           child: const Text('Done'),
         ),
         FilledButton(

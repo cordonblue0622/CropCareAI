@@ -114,11 +114,16 @@ class AiBackendService {
     String? cropId,
     DiagnosisModel? diagnosis,
     List<int>? imageBytes,
+    List<List<int>> imageBytesList = const [],
     String? imageMimeType,
     List<Map<String, String>> conversationHistory = const [],
     String? locale,
     String? hintCropType,
   }) async {
+    final imageDataUrls = imageBytesList
+        .where((bytes) => bytes.isNotEmpty)
+        .map((bytes) => _buildImageDataUrl(bytes, mimeType: imageMimeType))
+        .toList(growable: false);
     final payload = {
       'user_message': userMessage,
       if (cropId != null && cropId.isNotEmpty) 'crop_id': cropId,
@@ -135,6 +140,7 @@ class AiBackendService {
           imageBytes,
           mimeType: imageMimeType,
         ),
+      if (imageDataUrls.isNotEmpty) 'image_data_urls': imageDataUrls,
       if (conversationHistory.isNotEmpty)
         'conversation_history': conversationHistory,
       if (locale != null && locale.isNotEmpty) 'locale': locale,
@@ -224,6 +230,11 @@ class AiBackendService {
     int daysSinceTreatment = 0,
     List<int>? imageBytes,
     String? imageMimeType,
+    String? imageDataUrl,
+    String? previousImageReference,
+    String? previousAssessment,
+    String? previousProgressStatus,
+    String? previousUpdateDate,
     List<String> completedTasks = const [],
     String? note,
     double? currentHealthScore,
@@ -234,15 +245,25 @@ class AiBackendService {
         'crop_type': cropType,
         'disease_name': diseaseName,
         'days_since_treatment': daysSinceTreatment,
-        if (imageBytes != null && imageBytes.isNotEmpty)
+        if (imageDataUrl != null && imageDataUrl.isNotEmpty)
+          'image_data_url': imageDataUrl
+        else if (imageBytes != null && imageBytes.isNotEmpty)
           'image_data_url':
               _buildImageDataUrl(imageBytes, mimeType: imageMimeType),
+        if (previousImageReference != null && previousImageReference.isNotEmpty)
+          'previous_image_reference': previousImageReference,
+        if (previousAssessment != null && previousAssessment.isNotEmpty)
+          'previous_assessment': previousAssessment,
+        if (previousProgressStatus != null && previousProgressStatus.isNotEmpty)
+          'previous_progress_status': previousProgressStatus,
+        if (previousUpdateDate != null && previousUpdateDate.isNotEmpty)
+          'previous_update_date': previousUpdateDate,
         'completed_tasks': completedTasks,
         if (note != null && note.isNotEmpty) 'note': note,
         if (currentHealthScore != null)
           'current_health_score': currentHealthScore,
       },
-      timeout: const Duration(seconds: 45),
+      timeout: const Duration(seconds: 120),
     );
 
     _throwIfError(response);

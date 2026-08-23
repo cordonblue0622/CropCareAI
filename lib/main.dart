@@ -4,6 +4,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'app.dart';
 import 'core/constants/app_constants.dart';
 import 'data/local/database_helper.dart';
+import 'data/remote/supabase_service.dart';
+import 'data/repositories/auth_repository.dart';
+import 'features/auth/providers/auth_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,10 +17,17 @@ Future<void> main() async {
     anonKey: AppConstants.supabaseAnonKey,
   );
 
+  final authProvider = AuthProvider(
+    authRepository: AuthRepository(
+      supabaseService: SupabaseService(),
+      dbHelper: DatabaseHelper.instance,
+    ),
+  );
+
   // SQLite is disabled on web; mobile/desktop still warm up the local cache.
   if (!kIsWeb) {
     await DatabaseHelper.instance.database;
   }
 
-  runApp(const CropCareApp());
+  runApp(CropCareApp(authProvider: authProvider));
 }

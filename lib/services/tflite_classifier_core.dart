@@ -54,9 +54,8 @@ class TfliteClassifierCore {
       final params = outputTensor.params;
       final scale = params.scale;
       final zeroPoint = params.zeroPoint;
-      scores = rawOutput.first
-          .map((value) => (value - zeroPoint) * scale)
-          .toList();
+      scores =
+          rawOutput.first.map((value) => (value - zeroPoint) * scale).toList();
       final total = scores.fold<double>(0.0, (a, b) => a + b);
       if (total > 0) {
         for (var i = 0; i < scores.length; i++) {
@@ -78,56 +77,98 @@ class TfliteClassifierCore {
     final primaryIndex = ranked.first;
     final rawLabel = labels[primaryIndex];
     final score = scores[primaryIndex].clamp(0.0, 1.0).toDouble();
-    final secondaryScore = ranked.length > 1
-        ? scores[ranked[1]].clamp(0.0, 1.0).toDouble()
-        : 0.0;
+    final secondaryScore =
+        ranked.length > 1 ? scores[ranked[1]].clamp(0.0, 1.0).toDouble() : 0.0;
     final scoreMargin = (score - secondaryScore).clamp(-1.0, 1.0).toDouble();
     final labelSpec = _labelSpecFor(rawLabel);
     final requestedCropType = cropType?.trim().toLowerCase();
     final predictedCropType = labelSpec.cropType?.value;
     final sameCropConfidence = predictedCropType == null
-      ? score
-      : ranked.fold<double>(0.0, (sum, index) {
-        final candidateCropType = _labelSpecFor(labels[index]).cropType?.value;
-        if (candidateCropType != predictedCropType) {
-          return sum;
-        }
-        return sum + scores[index].clamp(0.0, 1.0).toDouble();
-        }).clamp(0.0, 1.0).toDouble();
-    final cropTypeAligned =
-      requestedCropType == null ||
-      requestedCropType.isEmpty ||
-      predictedCropType == null ||
-      requestedCropType == predictedCropType;
+        ? score
+        : ranked
+            .fold<double>(0.0, (sum, index) {
+              final candidateCropType =
+                  _labelSpecFor(labels[index]).cropType?.value;
+              if (candidateCropType != predictedCropType) {
+                return sum;
+              }
+              return sum + scores[index].clamp(0.0, 1.0).toDouble();
+            })
+            .clamp(0.0, 1.0)
+            .toDouble();
+    final cropTypeAligned = requestedCropType == null ||
+        requestedCropType.isEmpty ||
+        predictedCropType == null ||
+        requestedCropType == predictedCropType;
+    final isUnsupportedCropFamily = predictedCropType == null;
+    final isSelectedCropMismatch = requestedCropType != null &&
+        requestedCropType.isNotEmpty &&
+        predictedCropType != null &&
+        requestedCropType != predictedCropType;
     final isBelowMinimumConfidence =
         score < AppConstants.temporaryScannerMinConfidence;
     final isBelowAcceptedConfidence =
         score < AppConstants.temporaryScannerAcceptedConfidence;
-    final isAmbiguous =
-      ranked.length > 1 &&
-      scoreMargin < AppConstants.temporaryScannerAcceptedMargin;
-    final isProvisionalCropFamilyMatch =
-      isBelowMinimumConfidence &&
-      score >= AppConstants.temporaryScannerProvisionalConfidence &&
-      sameCropConfidence >=
-        AppConstants.temporaryScannerProvisionalCropFamilyConfidence &&
-      cropTypeAligned &&
-      predictedCropType != null;
-    final isTopPredictionFallbackMatch =
-      isBelowMinimumConfidence &&
-      cropTypeAligned &&
-      predictedCropType != null &&
-      labelSpec.supportedInKnowledgeBase;
+    final isAmbiguous = ranked.length > 1 &&
+        scoreMargin < AppConstants.temporaryScannerAcceptedMargin;
+    final isProvisionalCropFamilyMatch = isBelowMinimumConfidence &&
+        score >= AppConstants.temporaryScannerProvisionalConfidence &&
+        sameCropConfidence >=
+            AppConstants.temporaryScannerProvisionalCropFamilyConfidence &&
+        cropTypeAligned &&
+        predictedCropType != null;
+    final isTopPredictionFallbackMatch = isBelowMinimumConfidence &&
+        cropTypeAligned &&
+        predictedCropType != null &&
+        labelSpec.supportedInKnowledgeBase;
 
     final topPredictions = ranked
         .take(3)
         .map((index) =>
             '${labels[index]} ${(scores[index] * 100).toStringAsFixed(1)}%')
         .join(' | ');
+    final topDetections = ranked.take(3).map((index) {
+      final candidateLabel = labels[index];
+      final candidateSpec = _labelSpecFor(candidateLabel);
+      return AiBackendDetectionItem(
+        label: candidateSpec.displayLabel,
+        labelKey: candidateSpec.labelKey,
+        confidence: scores[index].clamp(0.0, 1.0).toDouble(),
+        bbox: const AiBackendBoundingBox(
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1,
+        ),
+      );
+    }).toList(growable: false);
+
+    if (isUnsupportedCropFamily || isSelectedCropMismatch) {
+      final rejectionNotes = <String>[
+        isUnsupportedCropFamily
+            ? 'The model predicted ${labelSpec.displayLabel}, which is outside CropCare AI\'s supported crops.'
+            : 'The model predicted ${labelSpec.displayLabel}, but the selected crop is $requestedCropType.',
+        'Input file: $filename',
+        'Top predictions: $topPredictions',
+        if (modelSource != null && modelSource.isNotEmpty)
+          'Model source file: $modelSource',
+      ];
+      return AiBackendDetectResponse(
+        status: 'no_match',
+        source: source,
+        cropType: cropType,
+        detections: topDetections,
+        model: AiBackendModelInfo(
+          name: modelName,
+          version: modelVersion,
+        ),
+        notes: rejectionNotes,
+      );
+    }
 
     if (isBelowMinimumConfidence &&
-      !isProvisionalCropFamilyMatch &&
-      !isTopPredictionFallbackMatch) {
+        !isProvisionalCropFamilyMatch &&
+        !isTopPredictionFallbackMatch) {
       final rejectionNotes = <String>[];
       rejectionNotes.add(
         'Top prediction confidence was ${(score * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerMinConfidence * 100).toStringAsFixed(0)}% minimum offline threshold.',
@@ -140,8 +181,8 @@ class TfliteClassifierCore {
       return AiBackendDetectResponse(
         status: 'no_match',
         source: source,
-        cropType: cropType,
-        detections: const [],
+        cropType: predictedCropType,
+        detections: topDetections,
         model: AiBackendModelInfo(
           name: modelName,
           version: modelVersion,
@@ -181,20 +222,8 @@ class TfliteClassifierCore {
     return AiBackendDetectResponse(
       status: 'ok',
       source: source,
-      cropType: predictedCropType ?? cropType,
-      detections: [
-        AiBackendDetectionItem(
-          label: labelSpec.displayLabel,
-          labelKey: labelSpec.labelKey,
-          confidence: score,
-          bbox: const AiBackendBoundingBox(
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 1,
-          ),
-        ),
-      ],
+      cropType: predictedCropType,
+      detections: topDetections,
       model: AiBackendModelInfo(
         name: modelName,
         version: modelVersion,
@@ -492,18 +521,21 @@ const Map<String, _LabelSpec> _labelSpecs = {
     displayLabel: 'Eggplant Small Leaf',
     labelKey: 'eggplant_small_leaf',
     cropType: CropType.eggplant,
+    supportedInKnowledgeBase: true,
   ),
   'Eggplant_white_mold': _LabelSpec(
     rawLabel: 'Eggplant_white_mold',
     displayLabel: 'Eggplant White Mold',
     labelKey: 'eggplant_white_mold',
     cropType: CropType.eggplant,
+    supportedInKnowledgeBase: true,
   ),
   'Eggplant_wilt': _LabelSpec(
     rawLabel: 'Eggplant_wilt',
     displayLabel: 'Eggplant Wilt',
     labelKey: 'eggplant_wilt',
     cropType: CropType.eggplant,
+    supportedInKnowledgeBase: true,
   ),
   'Pepper,_bell___Bacterial_spot': _LabelSpec(
     rawLabel: 'Pepper,_bell___Bacterial_spot',

@@ -58,6 +58,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   bool _saving = false;
   bool _tracked = false;
   bool _redirectingToChat = false;
+  bool _analysisFailed = false;
   Uint8List? _resolvedImageBytes;
 
   @override
@@ -109,7 +110,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
             _resolvedImageBytes = posterBytes;
           }
         } catch (_) {
-          posterBytes ??= await _extractVideoPosterBytes(widget.videoFile!.path);
+          posterBytes ??=
+              await _extractVideoPosterBytes(widget.videoFile!.path);
           if (posterBytes == null || posterBytes.isEmpty) {
             throw Exception(
               'AI backend unavailable right now. Please analyze a clearer video or capture a still photo instead.',
@@ -177,7 +179,10 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         return;
       }
 
-      setState(() => _analyzing = false);
+      setState(() {
+        _analysisFailed = false;
+        _analyzing = false;
+      });
     } catch (error) {
       if (!mounted) return;
       // If we're supposed to go straight to chat, still do that even on error.
@@ -191,9 +196,22 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       setState(() {
         _analysisMessage =
             'AI backend unavailable right now. You can still ask the assistant for general guidance.';
+        _analysisFailed = true;
         _analyzing = false;
       });
     }
+  }
+
+  Future<void> _retryAnalysis() async {
+    if (_analyzing) return;
+    setState(() {
+      _analyzing = true;
+      _analysisFailed = false;
+      _analysisMessage = null;
+      _match = null;
+      _detection = null;
+    });
+    await _analyze();
   }
 
   Future<Uint8List?> _extractVideoPosterBytes(String videoPath) async {
@@ -238,6 +256,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       MaterialPageRoute(
         builder: (_) => ChatScreen(
           startFreshSession: true,
+          cropId: diagnosis?.cropId,
           initialQuery: initialQuery,
           hideInitialPromptText: hideInitialPromptText,
           initialDiagnosis: diagnosis,
@@ -297,8 +316,11 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       if (mounted) setState(() => _tracked = true);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to save: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content:
+                  Text('Could not save this diagnosis. Please try again.')),
+        );
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -392,12 +414,12 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                                     ),
                                   ),
                                 )
-                          : _XFileImageView(
-                              widget.imageFile,
-                              height: 180,
-                              width: double.infinity,
-                              fit: BoxFit.cover,
-                            ),
+                              : _XFileImageView(
+                                  widget.imageFile,
+                                  height: 180,
+                                  width: double.infinity,
+                                  fit: BoxFit.cover,
+                                ),
                     ),
                     const SizedBox(height: 20),
 
@@ -410,6 +432,23 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                       _noMatchCard()
                     else
                       _resultCard(_match!),
+
+                    if (_analysisFailed) ...[
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: _retryAnalysis,
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: AppColors.primary),
+                          foregroundColor: AppColors.primary,
+                          minimumSize: const Size(double.infinity, 48),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Try Scan Again'),
+                      ),
+                    ],
 
                     const SizedBox(height: 20),
 
@@ -678,7 +717,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         borderRadius: BorderRadius.circular(16),
       ),
       child: Column(children: [
-        const Icon(Icons.help_outline, size: 48, color: AppColors.textLightGray),
+        const Icon(Icons.help_outline,
+            size: 48, color: AppColors.textLightGray),
         const SizedBox(height: 12),
         const Text('Unclear offline result',
             textAlign: TextAlign.center,
@@ -806,7 +846,12 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     required DiagnosisModel? diagnosis,
   }) {
     if (diagnosis != null) {
-      return ChatProvider.resolveHintCropType(attachedDiagnosis: diagnosis);
+      final fromDx =
+          ChatProvider.resolveHintCropType(attachedDiagnosis: diagnosis);
+      // Only use the diagnosis-derived type if it resolved to a non-null value.
+      // Otherwise fall through to the selectedCropType / detection fallbacks
+      // so that crops like pechay (no on-device label) still get a hint.
+      if (fromDx != null) return fromDx;
     }
 
     if (selectedCropType != null) {
@@ -828,23 +873,23 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   /// User message when the on-device scan did not attach a confident diagnosis.
   String _buildUncertainScanPrompt() {
     final selectedCropType =
-      _resolveSelectedCropType(context.read<CropsProvider>());
+        _resolveSelectedCropType(context.read<CropsProvider>());
     final topGuess = _primaryDetection;
     final cropLabel = selectedCropType != null
-      ? _cropTypeLabel(selectedCropType)
-      : 'the selected crop';
+        ? _cropTypeLabel(selectedCropType)
+        : 'the selected crop';
 
     if (topGuess != null) {
       return 'The offline scan could not confidently confirm $cropLabel from the attached photo. '
-        'Top offline guess: ${humanizeDiseaseLabel(topGuess.label)} at '
-        '${(topGuess.confidence * 100).toStringAsFixed(0)}% confidence. '
-        'Please analyze the image carefully, explain whether the top guess looks correct, '
-        'and tell the farmer whether to retry with a clearer photo or continue online for better help.';
+          'Top offline guess: ${humanizeDiseaseLabel(topGuess.label)} at '
+          '${(topGuess.confidence * 100).toStringAsFixed(0)}% confidence. '
+          'Please analyze the image carefully, explain whether the top guess looks correct, '
+          'and tell the farmer whether to retry with a clearer photo or continue online for better help.';
     }
 
     return 'The offline scan could not confidently confirm the attached crop image. '
-      'Please analyze the image carefully, explain what you observe, and tell '
-      'the farmer whether to retry with a clearer photo or continue online for better help.';
+        'Please analyze the image carefully, explain what you observe, and tell '
+        'the farmer whether to retry with a clearer photo or continue online for better help.';
   }
 
   DiseaseKnowledgeModel? _resolveDiseaseMatch({
@@ -984,15 +1029,11 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     final isConnected = await connectivity.isConnected;
 
     if (isConnected) {
-      try {
-        return await aiBackend.detectImage(
-          imageBytes: imageBytes,
-          filename: widget.imageFile.name,
-          cropType: cropType,
-        );
-      } catch (_) {
-        // Fall through to the local model when the backend/OpenAI path is unavailable.
-      }
+      return await aiBackend.detectImage(
+        imageBytes: imageBytes,
+        filename: widget.imageFile.name,
+        cropType: cropType,
+      );
     }
 
     return localClassifier.classifyImage(
@@ -1045,7 +1086,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     final source = detection.source.toLowerCase();
     final modelName = detection.model.name.toLowerCase();
     final label = detection.primaryDetection?.label.toLowerCase() ?? '';
-    final selectedCropType = _resolveSelectedCropType(context.read<CropsProvider>());
+    final selectedCropType =
+        _resolveSelectedCropType(context.read<CropsProvider>());
     final predictedCropType = _tryParseCropType(detection.cropType);
 
     if (selectedCropType != null &&

@@ -101,6 +101,7 @@ class DatabaseHelper {
         id                    TEXT PRIMARY KEY,
         crop_id               TEXT NOT NULL,
         user_id               TEXT NOT NULL,
+        chat_session_id       TEXT,
         diagnosis_mode        TEXT NOT NULL,
         label_key             TEXT,
         disease_name          TEXT NOT NULL,
@@ -261,6 +262,18 @@ class DatabaseHelper {
         updated_at              TEXT NOT NULL
       )
     ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS ${AppConstants.diseaseTreatmentDayStepsTable} (
+        id                        TEXT PRIMARY KEY,
+        disease_knowledge_base_id TEXT NOT NULL,
+        day_number                INTEGER NOT NULL,
+        day_title                 TEXT NOT NULL,
+        tasks                     TEXT NOT NULL,
+        notes                     TEXT,
+        is_active                 INTEGER NOT NULL DEFAULT 1
+      )
+    ''');
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -295,6 +308,29 @@ class DatabaseHelper {
         db,
         AppConstants.diseaseKnowledgeTable,
         'label_key',
+        'TEXT',
+      );
+    }
+
+    if (oldVersion < 4) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS ${AppConstants.diseaseTreatmentDayStepsTable} (
+          id                        TEXT PRIMARY KEY,
+          disease_knowledge_base_id TEXT NOT NULL,
+          day_number                INTEGER NOT NULL,
+          day_title                 TEXT NOT NULL,
+          tasks                     TEXT NOT NULL,
+          notes                     TEXT,
+          is_active                 INTEGER NOT NULL DEFAULT 1
+        )
+      ''');
+    }
+
+    if (oldVersion < 5) {
+      await _ensureColumn(
+        db,
+        AppConstants.diagnosesTable,
+        'chat_session_id',
         'TEXT',
       );
     }
@@ -562,7 +598,29 @@ class DatabaseHelper {
     final db = await database;
     final where =
         includeDeleted ? 'user_id = ?' : 'user_id = ? AND is_deleted = 0';
-    return db.query(table, where: where, whereArgs: [userId]);
+
+    String? orderBy;
+    switch (table) {
+      case AppConstants.cropsTable:
+        orderBy = 'updated_at DESC, created_at DESC';
+        break;
+      case AppConstants.diagnosesTable:
+        orderBy = 'diagnosed_at DESC, created_at DESC';
+        break;
+      case AppConstants.treatmentsTable:
+        orderBy = 'started_at DESC, created_at DESC';
+        break;
+      default:
+        orderBy = 'created_at DESC';
+        break;
+    }
+
+    return db.query(
+      table,
+      where: where,
+      whereArgs: [userId],
+      orderBy: orderBy,
+    );
   }
 
   Future<Map<String, dynamic>?> queryById(String table, String id) async {
@@ -688,6 +746,19 @@ class DatabaseHelper {
       where: 'crop_type = ? AND is_active = 1',
       whereArgs: [cropType],
       orderBy: 'disease_name ASC',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> queryDiseaseTreatmentDaySteps(
+    String diseaseKnowledgeBaseId,
+  ) async {
+    if (_isDisabledOnPlatform) return [];
+    final db = await database;
+    return db.query(
+      AppConstants.diseaseTreatmentDayStepsTable,
+      where: 'disease_knowledge_base_id = ? AND is_active = 1',
+      whereArgs: [diseaseKnowledgeBaseId],
+      orderBy: 'day_number ASC',
     );
   }
 }

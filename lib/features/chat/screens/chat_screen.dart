@@ -62,6 +62,8 @@ class _ChatScreenState extends State<ChatScreen> {
   final _textCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   bool _sending = false;
+  String? _sendErrorMessage;
+  Future<void> Function()? _retryFailedSend;
 
   @override
   void initState() {
@@ -73,21 +75,47 @@ class _ChatScreenState extends State<ChatScreen> {
     final user = context.read<AuthProvider>().currentUser;
     if (user == null) return;
     final chat = context.read<ChatProvider>();
-    if (widget.startFreshSession || chat.currentSession == null) {
+    if (widget.startFreshSession) {
       await chat.startNewSession(user.id, cropId: widget.cropId);
+    } else if ((widget.initialDiagnosis?.chatSessionId ?? '').isNotEmpty) {
+      await chat.fetchSessions(user.id);
+      final diagnosisSessionId = widget.initialDiagnosis!.chatSessionId!;
+      final diagnosisSession = chat.sessions
+          .where((session) =>
+              session.id == diagnosisSessionId && !session.isDeleted)
+          .cast<ChatSessionModel?>()
+          .firstOrNull;
+      if (diagnosisSession != null) {
+        await chat.loadSession(diagnosisSession);
+      } else {
+        await chat.startNewSession(user.id, cropId: widget.cropId);
+      }
     } else if (widget.cropId != null &&
         chat.currentSession?.cropId != widget.cropId) {
+      await chat.fetchSessions(user.id);
       // Load latest session for this crop if one exists
       final existing = chat.sessions
           .where((s) => s.cropId == widget.cropId && !s.isDeleted)
           .toList()
-        ..sort((a, b) => (b.lastMessageAt ?? b.createdAt)
-            .compareTo(a.lastMessageAt ?? a.createdAt));
+        ..sort((a, b) {
+          final diagnosisTime = widget.initialDiagnosis?.diagnosedAt;
+          if (diagnosisTime != null) {
+            final aDistance =
+                (a.createdAt.difference(diagnosisTime).inMilliseconds).abs();
+            final bDistance =
+                (b.createdAt.difference(diagnosisTime).inMilliseconds).abs();
+            return aDistance.compareTo(bDistance);
+          }
+          return (b.lastMessageAt ?? b.createdAt)
+              .compareTo(a.lastMessageAt ?? a.createdAt);
+        });
       if (existing.isNotEmpty) {
         await chat.loadSession(existing.first);
       } else {
         await chat.startNewSession(user.id, cropId: widget.cropId);
       }
+    } else if (chat.currentSession == null) {
+      await chat.startNewSession(user.id, cropId: widget.cropId);
     }
     if (widget.initialQuery != null && widget.initialQuery!.isNotEmpty) {
       await _sendMessage(
@@ -137,42 +165,6 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  CropType? _resolveCropTypeForCard({
-    required String rawCropType,
-    required String labelKey,
-    required String summary,
-    required String diseaseName,
-    required String cropName,
-  }) {
-    final candidates = [
-      rawCropType,
-      labelKey,
-      summary,
-      diseaseName,
-      cropName,
-      widget.hintCropType ?? '',
-    ];
-
-    for (final candidate in candidates) {
-      final resolved = _tryCropTypeFromLabel(candidate);
-      if (resolved != null) {
-        return resolved;
-      }
-    }
-
-    final linkedCropId =
-        widget.cropId ?? context.read<ChatProvider>().currentSession?.cropId;
-    if (linkedCropId != null && linkedCropId.isNotEmpty) {
-      for (final crop in context.read<CropsProvider>().crops) {
-        if (crop.id == linkedCropId && !crop.isDeleted) {
-          return crop.cropType;
-        }
-      }
-    }
-
-    return null;
-  }
-
   /// Hint sent to the AI backend when TFLite did not produce a diagnosis.
   String? _effectiveHintCropType() {
     final w = (widget.hintCropType ?? '').trim().toLowerCase();
@@ -196,42 +188,89 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Future<void> _sendMessage(
+  Future<bool> _sendMessage(
     String text, {
     bool hideMessageTextInUi = false,
     DiagnosisModel? attachedDiagnosis,
     List<int>? attachedImageBytes,
+    List<List<int>> attachedImageBytesList = const [],
     String? attachedAudioPath,
     String? attachedVideoPath,
     bool isVideoFrame = false,
   }) async {
+    if (_sending) return false;
+
     final trimmed = text.trim();
-    final hasImage =
-        attachedImageBytes != null && attachedImageBytes.isNotEmpty;
-    final hasAudio = attachedAudioPath != null && attachedAudioPath.trim().isNotEmpty;
-    if (trimmed.isEmpty && !hasImage && !hasAudio) return;
+    final imageAttachments = attachedImageBytesList
+        .where((bytes) => bytes.isNotEmpty)
+        .toList(growable: false);
+    if (imageAttachments.isEmpty &&
+        attachedImageBytes != null &&
+        attachedImageBytes.isNotEmpty) {
+      imageAttachments.add(attachedImageBytes);
+    }
+    final hasImage = imageAttachments.isNotEmpty;
+    final hasAudio =
+        attachedAudioPath != null && attachedAudioPath.trim().isNotEmpty;
+    if (trimmed.isEmpty && !hasImage && !hasAudio) return false;
     final user = context.read<AuthProvider>().currentUser;
-    if (user == null) return;
+    if (user == null) return false;
+
+    final shouldHideMessageText =
+        hideMessageTextInUi || (trimmed.isEmpty && (hasImage || hasAudio));
 
     final content = trimmed.isNotEmpty
         ? trimmed
         : 'I\'ve attached a crop photo. Please analyze it and tell me what you observe — any diseases, pests, or conditions — and what I should do.';
 
-    _textCtrl.clear();
-    setState(() => _sending = true);
-    await context.read<ChatProvider>().sendMessage(
-          userId: user.id,
-          content: content,
-          hideMessageTextInUi: hideMessageTextInUi,
-          attachedDiagnosis: attachedDiagnosis,
-          attachedImageBytes: attachedImageBytes,
-          attachedAudioPath: attachedAudioPath,
-          attachedVideoPath: attachedVideoPath,
-          isVideoFrame: isVideoFrame,
-          hintCropType: _effectiveHintCropType(),
-        );
-    setState(() => _sending = false);
-    _scrollToBottom();
+    setState(() {
+      _sending = true;
+      _sendErrorMessage = null;
+      _retryFailedSend = null;
+    });
+
+    try {
+      await context.read<ChatProvider>().sendMessage(
+            userId: user.id,
+            content: content,
+            hideMessageTextInUi: shouldHideMessageText,
+            attachedDiagnosis: attachedDiagnosis,
+            attachedImageBytes:
+                imageAttachments.isEmpty ? null : imageAttachments.first,
+            attachedImageBytesList: imageAttachments,
+            attachedAudioPath: attachedAudioPath,
+            attachedVideoPath: attachedVideoPath,
+            isVideoFrame: isVideoFrame,
+            hintCropType: _effectiveHintCropType(),
+          );
+      if (mounted) {
+        _scrollToBottom();
+      }
+      return true;
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _sendErrorMessage =
+              'Message could not be sent. Check your connection and retry.';
+          _retryFailedSend = () => _sendMessage(
+                content,
+                hideMessageTextInUi: shouldHideMessageText,
+                attachedDiagnosis: attachedDiagnosis,
+                attachedImageBytes:
+                    imageAttachments.isEmpty ? null : imageAttachments.first,
+                attachedImageBytesList: imageAttachments,
+                attachedAudioPath: attachedAudioPath,
+                attachedVideoPath: attachedVideoPath,
+                isVideoFrame: isVideoFrame,
+              );
+        });
+      }
+      return false;
+    } finally {
+      if (mounted) {
+        setState(() => _sending = false);
+      }
+    }
   }
 
   void _scrollToBottom() {
@@ -258,8 +297,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final user = context.read<AuthProvider>().currentUser;
     if (user == null) return;
 
-    // Refresh session list
-    await chat.fetchSessions(user.id);
+    // Refresh session list in the background – show the sheet immediately
+    // with cached sessions so the user does not wait.
+    unawaited(chat.fetchSessions(user.id));
     if (!mounted) return;
 
     await showModalBottomSheet(
@@ -358,17 +398,74 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
         ),
 
+        if (_sendErrorMessage != null)
+          _SendErrorBanner(
+            message: _sendErrorMessage!,
+            onRetry: _sending ? null : _retryFailedSend,
+            onDismiss: () => setState(() {
+              _sendErrorMessage = null;
+              _retryFailedSend = null;
+            }),
+          ),
+
         // Input bar
         _InputBar(
           controller: _textCtrl,
           sending: _sending,
-          onSend: () => _sendMessage(_textCtrl.text),
-          onSendWithImage: (bytes) =>
-              _sendMessage('', attachedImageBytes: bytes),
-          onSendWithVoice: (text, audioPath) =>
-              _sendMessage(text, attachedAudioPath: audioPath),
+          onSend: (text, imageBytesList) =>
+              _sendMessage(text, attachedImageBytesList: imageBytesList),
+          onSendWithVoice: (text, audioPath) => _sendMessage(
+            text,
+            hideMessageTextInUi: true,
+            attachedAudioPath: audioPath,
+          ),
         ),
       ]),
+    );
+  }
+}
+
+class _SendErrorBanner extends StatelessWidget {
+  final String message;
+  final VoidCallback? onRetry;
+  final VoidCallback onDismiss;
+
+  const _SendErrorBanner({
+    required this.message,
+    required this.onRetry,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+      padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFEBEE),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline, color: Color(0xFFC62828), size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(color: Color(0xFF8E1B1B), fontSize: 12),
+            ),
+          ),
+          TextButton(
+            onPressed: onRetry,
+            child: const Text('Retry'),
+          ),
+          IconButton(
+            onPressed: onDismiss,
+            tooltip: 'Dismiss error',
+            icon: const Icon(Icons.close, size: 18),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -662,8 +759,12 @@ class _MessageBubbleState extends State<_MessageBubble> {
     }
 
     final isUser = message.role == MessageRole.user;
-    final hasImage =
-        message.imageBytes != null && message.imageBytes!.isNotEmpty;
+    final imageBytesList =
+        message.imageBytesList?.where((bytes) => bytes.isNotEmpty).toList() ??
+            (message.imageBytes != null && message.imageBytes!.isNotEmpty
+                ? [message.imageBytes!]
+                : const <Uint8List>[]);
+    final hasImage = imageBytesList.isNotEmpty;
     final hideText = message.metadata?['hide_text'] == true;
     final audioPath = message.metadata?['audio_path'] as String?;
     final videoUrl = message.metadata?['video_url'] as String?;
@@ -675,6 +776,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
         ? List<String>.from(rawActions.map((e) => e.toString()))
         : [];
     final showTreatmentCard = message.metadata?['show_treatment_card'] == true;
+    final planTitle = (message.metadata?['plan_title'] as String?)?.trim();
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -755,77 +857,34 @@ class _MessageBubbleState extends State<_MessageBubble> {
                         ),
                 // ── Image bubble (above text, like Messenger) ──
                 if (hasImage)
-                  GestureDetector(
-                    onTap: () => _showFullImage(context, message.imageBytes!),
-                    child: Stack(
-                      children: [
-                        Container(
-                          constraints: BoxConstraints(
-                              maxWidth:
-                                  MediaQuery.of(context).size.width * 0.72),
-                          margin: EdgeInsets.only(
-                              bottom: message.content.isEmpty ? 0 : 4),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.only(
-                              topLeft: const Radius.circular(18),
-                              topRight: const Radius.circular(18),
-                              bottomLeft: Radius.circular(isUser ? 18 : 4),
-                              bottomRight: Radius.circular(isUser ? 4 : 18),
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                  color: Colors.black.withOpacity(0.10),
-                                  blurRadius: 6,
-                                  offset: const Offset(0, 3))
-                            ],
-                          ),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.only(
-                              topLeft: const Radius.circular(18),
-                              topRight: const Radius.circular(18),
-                              bottomLeft: Radius.circular(isUser ? 18 : 4),
-                              bottomRight: Radius.circular(isUser ? 4 : 18),
-                            ),
-                            child: Image.memory(
-                              message.imageBytes!,
-                              fit: BoxFit.cover,
-                              width: double.infinity,
-                              height: 200,
-                              gaplessPlayback: true,
-                            ),
+                  Container(
+                    height: 200,
+                    constraints: BoxConstraints(
+                      maxWidth: MediaQuery.of(context).size.width * 0.72,
+                    ),
+                    margin: EdgeInsets.only(
+                      bottom: message.content.isEmpty || hideText ? 0 : 4,
+                    ),
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: imageBytesList.length,
+                      separatorBuilder: (_, __) => const SizedBox(width: 6),
+                      itemBuilder: (context, index) => GestureDetector(
+                        onTap: () => _showFullImage(
+                          context,
+                          imageBytesList[index],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: Image.memory(
+                            imageBytesList[index],
+                            width: 200,
+                            height: 200,
+                            fit: BoxFit.cover,
+                            gaplessPlayback: true,
                           ),
                         ),
-                        // Video frame badge
-                        if (message.isVideoFrame)
-                          Positioned(
-                            top: 8,
-                            left: 8,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.65),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.videocam,
-                                      color: Colors.white, size: 12),
-                                  SizedBox(width: 4),
-                                  Text(
-                                    'VIDEO',
-                                    style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 0.5),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                      ],
+                      ),
                     ),
                   ),
                 if (audioPath != null && audioPath.trim().isNotEmpty) ...[
@@ -837,10 +896,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   const SizedBox(height: 6),
                 ],
                 // ── Text bubble ──
-                if (!hideText &&
-                  message.content.isNotEmpty &&
-                    message.content !=
-                        'I\'ve attached a crop photo. Please analyze it and tell me what you observe — any diseases, pests, or conditions — and what I should do.')
+                if (!hideText && message.content.isNotEmpty)
                   Container(
                     constraints: BoxConstraints(
                         maxWidth: MediaQuery.of(context).size.width * 0.78),
@@ -902,7 +958,13 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   ),
                 // ── Treatment checklist (assistant messages only) ──
                 if (!isUser && showTreatmentCard && actions.isNotEmpty)
-                  _buildTreatmentChecklist(context, actions),
+                  _buildTreatmentChecklist(
+                    context,
+                    actions,
+                    title: planTitle?.isNotEmpty == true
+                        ? planTitle!
+                        : 'Treatment Steps',
+                  ),
                 if (!isUser && message.content.trim().isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 6, left: 2),
@@ -1052,12 +1114,12 @@ class _MessageBubbleState extends State<_MessageBubble> {
                         );
                         final cropNameCtrl = TextEditingController(
                           text: labelKey.isNotEmpty
-                            ? labelKey.split('_').first.capitalize()
-                            : rawCropType.isNotEmpty
-                              ? rawCropType.capitalize()
-                              : inferredCropType != null
-                                ? inferredCropType.name.capitalize()
-                                : diseaseName.split(' ').first,
+                              ? labelKey.split('_').first.capitalize()
+                              : rawCropType.isNotEmpty
+                                  ? rawCropType.capitalize()
+                                  : inferredCropType != null
+                                      ? inferredCropType.name.capitalize()
+                                      : diseaseName.split(' ').first,
                         );
                         _showAddCropFromCardDialog(context,
                             diseaseName: diseaseName,
@@ -1198,6 +1260,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     modelName: modelName,
                     imageUrl: imageUrl?.isEmpty == true ? null : imageUrl,
                     diagnosisMode: diagnosisMode,
+                    chatSessionId:
+                        context.read<ChatProvider>().currentSession?.id,
                   );
                   if (!mounted) return;
                   if (cropId != null) {
@@ -1234,7 +1298,11 @@ class _MessageBubbleState extends State<_MessageBubble> {
     );
   }
 
-  Widget _buildTreatmentChecklist(BuildContext context, List<String> actions) {
+  Widget _buildTreatmentChecklist(
+    BuildContext context,
+    List<String> actions, {
+    required String title,
+  }) {
     return Container(
       margin: const EdgeInsets.only(top: 6),
       constraints:
@@ -1259,8 +1327,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
               const Icon(Icons.checklist_rounded,
                   color: AppColors.primary, size: 16),
               const SizedBox(width: 6),
-              const Text('Treatment Steps',
-                  style: TextStyle(
+              Text(title,
+                  style: const TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 12,
                       color: AppColors.primaryDark)),
@@ -1341,7 +1409,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 children: [
                   Icon(Icons.celebration, color: AppColors.primary, size: 14),
                   SizedBox(width: 6),
-                  Text('All steps checked! Track in My Crops.',
+                  Text('All tasks checked! Track in My Crops.',
                       style: TextStyle(
                           fontSize: 12,
                           color: AppColors.primary,
@@ -1625,15 +1693,14 @@ class _ConversationHistorySheet extends StatelessWidget {
 class _InputBar extends StatefulWidget {
   final TextEditingController controller;
   final bool sending;
-  final VoidCallback onSend;
-  final void Function(List<int> imageBytes) onSendWithImage;
-  final Future<void> Function(String text, String audioPath) onSendWithVoice;
+  final Future<bool> Function(String text, List<Uint8List> imageBytesList)
+      onSend;
+  final Future<bool> Function(String text, String audioPath) onSendWithVoice;
 
   const _InputBar({
     required this.controller,
     required this.sending,
     required this.onSend,
-    required this.onSendWithImage,
     required this.onSendWithVoice,
   });
 
@@ -1647,6 +1714,7 @@ class _InputBarState extends State<_InputBar> {
   bool _startingMic = false;
   bool _transcribing = false;
   bool _usingBackendFallback = false;
+  final List<Uint8List> _pendingImageBytesList = [];
 
   @override
   void initState() {
@@ -1662,7 +1730,6 @@ class _InputBarState extends State<_InputBar> {
     final requestedStatus = await Permission.microphone.request();
     return requestedStatus.isGranted;
   }
-
 
   Future<void> _toggleMic() async {
     if (_startingMic || _transcribing) return;
@@ -1792,14 +1859,9 @@ class _InputBarState extends State<_InputBar> {
       final transcript = transcriptResponse.transcript.trim();
 
       if (!mounted) return;
-      widget.controller.text = transcript;
-      widget.controller.selection = TextSelection.fromPosition(
-        TextPosition(offset: widget.controller.text.length),
-      );
       setState(() => _transcribing = false);
 
       if (transcript.isNotEmpty) {
-        widget.controller.clear();
         await widget.onSendWithVoice(transcript, recordingPath);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1811,7 +1873,8 @@ class _InputBarState extends State<_InputBar> {
       setState(() => _transcribing = false);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Voice transcription failed. Check the backend connection and try again.'),
+          content: Text(
+              'Voice transcription failed. Check the backend connection and try again.'),
         ),
       );
     }
@@ -1884,15 +1947,40 @@ class _InputBarState extends State<_InputBar> {
         context,
         MaterialPageRoute(builder: (_) => const _ChatCameraScreen()),
       );
-      if (bytes != null && mounted) widget.onSendWithImage(bytes);
+      if (bytes != null && mounted) {
+        setState(() => _pendingImageBytesList.add(bytes));
+      }
     } else {
       // Gallery via image_picker
       final picker = ImagePicker();
-      final picked =
-          await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
-      if (picked == null) return;
-      final bytes = await picked.readAsBytes();
-      widget.onSendWithImage(bytes);
+      final picked = await picker.pickMultiImage(imageQuality: 85);
+      if (picked.isEmpty) return;
+      final bytesList =
+          await Future.wait(picked.map((image) => image.readAsBytes()));
+      if (mounted) {
+        setState(() {
+          _pendingImageBytesList.addAll(bytesList.map(Uint8List.fromList));
+        });
+      }
+    }
+  }
+
+  Future<void> _submit() async {
+    if (widget.sending) return;
+
+    final text = widget.controller.text;
+    final imageBytesList = List<Uint8List>.from(_pendingImageBytesList);
+    if (text.trim().isEmpty && imageBytesList.isEmpty) return;
+
+    widget.controller.clear();
+    setState(_pendingImageBytesList.clear);
+    final sent = await widget.onSend(text, imageBytesList);
+    if (!sent &&
+        mounted &&
+        widget.controller.text.trim().isEmpty &&
+        _pendingImageBytesList.isEmpty) {
+      widget.controller.text = text;
+      setState(() => _pendingImageBytesList.addAll(imageBytesList));
     }
   }
 
@@ -1917,78 +2005,136 @@ class _InputBarState extends State<_InputBar> {
       ),
       child: SafeArea(
         top: false,
-        child: Row(children: [
-          // Camera / photo
-          _IconBtn(
-            icon: Icons.camera_alt_outlined,
-            color: AppColors.textGray,
-            onTap: _showImageSourceSheet,
-          ),
-          const SizedBox(width: 6),
-
-          // Text field
-          Expanded(
-            child: TextField(
-              controller: widget.controller,
-              maxLines: 4,
-              minLines: 1,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (v) {
-                if (v.trim().isNotEmpty && !widget.sending) widget.onSend();
-              },
-              decoration: InputDecoration(
-                hintText: _isListening
-                    ? 'Listening...'
-                    : 'Ask about crop diseases...',
-                hintStyle: TextStyle(
-                  color: _isListening
-                      ? AppColors.primary
-                      : AppColors.textLightGray,
-                ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(24),
-                  borderSide: BorderSide.none,
-                ),
-                filled: true,
-                fillColor: _isListening
-                    ? AppColors.backgroundGreenLight
-                    : AppColors.backgroundCream,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              ),
-            ),
-          ),
-          const SizedBox(width: 6),
-
-          // Mic button
-          _IconBtn(
-            icon: _isListening ? Icons.stop_circle : Icons.mic_none_rounded,
-            color: _isListening ? Colors.red : AppColors.textGray,
-            onTap: _toggleMic,
-          ),
-          const SizedBox(width: 6),
-
-          // Send button
-          widget.sending
-              ? const SizedBox.square(
-                  dimension: 40,
-                  child: Center(
-                      child: SizedBox.square(
-                          dimension: 20,
-                          child: CircularProgressIndicator(
-                              color: AppColors.primary, strokeWidth: 2))))
-              : GestureDetector(
-                  onTap: widget.onSend,
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: const BoxDecoration(
-                        shape: BoxShape.circle, color: AppColors.primary),
-                    child:
-                        const Icon(Icons.send, color: Colors.white, size: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (_pendingImageBytesList.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.only(left: 46, bottom: 8),
+                child: SizedBox(
+                  height: 84,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _pendingImageBytesList.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 10),
+                    itemBuilder: (context, index) => Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Image.memory(
+                            _pendingImageBytesList[index],
+                            width: 76,
+                            height: 76,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        Positioned(
+                          top: -8,
+                          right: -8,
+                          child: Material(
+                            color: Colors.black87,
+                            shape: const CircleBorder(),
+                            child: InkWell(
+                              customBorder: const CircleBorder(),
+                              onTap: () => setState(
+                                () => _pendingImageBytesList.removeAt(index),
+                              ),
+                              child: const Padding(
+                                padding: EdgeInsets.all(4),
+                                child: Icon(
+                                  Icons.close,
+                                  size: 16,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-        ]),
+              ),
+            ],
+            Row(children: [
+              _IconBtn(
+                icon: Icons.camera_alt_outlined,
+                color: AppColors.textGray,
+                onTap: _showImageSourceSheet,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: TextField(
+                  controller: widget.controller,
+                  maxLines: 4,
+                  minLines: 1,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => _submit(),
+                  decoration: InputDecoration(
+                    hintText: _isListening
+                        ? 'Listening...'
+                        : 'Ask about crop diseases...',
+                    hintStyle: TextStyle(
+                      color: _isListening
+                          ? AppColors.primary
+                          : AppColors.textLightGray,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      borderSide: BorderSide.none,
+                    ),
+                    filled: true,
+                    fillColor: _isListening
+                        ? AppColors.backgroundGreenLight
+                        : AppColors.backgroundCream,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              _IconBtn(
+                icon: _isListening ? Icons.stop_circle : Icons.mic_none_rounded,
+                color: _isListening ? Colors.red : AppColors.textGray,
+                onTap: _toggleMic,
+              ),
+              const SizedBox(width: 6),
+              widget.sending
+                  ? const SizedBox.square(
+                      dimension: 40,
+                      child: Center(
+                        child: SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(
+                            color: AppColors.primary,
+                            strokeWidth: 2,
+                          ),
+                        ),
+                      ),
+                    )
+                  : GestureDetector(
+                      onTap: _submit,
+                      child: Container(
+                        width: 44,
+                        height: 44,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: AppColors.primary,
+                        ),
+                        child: const Icon(
+                          Icons.send,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+            ]),
+          ],
+        ),
       ),
     );
   }
@@ -2075,7 +2221,8 @@ class _ChatCameraScreenState extends State<_ChatCameraScreen> {
       if (mounted) {
         setState(() => _capturing = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not capture photo: $e')),
+          const SnackBar(
+              content: Text('Could not capture the photo. Please try again.')),
         );
       }
     }

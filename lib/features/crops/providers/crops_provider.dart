@@ -10,12 +10,14 @@ import '../../../data/local/bundled_disease_knowledge.dart';
 import '../../../data/models/crop_model.dart';
 import '../../../data/models/diagnosis_model.dart';
 import '../../../data/models/disease_knowledge_model.dart';
+import '../../../data/models/disease_treatment_day_step_model.dart';
 import '../../../data/models/progress_update_model.dart';
 import '../../../data/models/treatment_model.dart';
 import '../../../data/models/treatment_task_model.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../services/health_score_service.dart';
 import '../../../services/sync_service.dart';
+import '../../../services/treatment_plan_service.dart';
 
 class CropsProvider extends ChangeNotifier {
   final SupabaseService _supabase;
@@ -44,7 +46,7 @@ class CropsProvider extends ChangeNotifier {
       .where((c) => c.status != CropStatus.archived && !c.isDeleted)
       .toList();
 
-    List<CropModel> get completedCrops => _crops
+  List<CropModel> get completedCrops => _crops
       .where((c) => c.status == CropStatus.archived && !c.isDeleted)
       .toList();
 
@@ -91,8 +93,22 @@ class CropsProvider extends ChangeNotifier {
     _error = null;
     notifyListeners();
 
+    if (kIsWeb) {
+      try {
+        final remoteRows = await _supabase.getCrops(userId);
+        _crops = remoteRows.map(CropModel.fromMap).toList();
+      } catch (error) {
+        _error = 'Could not load crops. Check your internet connection.';
+      } finally {
+        _isLoading = false;
+        notifyListeners();
+      }
+      return;
+    }
+
     try {
-      final localRows = await _db.queryByUserId(AppConstants.cropsTable, userId);
+      final localRows =
+          await _db.queryByUserId(AppConstants.cropsTable, userId);
       if (localRows.isNotEmpty) {
         _crops = localRows.map(CropModel.fromMap).toList();
         notifyListeners();
@@ -125,7 +141,8 @@ class CropsProvider extends ChangeNotifier {
         await _db.upsertRows(AppConstants.cropsTable, rowsToUpsert);
       }
 
-      final mergedRows = await _db.queryByUserId(AppConstants.cropsTable, userId);
+      final mergedRows =
+          await _db.queryByUserId(AppConstants.cropsTable, userId);
       _crops = mergedRows.map(CropModel.fromMap).toList();
     } catch (_) {
       // Fall back to local cache
@@ -225,6 +242,10 @@ class CropsProvider extends ChangeNotifier {
   // ─── Delete ───────────────────────────────────────────────────────────────
 
   Future<bool> deleteCrop(String cropId) async {
+    if (kIsWeb) {
+      return _deleteCropOnWeb(cropId);
+    }
+
     try {
       final crop = _crops.cast<CropModel?>().firstWhere(
             (item) => item?.id == cropId,
@@ -340,13 +361,89 @@ class CropsProvider extends ChangeNotifier {
       await _hardDeleteLocalRows(
           AppConstants.chatMessagesTable, chatMessageIds);
 
-      await _supabase.softDeleteCrop(cropId);
-      await _db.softDelete(AppConstants.cropsTable, cropId);
+      if (crop != null) {
+        final deletedCrop = crop.copyWith(
+          isDeleted: true,
+          updatedAt: DateTime.now(),
+        );
+        await _upsertLocallyAndQueue(
+          table: AppConstants.cropsTable,
+          recordId: deletedCrop.id,
+          localData: deletedCrop.toMap(),
+          remoteData: _remoteMap(deletedCrop),
+        );
+        await _attemptSync();
+      } else {
+        await _db.softDelete(AppConstants.cropsTable, cropId);
+      }
       _crops.removeWhere((c) => c.id == cropId);
       notifyListeners();
       return true;
     } catch (e) {
       _error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> _deleteCropOnWeb(String cropId) async {
+    final crop = _crops.cast<CropModel?>().firstWhere(
+          (item) => item?.id == cropId,
+          orElse: () => null,
+        );
+    if (crop == null) {
+      _error = 'Could not find this crop.';
+      notifyListeners();
+      return false;
+    }
+
+    try {
+      final remoteDiagnosisRows = await _supabase.getDiagnosesByCrop(cropId);
+      final remoteTreatmentRows = await _supabase.getTreatmentsByCrop(cropId);
+      final remoteProgressRows = await _supabase.getProgressUpdates(cropId);
+      final remoteTaskRows =
+          (await _supabase.getTreatmentTasksByUser(crop.userId))
+              .where((row) => row['crop_id'] == cropId)
+              .toList(growable: false);
+      final remoteNotificationIds =
+          (await _supabase.getNotifications(crop.userId))
+              .where((row) => row['crop_id'] == cropId)
+              .map((row) => row['id'] as String?)
+              .whereType<String>();
+      final remoteSessionRows = await _supabase.getChatSessionsByCrop(cropId);
+      final remoteChatMessageIds = <String>[];
+      for (final session in remoteSessionRows) {
+        final sessionId = session['id'] as String?;
+        if (sessionId == null || sessionId.isEmpty) {
+          continue;
+        }
+        final rows = await _supabase.getChatMessages(sessionId);
+        remoteChatMessageIds.addAll(
+            rows.map((row) => row['id'] as String?).whereType<String>());
+      }
+
+      await _softDeleteRemoteRows(
+          AppConstants.diagnosesTable, remoteDiagnosisRows);
+      await _softDeleteRemoteRows(
+          AppConstants.treatmentsTable, remoteTreatmentRows);
+      await _softDeleteRemoteRows(
+          AppConstants.treatmentTasksTable, remoteTaskRows);
+      await _softDeleteRemoteRows(
+          AppConstants.progressUpdatesTable, remoteProgressRows);
+      await _softDeleteRemoteRows(
+          AppConstants.chatSessionsTable, remoteSessionRows);
+      await _hardDeleteRemoteRows(
+          AppConstants.notificationsTable, remoteNotificationIds);
+      await _hardDeleteRemoteRows(
+          AppConstants.chatMessagesTable, remoteChatMessageIds);
+      await _supabase.softDeleteCrop(cropId);
+
+      _crops.removeWhere((item) => item.id == cropId);
+      _error = null;
+      notifyListeners();
+      return true;
+    } catch (error) {
+      _error = 'Could not delete this crop. Please try again.';
       notifyListeners();
       return false;
     }
@@ -465,6 +562,11 @@ class CropsProvider extends ChangeNotifier {
     required Map<String, dynamic> localData,
     required Map<String, dynamic> remoteData,
   }) async {
+    if (kIsWeb) {
+      await _supabase.upsertRecord(table: table, data: remoteData);
+      return;
+    }
+
     await _db.upsertRow(table, localData);
     await _sync.queueUpsert(
       tableName: table,
@@ -509,6 +611,7 @@ class CropsProvider extends ChangeNotifier {
     String? modelVersion,
     String? imageUrl,
     DiagnosisMode diagnosisMode = DiagnosisMode.online,
+    String? chatSessionId,
     String? locationLabel,
     String? notes,
     DateTime? plantedAt,
@@ -529,7 +632,6 @@ class CropsProvider extends ChangeNotifier {
         Severity.severe => 25.0,
         Severity.moderate => 50.0,
         Severity.mild => 70.0,
-        _ => 55.0,
       };
 
       final crop = CropModel(
@@ -562,6 +664,7 @@ class CropsProvider extends ChangeNotifier {
         id: const Uuid().v4(),
         cropId: cropId,
         userId: userId,
+        chatSessionId: chatSessionId,
         diagnosisMode: diagnosisMode,
         labelKey: labelKey.isEmpty ? null : labelKey,
         diseaseName: normalizedDiseaseName,
@@ -586,9 +689,39 @@ class CropsProvider extends ChangeNotifier {
         remoteData: _diagnosisRemoteMap(diagnosis),
       );
 
+      final normalizedTreatmentSteps = _normalizeTreatmentSteps(treatmentSteps);
+      final knowledge = await _findDiseaseKnowledgeForDiagnosis(
+        cropType: cropType,
+        diseaseName: normalizedDiseaseName,
+        labelKey: labelKey,
+      );
+      final expectedDurationDays = knowledge?.estimatedRecoveryDays ??
+          _expectedDurationFor(
+            labelKey: labelKey,
+            cropType: cropType,
+          );
+      final protocolSteps = knowledge == null
+          ? const <DiseaseTreatmentDayStepModel>[]
+          : await _loadTreatmentProtocol(knowledge.id);
+      final usesReviewedProtocol = TreatmentPlanService.coversExpectedDuration(
+        daySteps: protocolSteps,
+        expectedDurationDays: expectedDurationDays,
+      );
+
       // Create treatment
-      if (treatmentSteps.isNotEmpty) {
+      if (normalizedTreatmentSteps.isNotEmpty || usesReviewedProtocol) {
         final treatmentId = const Uuid().v4();
+        final plan = usesReviewedProtocol
+            ? TreatmentPlanService.buildFromDaySteps(
+                daySteps: protocolSteps,
+                startDate: now,
+                expectedDurationDays: expectedDurationDays,
+              )
+            : TreatmentPlanService.build(
+                treatmentSteps: normalizedTreatmentSteps,
+                startDate: now,
+                expectedDurationDays: expectedDurationDays,
+              );
         final isHealthyPlan = severity == Severity.healthy ||
             normalizedDiseaseName.toLowerCase().contains('healthy');
         final treatment = TreatmentModel(
@@ -600,11 +733,11 @@ class CropsProvider extends ChangeNotifier {
           treatmentTitle: isHealthyPlan
               ? 'Daily Care Plan — ${cropType.name[0].toUpperCase()}${cropType.name.substring(1)}'
               : 'Treatment Plan — $normalizedDiseaseName',
-          treatmentSteps: treatmentSteps,
-          expectedDurationDays: 14,
+          treatmentSteps: plan.sourceSteps,
+          expectedDurationDays: plan.durationDays,
           status: TreatmentStatus.ongoing,
           startedAt: now,
-          source: 'ai-diagnosis',
+          source: usesReviewedProtocol ? 'disease-protocol' : 'ai-diagnosis',
           createdAt: now,
           updatedAt: now,
         );
@@ -616,15 +749,19 @@ class CropsProvider extends ChangeNotifier {
           remoteData: _treatmentRemoteMap(treatment),
         );
 
-        // Create one task per treatment step
-        for (var i = 0; i < treatmentSteps.length; i++) {
+        // Expand recurring instructions into dated task instances so the plan
+        // works offline, in notifications, and in the calendar without a
+        // background recurrence scheduler.
+        for (var i = 0; i < plan.tasks.length; i++) {
+          final plannedTask = plan.tasks[i];
           final task = TreatmentTaskModel(
             id: const Uuid().v4(),
             treatmentId: treatmentId,
             cropId: cropId,
             userId: userId,
-            title: treatmentSteps[i],
-            dueAt: now.add(Duration(days: i)),
+            title: plannedTask.title,
+            description: plannedTask.description,
+            dueAt: plannedTask.dueAt,
             status: TaskStatus.pending,
             taskOrder: i + 1,
             createdAt: now,
@@ -680,6 +817,29 @@ class CropsProvider extends ChangeNotifier {
     final now = DateTime.now();
     try {
       _error = null;
+      if (kIsWeb) {
+        final userId = _supabase.currentUser?.id;
+        if (userId == null) {
+          return null;
+        }
+        final taskRows = await _supabase.getTreatmentTasksByUser(userId);
+        final taskRow = taskRows.cast<Map<String, dynamic>?>().firstWhere(
+              (row) => row?['id'] == taskId,
+              orElse: () => null,
+            );
+        if (taskRow == null) {
+          return null;
+        }
+        await _supabase.markTreatmentTaskCompleted(taskId, completedAt: now);
+        final updated = TreatmentTaskModel.fromMap(taskRow).copyWith(
+          status: TaskStatus.completed,
+          completedAt: now,
+          updatedAt: now,
+        );
+        await fetchCrops(userId);
+        return updated;
+      }
+
       final database = await _db.database;
       final rows = await database.query(
         AppConstants.treatmentTasksTable,
@@ -806,9 +966,16 @@ class CropsProvider extends ChangeNotifier {
     _error = null;
     final now = DateTime.now();
     final timelineStart = DateTime(now.year, now.month, now.day);
+    final plan = TreatmentPlanService.build(
+      treatmentSteps: cleanedSteps,
+      startDate: timelineStart,
+      expectedDurationDays: math.max(cleanedSteps.length, 7),
+    );
     final reassessmentNote = _mergeNotes(
       explanation,
-      sources.isEmpty ? null : 'Sources:\n${sources.map((source) => '- $source').join('\n')}',
+      sources.isEmpty
+          ? null
+          : 'Sources:\n${sources.map((source) => '- $source').join('\n')}',
     );
 
     final closedTreatment = currentTreatment.copyWith(
@@ -833,8 +1000,8 @@ class CropsProvider extends ChangeNotifier {
       userId: crop.userId,
       diseaseName: currentTreatment.diseaseName,
       treatmentTitle: 'Extended Treatment — ${currentTreatment.diseaseName}',
-      treatmentSteps: cleanedSteps,
-      expectedDurationDays: math.max(cleanedSteps.length, 7),
+      treatmentSteps: plan.sourceSteps,
+      expectedDurationDays: plan.durationDays,
       status: TreatmentStatus.ongoing,
       startedAt: timelineStart,
       notes: reassessmentNote,
@@ -851,14 +1018,16 @@ class CropsProvider extends ChangeNotifier {
     );
 
     final newTasks = <TreatmentTaskModel>[];
-    for (var index = 0; index < cleanedSteps.length; index++) {
+    for (var index = 0; index < plan.tasks.length; index++) {
+      final plannedTask = plan.tasks[index];
       final task = TreatmentTaskModel(
         id: const Uuid().v4(),
         treatmentId: extendedTreatment.id,
         cropId: crop.id,
         userId: crop.userId,
-        title: cleanedSteps[index],
-        dueAt: timelineStart.add(Duration(days: index)),
+        title: plannedTask.title,
+        description: plannedTask.description,
+        dueAt: plannedTask.dueAt,
         status: TaskStatus.pending,
         taskOrder: index + 1,
         createdAt: now,
@@ -946,6 +1115,100 @@ class CropsProvider extends ChangeNotifier {
       normalized.add(trimmed);
     }
     return normalized;
+  }
+
+  int? _expectedDurationFor({
+    required String labelKey,
+    required CropType cropType,
+  }) {
+    final normalizedLabel = labelKey.trim().toLowerCase();
+    final candidates = [
+      ..._diseaseKnowledge,
+      ...BundledDiseaseKnowledge.records(cropType: cropType.value),
+    ];
+    for (final knowledge in candidates) {
+      if (knowledge.labelKey?.toLowerCase() == normalizedLabel) {
+        return knowledge.estimatedRecoveryDays;
+      }
+    }
+    return null;
+  }
+
+  Future<List<DiseaseTreatmentDayStepModel>> _loadTreatmentProtocol(
+    String diseaseKnowledgeBaseId,
+  ) async {
+    try {
+      final remoteRows =
+          await _supabase.getDiseaseTreatmentDaySteps(diseaseKnowledgeBaseId);
+      if (remoteRows.isNotEmpty) {
+        final steps =
+            remoteRows.map(DiseaseTreatmentDayStepModel.fromMap).toList();
+        await _db.upsertRows(
+          AppConstants.diseaseTreatmentDayStepsTable,
+          steps.map((step) => step.toMap()),
+        );
+        return steps;
+      }
+    } catch (_) {}
+
+    final cachedRows =
+        await _db.queryDiseaseTreatmentDaySteps(diseaseKnowledgeBaseId);
+    return cachedRows.map(DiseaseTreatmentDayStepModel.fromMap).toList();
+  }
+
+  Future<DiseaseKnowledgeModel?> _findDiseaseKnowledgeForDiagnosis({
+    required CropType cropType,
+    required String diseaseName,
+    required String labelKey,
+  }) async {
+    if (_diseaseKnowledge.isEmpty) {
+      await fetchDiseaseKnowledge(cropType: cropType.value);
+    }
+
+    final requestedLabel = labelKey.trim().toLowerCase();
+    final requestedDisease = diseaseName.trim().toLowerCase();
+    final normalizedLabel = _knowledgeComparisonKey(labelKey, cropType);
+    final normalizedDisease = _knowledgeComparisonKey(diseaseName, cropType);
+
+    for (final knowledge in _diseaseKnowledge) {
+      if (knowledge.cropType != cropType) continue;
+      if (requestedLabel.isNotEmpty &&
+          (knowledge.labelKey?.trim().toLowerCase() == requestedLabel ||
+              knowledge.diseaseName.trim().toLowerCase() == requestedLabel)) {
+        return knowledge;
+      }
+    }
+
+    for (final knowledge in _diseaseKnowledge) {
+      if (knowledge.cropType == cropType &&
+          requestedDisease.isNotEmpty &&
+          knowledge.diseaseName.trim().toLowerCase() == requestedDisease) {
+        return knowledge;
+      }
+    }
+
+    for (final knowledge in _diseaseKnowledge) {
+      if (knowledge.cropType != cropType) continue;
+      final knowledgeLabel =
+          _knowledgeComparisonKey(knowledge.labelKey ?? '', cropType);
+      final knowledgeDisease =
+          _knowledgeComparisonKey(knowledge.diseaseName, cropType);
+      if (normalizedLabel.isNotEmpty && normalizedLabel == knowledgeLabel) {
+        return knowledge;
+      }
+      if (normalizedDisease.isNotEmpty &&
+          normalizedDisease == knowledgeDisease) {
+        return knowledge;
+      }
+    }
+    return null;
+  }
+
+  String _knowledgeComparisonKey(String value, CropType cropType) {
+    var normalized = value.trim().toLowerCase();
+    normalized = normalized.replaceFirst('${cropType.value}_', '');
+    normalized = normalized.replaceFirst('${cropType.value} ', '');
+    return normalized.replaceAll(RegExp(r'[^a-z0-9]+'), '');
   }
 
   String? _mergeNotes(String? existing, String? addition) {

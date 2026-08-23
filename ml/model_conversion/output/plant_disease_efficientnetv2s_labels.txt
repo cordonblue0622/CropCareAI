@@ -1,0 +1,24 @@
+Corn_(maize)___Common_rust_
+Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot
+Corn_(maize)___healthy
+Corn_(maize)___Northern_Leaf_Blight
+Eggplant_healthy
+Eggplant_insect_pest
+Eggplant_leaf_spot
+Eggplant_mosaic_virus
+Eggplant_small_leaf
+Eggplant_white_mold
+Eggplant_wilt
+pepper_bacterial_spot
+pepper_healthy
+squash_powdery_mildew
+tomato_bacterial_spot
+tomato_early_blight
+tomato_healthy
+tomato_late_blight
+tomato_leaf_mold
+tomato_mosaic_virus
+tomato_septoria_leaf_spot
+tomato_spider_mites
+tomato_target_spot
+tomato_yellow_leaf_curl_virus

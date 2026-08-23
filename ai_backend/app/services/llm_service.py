@@ -13,6 +13,13 @@ _CCAI_JSON_PREFIX = "CCAI_JSON:"
 
 # Human-readable names for every label the trained EfficientNet model recognises.
 _TRAINED_LABEL_NAMES: dict[str, str] = {
+    "eggplant_healthy": "Eggplant - Healthy",
+    "eggplant_insect_pest": "Eggplant - Insect Pest Damage",
+    "eggplant_leaf_spot": "Eggplant - Leaf Spot",
+    "eggplant_mosaic_virus": "Eggplant - Mosaic Virus",
+    "eggplant_small_leaf": "Eggplant - Small Leaf",
+    "eggplant_white_mold": "Eggplant - White Mold",
+    "eggplant_wilt": "Eggplant - Wilt",
     "pepper_bacterial_spot": "Bell Pepper – Bacterial Spot",
     "pepper_healthy": "Bell Pepper – Healthy",
     "squash_powdery_mildew": "Squash – Powdery Mildew",
@@ -33,9 +40,10 @@ _SYSTEM_PROMPT = """You are CropCare AI, an expert crop disease assistant for Fi
 App scope (only these vegetables): tomato, bell pepper, squash, eggplant, and bok choy (pechay).
 If the photo is not one of these crops (for example rice, corn, ornamentals, pets, food on a plate), do NOT invent a vegetable disease. Briefly say CropCare focuses on those five crops and ask for a leaf photo of one of them.
 
-The on-device TFLite scanner only covers tomato, pepper, and squash diseases (13 conditions below). For eggplant and pechay there is no on-device model: rely on the image and the knowledge excerpts.
+The on-device TFLite scanner covers tomato, pepper, squash, and eggplant conditions. Pechay has no on-device model, so rely on the image and the knowledge excerpts.
 
 Scanner labels (hints only — verify on the image):
+EGGPLANT: Healthy · Insect Pest Damage · Leaf Spot · Mosaic Virus · Small Leaf · White Mold · Wilt
 PEPPER: Bacterial Spot · Healthy
 SQUASH: Powdery Mildew
 TOMATO: Bacterial Spot · Early Blight · Late Blight · Leaf Mold · Septoria Leaf Spot · Spider Mites · Target Spot · Yellow Leaf Curl Virus · Mosaic Virus · Healthy
@@ -70,10 +78,11 @@ _CONVERSATIONAL_PROMPT = """You are CropCare AI helping a smallholder vegetable 
 The farmer is continuing an earlier chat (they may have already received a diagnosis). Answer their latest question directly in plain, simple English and keep the reply anchored to the active crop and problem already established in the chat unless the farmer clearly switches crops.
 
 Rules:
-- Stay focused on the active crop context. Do not drift to another crop unless the farmer explicitly changes crops.
+- The active crop supplied in the chat context is authoritative. Answer only for that crop, even if prior messages or general examples mention tomato. Do not change crops or default to tomato unless the farmer explicitly names a different crop.
 - If the farmer asks about a product, brand, spray, or active ingredient, explain whether it fits the active crop and likely problem, what it is mainly used for, and when it would not be a good fit.
 - If the farmer asks about fertilizer, feeding, or nutrients, answer directly for the named crop and growth stage. If web search results are available, use them to strengthen product-specific guidance.
 - If web search results are available, use them to verify what a named product is for or what active ingredient it contains. If reliable web results are not available, use your own crop-protection knowledge and clearly tell the farmer to verify the label, crop registration, dosage, and pre-harvest interval locally.
+- For CropCare AI app-support questions, explain the app's real workflows in plain language: scans and chats can cover tomato, bell pepper, squash, eggplant, and pechay; daily plans use one crop check-in after that day's actions; and offline information syncs when connectivity returns. Do not claim unavailable features or ask for a crop photo when the question is about using the app.
 - Do NOT repeat the full diagnosis template (no required "What it is / Treatment" sections) unless they explicitly ask you to restate the plan.
 - Do NOT add generic warning footers or tip lists unless the question is about safety or compliance.
 - Stay focused on the question. Under 200 words unless they ask for detail.
@@ -177,6 +186,7 @@ class LlmService:
         # skip GPT entirely and return a short intro without structured output.
         if (
             not payload.image_data_url
+            and not payload.image_data_urls
             and not payload.diagnosis
             and len(payload.conversation_history) < 2
             and self._is_greeting(payload.user_message)
@@ -215,7 +225,7 @@ class LlmService:
 
         if active_crop:
             user_context_lines.append(
-                f"Active crop focus for this chat: {active_crop}"
+                f"AUTHORITATIVE ACTIVE CROP: {active_crop}. Answer only for {active_crop}; do not default to tomato or another crop unless the farmer explicitly changes crops."
             )
 
         user_context_lines.append(f"Farmer's latest message: {payload.user_message}")
@@ -264,9 +274,16 @@ class LlmService:
         user_content: list[dict[str, str]] = [
             {"type": "input_text", "text": user_context}
         ]
-        if payload.image_data_url:
+        image_data_urls = [
+            image_url.strip()
+            for image_url in payload.image_data_urls
+            if image_url.strip()
+        ]
+        if not image_data_urls and payload.image_data_url:
+            image_data_urls = [payload.image_data_url]
+        for image_data_url in image_data_urls:
             user_content.append(
-                {"type": "input_image", "image_url": payload.image_data_url}
+                {"type": "input_image", "image_url": image_data_url}
             )
 
         try:
@@ -327,7 +344,7 @@ class LlmService:
         extra_rules: list[str] = []
         if active_crop:
             extra_rules.append(
-                f"Active crop focus for this reply: {active_crop}. Keep the answer specific to {active_crop} unless the farmer clearly switches crops."
+                f"AUTHORITATIVE ACTIVE CROP: {active_crop}. Every recommendation must apply to {active_crop}. Never default to tomato or substitute another crop unless the farmer explicitly changes crops."
             )
         if is_product_query:
             extra_rules.append(

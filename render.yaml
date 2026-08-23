@@ -16,6 +16,6 @@ services:
       - key: ENABLE_MOCK_SERVICES
         value: "false"
       - key: REQUIRE_AUTH
-        value: "false"
+        value: "true"
       - key: CORS_ORIGINS
         value: http://localhost:8080,http://127.0.0.1:8080

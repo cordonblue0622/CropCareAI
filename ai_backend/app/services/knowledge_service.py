@@ -56,6 +56,12 @@ _INLINE_KNOWLEDGE: dict[str, dict[str, str]] = {
             "Apply balanced fertiliser (14-14-14 NPK) every 3 weeks during fruiting. "
             "Monitor for sucking insects (mites, aphids, thrips) which can spread viruses quickly."
         ),
+        "treatment_steps": [
+            "Day 1: Keep the soil evenly moist without waterlogging the roots.",
+            "Day 2: Inspect leaf undersides for mites, aphids, and thrips.",
+            "Day 3: Apply balanced fertiliser only on the scheduled feeding day during fruiting.",
+            "Day 4: Remove damaged leaves and keep the bed clean to reduce pest pressure.",
+        ],
         "source": "FAO/PCAARRD inline knowledge",
     },
     "eggplant_insect_pest": {
@@ -143,6 +149,12 @@ _INLINE_KNOWLEDGE: dict[str, dict[str, str]] = {
             "Apply calcium and magnesium foliar sprays to prevent blossom-end rot. "
             "Scout regularly for thrips and aphids which vector pepper viruses."
         ),
+        "treatment_steps": [
+            "Day 1: Water at the base and keep the soil evenly moist.",
+            "Day 2: Check leaves and young shoots for thrips, aphids, and fresh spots.",
+            "Day 3: Check flowers and fruits for blossom-end rot and apply calcium-magnesium feed only if needed.",
+            "Day 4: Remove weeds and keep the plant area open for airflow.",
+        ],
         "source": "FAO/PCAARRD inline knowledge",
     },
     "squash_powdery_mildew": {
@@ -258,6 +270,12 @@ _INLINE_KNOWLEDGE: dict[str, dict[str, str]] = {
             "Apply balanced fertiliser (16-16-16) at transplanting, then shift to high-potassium "
             "(like 12-12-17) once fruiting starts. Scout twice a week for early detection of blight and pests."
         ),
+        "treatment_steps": [
+            "Day 1: Water at the base and keep stems supported on stakes or a trellis.",
+            "Day 2: Inspect leaves for early blight spots, wilting, or pest damage.",
+            "Day 3: Feed with balanced fertiliser, or shift to higher potassium once fruiting starts.",
+            "Day 4: Remove weeds and keep lower leaves away from wet soil to maintain airflow.",
+        ],
         "source": "FAO/PCAARRD inline knowledge",
     },
 }

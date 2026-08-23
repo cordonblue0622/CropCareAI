@@ -42,6 +42,17 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
     }).toList();
   }
 
+  bool get _hasActiveFilters =>
+      _filterType != null || _searchQuery.trim().isNotEmpty;
+
+  void _clearFilters() {
+    _searchCtrl.clear();
+    setState(() {
+      _filterType = null;
+      _searchQuery = '';
+    });
+  }
+
   Future<String?> _previewImageFor(String cropId) async {
     final localImage =
         await context.read<DatabaseHelper>().getLatestCropImageUrl(cropId);
@@ -57,10 +68,10 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
     final user = context.watch<AuthProvider>().currentUser;
     final activeCrops = _filtered(crops.activeCrops);
     final completedCrops = _filtered(crops.completedCrops);
+    final hasActiveFilters = _hasActiveFilters;
     final healedCrops = completedCrops.where(_isHealedCompletedCrop).toList();
-    final needsHelpCrops = completedCrops
-        .where((crop) => !_isHealedCompletedCrop(crop))
-        .toList();
+    final needsHelpCrops =
+        completedCrops.where((crop) => !_isHealedCompletedCrop(crop)).toList();
 
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
@@ -170,9 +181,15 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
                     ? activeCrops.isEmpty
                         ? _emptyState(
                             context,
-                            title: 'No active crops found',
-                            subtitle:
-                                'Add your first crop or clear the current filters.',
+                            title: hasActiveFilters
+                                ? 'No crops match your filters'
+                                : 'No active crops found',
+                            subtitle: hasActiveFilters
+                                ? 'Clear your search and crop type filter to see all crops.'
+                                : 'Add your first crop to begin tracking its health.',
+                            showAddAction: !hasActiveFilters,
+                            onClearFilters:
+                                hasActiveFilters ? _clearFilters : null,
                           )
                         : ListView.separated(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
@@ -199,10 +216,15 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
                     : completedCrops.isEmpty
                         ? _emptyState(
                             context,
-                            title: 'No treated crops yet',
-                            subtitle:
-                                'Finished treatment timelines will appear here.',
+                            title: hasActiveFilters
+                                ? 'No treated crops match your filters'
+                                : 'No treated crops yet',
+                            subtitle: hasActiveFilters
+                                ? 'Clear your search and crop type filter to see treated crops.'
+                                : 'Finished treatment timelines will appear here.',
                             showAddAction: false,
+                            onClearFilters:
+                                hasActiveFilters ? _clearFilters : null,
                           )
                         : ListView(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
@@ -337,6 +359,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
     required String title,
     required String subtitle,
     bool showAddAction = true,
+    VoidCallback? onClearFilters,
   }) {
     return Center(
       child: Column(
@@ -352,6 +375,14 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
                   color: AppColors.textDark)),
           const SizedBox(height: 8),
           Text(subtitle, style: const TextStyle(color: AppColors.textGray)),
+          if (onClearFilters != null) ...[
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: onClearFilters,
+              icon: const Icon(Icons.filter_alt_off_outlined),
+              label: const Text('Clear Filters'),
+            ),
+          ],
           if (showAddAction) ...[
             const SizedBox(height: 20),
             ElevatedButton.icon(
@@ -645,7 +676,7 @@ class _CropCard extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                color: badgeColor.withOpacity(0.9),
+                  color: badgeColor.withOpacity(0.9),
                   borderRadius: BorderRadius.circular(8)),
               child: Text(badgeLabel,
                   style: const TextStyle(

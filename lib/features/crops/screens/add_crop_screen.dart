@@ -60,11 +60,12 @@ class _AddCropScreenState extends State<AddCropScreen> {
           userId: user.id,
           cropName: _nameCtrl.text.trim(),
           cropType: _selectedType,
-          plotCode: _plotCtrl.text.trim().isEmpty ? null : _plotCtrl.text.trim(),
-          locationLabel:
-              _locationCtrl.text.trim().isEmpty ? null : _locationCtrl.text.trim(),
-          notes:
-              _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
+          plotCode:
+              _plotCtrl.text.trim().isEmpty ? null : _plotCtrl.text.trim(),
+          locationLabel: _locationCtrl.text.trim().isEmpty
+              ? null
+              : _locationCtrl.text.trim(),
+          notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
           plantedAt: _plantedAt,
         );
       } else {
@@ -72,7 +73,8 @@ class _AddCropScreenState extends State<AddCropScreen> {
           widget.existing!.copyWith(
             cropName: _nameCtrl.text.trim(),
             cropType: _selectedType,
-            plotCode: _plotCtrl.text.trim().isEmpty ? null : _plotCtrl.text.trim(),
+            plotCode:
+                _plotCtrl.text.trim().isEmpty ? null : _plotCtrl.text.trim(),
             locationLabel: _locationCtrl.text.trim().isEmpty
                 ? null
                 : _locationCtrl.text.trim(),
@@ -86,7 +88,9 @@ class _AddCropScreenState extends State<AddCropScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to save: $e')));
+          const SnackBar(
+              content: Text('Could not save this crop. Please try again.')),
+        );
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -144,13 +148,13 @@ class _AddCropScreenState extends State<AddCropScreen> {
             _buildField(
               controller: _nameCtrl,
               hint: 'e.g. Tomato Plot A',
-              validator: (v) => context.read<CropsProvider>().validateUniqueCropName(
-                cropName: v ?? '',
-                excludingCropId: widget.existing?.id,
-              ),
+              validator: (v) =>
+                  context.read<CropsProvider>().validateUniqueCropName(
+                        cropName: v ?? '',
+                        excludingCropId: widget.existing?.id,
+                      ),
             ),
             const SizedBox(height: 16),
-
             _buildLabel('Crop Type *'),
             DropdownButtonFormField<CropType>(
               initialValue: _selectedType,
@@ -158,24 +162,20 @@ class _AddCropScreenState extends State<AddCropScreen> {
               items: CropType.values
                   .map((t) => DropdownMenuItem(
                         value: t,
-                        child: Text(
-                            t.name[0].toUpperCase() + t.name.substring(1)),
+                        child:
+                            Text(t.name[0].toUpperCase() + t.name.substring(1)),
                       ))
                   .toList(),
               onChanged: (v) => setState(() => _selectedType = v!),
             ),
             const SizedBox(height: 16),
-
             _buildLabel('Plot Code'),
             _buildField(controller: _plotCtrl, hint: 'e.g. PLOT-01'),
             const SizedBox(height: 16),
-
             _buildLabel('Location'),
             _buildField(
-                controller: _locationCtrl,
-                hint: 'e.g. Barangay Mantalongon'),
+                controller: _locationCtrl, hint: 'e.g. Barangay Mantalongon'),
             const SizedBox(height: 16),
-
             _buildLabel('Planted At'),
             GestureDetector(
               onTap: _pickDate,
@@ -202,7 +202,6 @@ class _AddCropScreenState extends State<AddCropScreen> {
               ),
             ),
             const SizedBox(height: 16),
-
             _buildLabel('Notes'),
             _buildField(
               controller: _notesCtrl,
@@ -210,7 +209,6 @@ class _AddCropScreenState extends State<AddCropScreen> {
               maxLines: 3,
             ),
             const SizedBox(height: 32),
-
             ElevatedButton(
               onPressed: _saving ? null : _save,
               style: ElevatedButton.styleFrom(
@@ -222,8 +220,8 @@ class _AddCropScreenState extends State<AddCropScreen> {
               ),
               child: Text(
                 _saving ? 'Saving...' : (isEdit ? 'Update Crop' : 'Add Crop'),
-                style: const TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w700),
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
               ),
             ),
           ],

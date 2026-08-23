@@ -6,6 +6,7 @@ import '../../../data/models/user_model.dart';
 import '../auth/providers/auth_provider.dart';
 import '../auth/screens/login_screen.dart';
 import '../chat/providers/chat_provider.dart';
+import '../chat/screens/chat_screen.dart';
 import '../crops/providers/crops_provider.dart';
 import '../notifications/providers/notifications_provider.dart';
 import 'nav_drawer.dart';
@@ -181,7 +182,16 @@ class AccountScreen extends StatelessWidget {
               _NavItem(
                 icon: Icons.help_outline,
                 label: 'Help & FAQ',
-                onTap: () {},
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ChatScreen(
+                      startFreshSession: true,
+                      initialQuery:
+                          'I need help using CropCare AI. Explain what you can help with in the app, including scans, daily check-ins, treatment plans, crop syncing, and the five supported crops.',
+                    ),
+                  ),
+                ),
               ),
               _NavItem(
                 icon: Icons.info_outline,

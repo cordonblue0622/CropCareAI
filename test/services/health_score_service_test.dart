@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cropcare_ai/core/constants/app_enums.dart';
 import 'package:cropcare_ai/data/models/diagnosis_model.dart';
+import 'package:cropcare_ai/data/models/progress_update_model.dart';
 import 'package:cropcare_ai/data/models/treatment_task_model.dart';
 import 'package:cropcare_ai/services/health_score_service.dart';
 
@@ -21,7 +22,8 @@ void main() {
           title: 'Task $id',
           dueAt: dueAt,
           completedAt: completedAt,
-          status: completedAt != null ? TaskStatus.completed : TaskStatus.pending,
+          status:
+              completedAt != null ? TaskStatus.completed : TaskStatus.pending,
           createdAt: dueAt,
           updatedAt: completedAt ?? dueAt,
         );
@@ -43,6 +45,23 @@ void main() {
           updatedAt: diagnosedAt,
         );
 
+    ProgressUpdateModel progressUpdate({
+      required String id,
+      required DateTime updateDate,
+      required double healthScore,
+      required ProgressStatus status,
+    }) =>
+        ProgressUpdateModel(
+          id: id,
+          cropId: 'c',
+          userId: 'u',
+          healthScore: healthScore,
+          progressStatus: status,
+          updateDate: updateDate,
+          createdAt: updateDate,
+          updatedAt: updateDate,
+        );
+
     test('empty inputs → 14 points all at 100, status insufficientData', () {
       final curve = HealthScoreService.compute14DayCurve(
         tasks: const [],
@@ -62,7 +81,9 @@ void main() {
         tasks: const [],
         diagnoses: [
           diagnosis(
-              id: 'dx', severity: Severity.severe, diagnosedAt: today.subtract(const Duration(days: 13))),
+              id: 'dx',
+              severity: Severity.severe,
+              diagnosedAt: today.subtract(const Duration(days: 13))),
         ],
         now: today,
       );
@@ -83,7 +104,9 @@ void main() {
       ];
       final diagnoses = [
         diagnosis(
-            id: 'dx', severity: Severity.mild, diagnosedAt: today.subtract(const Duration(days: 13))),
+            id: 'dx',
+            severity: Severity.mild,
+            diagnosedAt: today.subtract(const Duration(days: 13))),
       ];
       final curve = HealthScoreService.compute14DayCurve(
         tasks: tasks,
@@ -101,15 +124,9 @@ void main() {
             id: 't1',
             dueAt: today.subtract(const Duration(days: 5)),
             completedAt: today.subtract(const Duration(days: 5))),
-        task(
-            id: 't2',
-            dueAt: today.subtract(const Duration(days: 5))),
-        task(
-            id: 't3',
-            dueAt: today.subtract(const Duration(days: 5))),
-        task(
-            id: 't4',
-            dueAt: today.subtract(const Duration(days: 5))),
+        task(id: 't2', dueAt: today.subtract(const Duration(days: 5))),
+        task(id: 't3', dueAt: today.subtract(const Duration(days: 5))),
+        task(id: 't4', dueAt: today.subtract(const Duration(days: 5))),
       ];
       final curve = HealthScoreService.compute14DayCurve(
         tasks: tasks,
@@ -132,7 +149,9 @@ void main() {
         tasks: tasks,
         diagnoses: [
           diagnosis(
-              id: 'dx', severity: Severity.severe, diagnosedAt: DateTime(2026, 4, 26)),
+              id: 'dx',
+              severity: Severity.severe,
+              diagnosedAt: DateTime(2026, 4, 26)),
         ],
         now: today,
       );
@@ -153,6 +172,31 @@ void main() {
         now: today,
       );
       expect(curve.last.status, ProgressStatus.stable);
+    });
+
+    test('uses the latest accepted AI assessment through later graph dates',
+        () {
+      final checkInDate = today.subtract(const Duration(days: 2));
+      final curve = HealthScoreService.compute14DayCurve(
+        tasks: const [],
+        diagnoses: const [],
+        progressUpdates: [
+          progressUpdate(
+            id: 'check-in',
+            updateDate: checkInDate,
+            healthScore: 78,
+            status: ProgressStatus.improving,
+          ),
+        ],
+        now: today,
+      );
+
+      final checkInPoint =
+          curve.firstWhere((point) => point.date == checkInDate);
+      expect(checkInPoint.score, 78);
+      expect(checkInPoint.status, ProgressStatus.improving);
+      expect(curve.last.score, 78);
+      expect(curve.last.status, ProgressStatus.improving);
     });
   });
 }

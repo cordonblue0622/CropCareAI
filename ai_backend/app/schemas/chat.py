@@ -28,6 +28,7 @@ class ChatRequest(BaseModel):
     crop_id: str | None = None
     diagnosis: DiagnosisContext | None = None
     image_data_url: str | None = None
+    image_data_urls: list[str] = Field(default_factory=list)
     weather: WeatherContext | None = None
     conversation_history: list[ConversationTurn] = Field(default_factory=list)
     locale: str | None = "en"

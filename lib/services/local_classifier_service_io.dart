@@ -7,12 +7,10 @@ import 'tflite_classifier_core.dart';
 
 /// Loads the shipped on-device TFLite model.
 ///
-/// The shipped PlantVillage model covers tomato, bell pepper, squash, and many
-/// other crops, but the app still rejects explicitly selected crops that are
-/// not present in the bundled label file, such as eggplant or pechay.
+/// The shipped CropCare model supports the bundled disease label families.
 class LocalClassifierService {
   static const String _modelName = 'plant_disease_efficientnetv2s';
-  static const String _modelVersion = 'plantvillage-38-float16';
+  static const String _modelVersion = 'cropcare-24-efficientnetv2s-float16';
 
   Interpreter? _interpreter;
   List<String>? _labels;

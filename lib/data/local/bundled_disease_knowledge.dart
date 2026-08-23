@@ -27,6 +27,8 @@ class BundledDiseaseKnowledge {
     List<String>? preventionSteps,
     int? estimatedRecoveryDays,
     String? cautionNotes,
+    String? sourceName,
+    String? sourceUrl,
   }) {
     return DiseaseKnowledgeModel(
       id: labelKey,
@@ -39,7 +41,8 @@ class BundledDiseaseKnowledge {
       preventionSteps: preventionSteps,
       estimatedRecoveryDays: estimatedRecoveryDays,
       cautionNotes: cautionNotes,
-      sourceName: 'Bundled offline knowledge',
+      sourceName: sourceName ?? 'Bundled offline knowledge',
+      sourceUrl: sourceUrl,
       createdAt: _timestamp,
       updatedAt: _timestamp,
     );
@@ -213,7 +216,8 @@ class BundledDiseaseKnowledge {
         'Use TYLCV-resistant varieties when available.',
         'Use reflective mulch or insect netting to reduce whitefly pressure.',
       ],
-      cautionNotes: 'There is no curative treatment once the plant is infected by the virus.',
+      cautionNotes:
+          'There is no curative treatment once the plant is infected by the virus.',
     ),
     _record(
       cropType: CropType.tomato,
@@ -309,6 +313,283 @@ class BundledDiseaseKnowledge {
         'Avoid excessive nitrogen that creates dense soft foliage.',
       ],
       estimatedRecoveryDays: 10,
+    ),
+    _record(
+      cropType: CropType.eggplant,
+      labelKey: 'eggplant_healthy',
+      diseaseName: 'Eggplant Healthy',
+      description:
+          'The eggplant appears healthy. Continue routine scouting so insect feeding, wilt, and virus-like symptoms are found early.',
+      treatmentSteps: const [
+        'Check soil moisture before watering and keep the root zone evenly moist without waterlogging it.',
+        'Inspect leaf undersides for aphids, whiteflies, thrips, mites, and new feeding damage.',
+        'Keep weeds and fallen crop debris out of the bed, and keep fruit and foliage off the soil where practical.',
+      ],
+      preventionSteps: const [
+        'Inspect nearby solanaceous crops before working on this healthy plant.',
+        'Use clean tools and avoid moving from symptomatic plants to healthy plants without cleaning up.',
+      ],
+      sourceName: 'UC IPM: Eggplant Guidelines',
+      sourceUrl: 'https://ipm.ucanr.edu/agriculture/eggplant/',
+    ),
+    _record(
+      cropType: CropType.eggplant,
+      labelKey: 'eggplant_insect_pest',
+      diseaseName: 'Eggplant Insect Pest',
+      description:
+          'The image suggests insect or mite damage. Confirm the pest on leaf undersides or shoots before choosing a control action.',
+      symptoms: const [
+        'Chewed holes, stippling, curling, or distorted new growth',
+        'Visible insects, webbing, honeydew, or frass on leaves',
+      ],
+      treatmentSteps: const [
+        'Inspect the upper and lower leaf surfaces and young shoots; photograph the pest or its damage before acting.',
+        'Remove only heavily infested leaves when the plant can tolerate it, then bag the material and clean tools.',
+        'Reduce weeds and inspect nearby eggplant, tomato, and pepper plants for the same pest.',
+        'Use a control product only after identifying the pest and confirming a current FPA-registered label for eggplant and that target.',
+      ],
+      preventionSteps: const [
+        'Scout at least twice weekly, especially on new growth and leaf undersides.',
+        'Avoid unnecessary broad-spectrum insecticides that can disrupt natural enemies.',
+      ],
+      estimatedRecoveryDays: 7,
+      sourceName: 'UC IPM: Eggplant Guidelines',
+      sourceUrl: 'https://ipm.ucanr.edu/agriculture/eggplant/',
+    ),
+    _record(
+      cropType: CropType.eggplant,
+      labelKey: 'eggplant_leaf_spot',
+      diseaseName: 'Eggplant Leaf Spot',
+      description:
+          'Leaf spots can have several causes. Keep foliage dry, reduce spread from debris and splashing water, and confirm the cause if spots continue to expand.',
+      symptoms: const [
+        'Dark, tan, or brown leaf lesions that may enlarge or develop halos',
+        'New spots appearing after rain, overhead watering, or humid weather',
+      ],
+      treatmentSteps: const [
+        'Take a baseline photo of whole affected leaves and note whether spots are new, expanding, or limited to old damage.',
+        'Remove only clearly diseased leaves when there are few, bag them, and sanitize tools before touching another plant.',
+        'Remove fallen debris and water at the soil level so foliage stays as dry as possible.',
+        'Seek local diagnosis support if lesions spread to new growth, stems, or fruit; use a product only with a current FPA label for eggplant and the confirmed target.',
+      ],
+      preventionSteps: const [
+        'Avoid overhead irrigation and working among plants while foliage is wet.',
+        'Keep spacing and weeds under control so leaves dry after rain or irrigation.',
+      ],
+      estimatedRecoveryDays: 7,
+      sourceName: 'UC IPM: Eggplant Guidelines',
+      sourceUrl: 'https://ipm.ucanr.edu/agriculture/eggplant/',
+    ),
+    _record(
+      cropType: CropType.eggplant,
+      labelKey: 'eggplant_mosaic_virus',
+      diseaseName: 'Eggplant Mosaic Virus',
+      description:
+          'Mosaic-like mottling and distortion can be caused by a virus. There is no direct curative treatment, so containment and confirmation are important.',
+      symptoms: const [
+        'Light and dark green mottling, distortion, or stunting',
+        'Similar symptoms appearing on nearby solanaceous plants',
+      ],
+      treatmentSteps: const [
+        'Inspect the whole plant and nearby eggplant, tomato, pepper, and weeds for mosaic, distortion, or stunting; take a baseline photo.',
+        'Handle healthy plants first, then the suspect plant; wash hands and sanitize tools after contact.',
+        'Check for aphids, whiteflies, or thrips and remove nearby weeds that can support vectors or virus hosts.',
+        'Request local confirmation before removing plants or using any product; do not rely on a product as a cure for a confirmed virus.',
+      ],
+      preventionSteps: const [
+        'Use clean planting material and keep tools clean between plants.',
+        'Scout young growth and vector pests regularly.',
+      ],
+      estimatedRecoveryDays: 14,
+      cautionNotes:
+          'A confirmed virus has no curative spray. Follow local agriculture advice before removing a plant.',
+      sourceName: 'UC IPM: Eggplant Mosaic Diseases Caused by Potyviruses',
+      sourceUrl:
+          'https://ipm.ucanr.edu/agriculture/eggplant/mosaic-diseases-caused-by-potyviruses/',
+    ),
+    _record(
+      cropType: CropType.eggplant,
+      labelKey: 'eggplant_small_leaf',
+      diseaseName: 'Eggplant Small Leaf',
+      description:
+          'Small or distorted leaves can have several causes, including vector-borne disease, nutrition, herbicide injury, or other stress. This label needs confirmation before treatment.',
+      treatmentSteps: const [
+        'Photograph the whole plant, including normal and affected shoots, and record when the small-leaf growth began.',
+        'Inspect leaf undersides and nearby weeds for aphids, whiteflies, or leafhoppers, and inspect nearby eggplant for similar symptoms.',
+        'Avoid pruning heavily or applying pesticide, fertilizer, or herbicide changes until a local diagnosis confirms the cause.',
+        'Isolate tools used on the suspect plant and seek local agriculture advice if stunting or distortion is spreading.',
+      ],
+      preventionSteps: const [
+        'Start with healthy transplants and control weeds that can host vector pests.',
+        'Monitor new growth and vector activity early in the crop cycle.',
+      ],
+      estimatedRecoveryDays: 14,
+      cautionNotes:
+          'This scanner label is provisional; do not treat it as a confirmed disease without local review.',
+      sourceName: 'UC IPM: Eggplant Guidelines',
+      sourceUrl: 'https://ipm.ucanr.edu/agriculture/eggplant/',
+    ),
+    _record(
+      cropType: CropType.eggplant,
+      labelKey: 'eggplant_white_mold',
+      diseaseName: 'Eggplant White Mold',
+      description:
+          'White mold-like growth needs confirmation because several diseases and harmless surface growth can look similar. Reduce moisture and prevent transfer while seeking diagnosis support.',
+      treatmentSteps: const [
+        'Photograph the entire affected leaf, stem, and nearby plant area; note whether cottony growth, wilt, or stem damage is present.',
+        'Avoid handling wet plants, remove only clearly infected material when practical, and bag it rather than composting it.',
+        'Clean up crop debris, improve airflow without heavy pruning, and water at the soil level only when needed.',
+        'Request local diagnosis support if white growth, stem lesions, or wilting is increasing; use a product only with a current FPA label for the confirmed target.',
+      ],
+      preventionSteps: const [
+        'Keep the canopy and soil surface free of old crop debris.',
+        'Avoid prolonged leaf wetness and sanitize tools after symptomatic plants.',
+      ],
+      estimatedRecoveryDays: 7,
+      cautionNotes:
+          'Confirm the disease before applying a fungicide because white growth alone is not a reliable diagnosis.',
+      sourceName: 'UC IPM: Eggplant Guidelines',
+      sourceUrl: 'https://ipm.ucanr.edu/agriculture/eggplant/',
+    ),
+    _record(
+      cropType: CropType.eggplant,
+      labelKey: 'eggplant_wilt',
+      diseaseName: 'Eggplant Wilt',
+      description:
+          'Wilting can result from root disease, vascular disease, drought, waterlogging, or injury. Check soil moisture and plant condition before deciding on treatment.',
+      symptoms: const [
+        'Leaves droop or yellow despite apparently adequate water',
+        'Wilt worsens in heat or spreads from lower leaves to the whole plant',
+      ],
+      treatmentSteps: const [
+        'Check root-zone moisture and drainage before watering again; do not compensate for wilt by repeatedly soaking the soil.',
+        'Inspect stems, roots, and nearby plants for one-sided wilt, browning, root rot, or insect injury; take a whole-plant photo.',
+        'Keep tools and hands clean, avoid moving soil from the affected area, and remove heavily collapsed plants only after local guidance.',
+        'Seek prompt local diagnosis if wilt persists after moisture is corrected or is spreading; use a product only with a current FPA label for the confirmed cause.',
+      ],
+      preventionSteps: const [
+        'Use well-drained soil and avoid repeated eggplant or related crops in a known wilt area.',
+        'Start with healthy transplants and clean tools before working among plants.',
+      ],
+      estimatedRecoveryDays: 7,
+      cautionNotes:
+          'Wilt is not one disease. Confirm the cause before using a pesticide or removing plants.',
+      sourceName: 'UC IPM: Eggplant Verticillium Wilt',
+      sourceUrl:
+          'https://ipm.ucanr.edu/agriculture/eggplant/verticillium-wilt/',
+    ),
+    _record(
+      cropType: CropType.pechay,
+      labelKey: 'pechay_healthy',
+      diseaseName: 'Pechay Healthy',
+      description:
+          'The pechay appears healthy. Continue frequent checks because leafy brassicas can change quickly under wet conditions or pest pressure.',
+      treatmentSteps: const [
+        'Check soil moisture before watering and water at the base without splashing soil onto leaves.',
+        'Inspect leaf undersides and the growing point for aphids, caterpillars, chewing holes, and new spots.',
+        'Remove weeds and damaged outer leaves, keeping the bed free of old crop debris.',
+      ],
+      preventionSteps: const [
+        'Scout often enough to find pests before they build up on tender leaves.',
+        'Keep spacing and drainage adequate so leaves dry after rain or irrigation.',
+      ],
+      sourceName: 'UC IPM: Cole Crops Guidelines',
+      sourceUrl: 'https://ipm.ucanr.edu/agriculture/cole-crops/',
+    ),
+    _record(
+      cropType: CropType.pechay,
+      labelKey: 'pechay_leaf_spot',
+      diseaseName: 'Pechay Leaf Spot',
+      description:
+          'Leaf spots on pechay may be caused by fungal or bacterial disease. Reduce leaf wetness and infected debris while confirming the cause.',
+      symptoms: const [
+        'Small dark, tan, or target-like spots that enlarge or develop yellow halos',
+        'New lesions appearing after humid weather, rain, or leaf wetness',
+      ],
+      treatmentSteps: const [
+        'Take a baseline photo of whole affected leaves and note whether spots are new or spreading.',
+        'Remove severely spotted outer leaves when practical, bag them, and sanitize tools before handling healthy plants.',
+        'Remove crop debris and weeds, and water at the soil level to keep foliage dry.',
+        'Seek local confirmation if spots continue on young leaves; use a product only with a current FPA label for pechay or the applicable brassica crop and the confirmed target.',
+      ],
+      preventionSteps: const [
+        'Use clean seed or transplants and avoid working in the bed while leaves are wet.',
+        'Rotate away from brassicas where disease has been recurring and manage brassica weeds.',
+      ],
+      estimatedRecoveryDays: 7,
+      sourceName: 'Cornell Vegetables: Alternaria Leaf Spot of Brassicas',
+      sourceUrl:
+          'https://www.vegetables.cornell.edu/pest-management/disease-factsheets/alternaria-leaf-spot/',
+    ),
+    _record(
+      cropType: CropType.pechay,
+      labelKey: 'pechay_soft_rot',
+      diseaseName: 'Pechay Soft Rot',
+      description:
+          'Soft, wet, foul-smelling decay can spread rapidly in warm, wet conditions. Protect healthy plants and seek confirmation promptly.',
+      symptoms: const [
+        'Soft water-soaked tissue or collapse, sometimes with odor',
+        'Decay increasing after injury, standing water, or heavy rain',
+      ],
+      treatmentSteps: const [
+        'Photograph the whole plant and check drainage; avoid watering again until excess moisture has cleared.',
+        'Remove severely rotted plants or leaves promptly, bag them, and clean tools and hands afterward.',
+        'Improve drainage, avoid leaf injury, and keep irrigation at the soil level so foliage dries quickly.',
+        'Seek local agriculture advice if nearby plants begin to soften or collapse; do not apply a product without a confirmed cause and current label.',
+      ],
+      preventionSteps: const [
+        'Avoid standing water and handle leaves gently to prevent wounds.',
+        'Keep the bed clean and harvest or remove damaged outer leaves promptly.',
+      ],
+      estimatedRecoveryDays: 7,
+      cautionNotes:
+          'Soft rot spreads quickly. Remove badly decayed material from the growing area instead of composting it.',
+      sourceName: 'UC IPM: Cole Crops Guidelines',
+      sourceUrl: 'https://ipm.ucanr.edu/agriculture/cole-crops/',
+    ),
+    _record(
+      cropType: CropType.pechay,
+      labelKey: 'pechay_aphids',
+      diseaseName: 'Pechay Aphids',
+      description:
+          'Aphids cluster on tender leaves and can distort growth or leave sticky honeydew. Check the pest before selecting any product.',
+      symptoms: const [
+        'Clusters of small soft-bodied insects on leaf undersides or new growth',
+        'Curling leaves, sticky honeydew, or ants tending the plant',
+      ],
+      treatmentSteps: const [
+        'Inspect the undersides of leaves and the growing point, and record whether aphids are increasing or natural enemies are present.',
+        'Remove only heavily infested outer leaves when practical and use a gentle water spray only if leaves can dry quickly.',
+        'Control nearby weeds and check neighboring brassicas so the infestation is not moved through the bed.',
+        'Use a control product only after confirming aphids and checking a current FPA label for pechay or the applicable brassica crop.',
+      ],
+      preventionSteps: const [
+        'Scout tender new growth frequently and avoid unnecessary broad-spectrum insecticides.',
+        'Manage weeds that can host aphids around the growing area.',
+      ],
+      estimatedRecoveryDays: 7,
+      sourceName: 'UC IPM: Cole Crops Aphids',
+      sourceUrl: 'https://ipm.ucanr.edu/agriculture/cole-crops/aphids/',
+    ),
+    _record(
+      cropType: CropType.pechay,
+      labelKey: 'pechay_downy_mildew',
+      diseaseName: 'Pechay Downy Mildew',
+      description:
+          'Yellow patches and growth on leaf undersides in cool, wet conditions may indicate downy mildew. Reduce leaf wetness and get confirmation if symptoms spread.',
+      treatmentSteps: const [
+        'Take a photo of both sides of whole affected leaves and note whether pale or yellow patches match growth underneath.',
+        'Avoid overhead irrigation and handling wet leaves; remove only heavily affected material and sanitize tools.',
+        'Improve spacing and drainage, remove old crop debris, and inspect nearby brassicas for similar symptoms.',
+        'Seek local confirmation if fresh symptoms are increasing; use a product only with a current FPA label for pechay or the applicable brassica crop and confirmed target.',
+      ],
+      preventionSteps: const [
+        'Use clean seed or transplants and avoid prolonged leaf wetness.',
+        'Inspect after cool, humid, or rainy weather so new symptoms are caught early.',
+      ],
+      estimatedRecoveryDays: 7,
+      sourceName: 'UC IPM: Cole Crops Downy Mildew',
+      sourceUrl: 'https://ipm.ucanr.edu/agriculture/cole-crops/downy-mildew/',
     ),
   ];
 }

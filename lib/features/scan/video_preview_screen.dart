@@ -16,16 +16,30 @@ class VideoPreviewScreen extends StatefulWidget {
   State<VideoPreviewScreen> createState() => _VideoPreviewScreenState();
 }
 
-class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
+class _VideoPreviewScreenState extends State<VideoPreviewScreen>
+    with SingleTickerProviderStateMixin {
   VideoPlayerController? _controller;
   final TextEditingController _messageCtrl = TextEditingController();
   CropType? _selectedCropType;
   bool _continuing = false;
   bool _initError = false;
+  bool _cropSelectionError = false;
+  late final AnimationController _cropErrorController;
+  late final Animation<double> _cropShakeOffset;
 
   @override
   void initState() {
     super.initState();
+    _cropErrorController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 360),
+    );
+    _cropShakeOffset = TweenSequence<double>([
+      TweenSequenceItem(tween: Tween(begin: 0, end: -8), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: -8, end: 8), weight: 2),
+      TweenSequenceItem(tween: Tween(begin: 8, end: -5), weight: 2),
+      TweenSequenceItem(tween: Tween(begin: -5, end: 0), weight: 1),
+    ]).animate(_cropErrorController);
     _initController();
   }
 
@@ -48,12 +62,18 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
   @override
   void dispose() {
     _controller?.dispose();
+    _cropErrorController.dispose();
     _messageCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _continueToChat() async {
     if (_continuing) return;
+    if (_selectedCropType == null) {
+      setState(() => _cropSelectionError = true);
+      _cropErrorController.forward(from: 0);
+      return;
+    }
     setState(() => _continuing = true);
     try {
       final controller = _controller;
@@ -64,7 +84,8 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
         context,
         MaterialPageRoute(
           builder: (_) => ScanResultScreen(
-            imageFile: widget.videoFile, // ScanResultScreen treats this as the source XFile
+            imageFile: widget
+                .videoFile, // ScanResultScreen treats this as the source XFile
             videoFile: widget.videoFile,
             initialQuery: _messageCtrl.text.trim(),
             cropTypeHint: _selectedCropType,
@@ -149,45 +170,82 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                const Text('What crop is this?',
+                RichText(
+                  text: const TextSpan(
                     style: TextStyle(
-                        color: AppColors.textDark,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700)),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: CropType.values
-                      .map(
-                        (cropType) => ChoiceChip(
-                          label: Text(
-                            _cropTypeLabel(cropType),
-                            style: TextStyle(
-                              color: _selectedCropType == cropType
-                                  ? Colors.white
-                                  : AppColors.primaryDark,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          selected: _selectedCropType == cropType,
-                          onSelected: (_) {
-                            setState(() {
-                              _selectedCropType =
-                                  _selectedCropType == cropType ? null : cropType;
-                            });
-                          },
-                          selectedColor: AppColors.primary,
-                          backgroundColor: Colors.white,
-                          side: BorderSide(
-                            color: _selectedCropType == cropType
-                                ? AppColors.primary
-                                : AppColors.primaryLight,
-                          ),
-                        ),
-                      )
-                      .toList(),
+                      color: AppColors.textDark,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    children: [
+                      TextSpan(text: 'What crop is this? '),
+                      TextSpan(
+                        text: '*',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ],
+                  ),
                 ),
+                const SizedBox(height: 8),
+                AnimatedBuilder(
+                  animation: _cropShakeOffset,
+                  builder: (context, child) => Transform.translate(
+                    offset: Offset(_cropShakeOffset.value, 0),
+                    child: child,
+                  ),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: _cropSelectionError
+                            ? Colors.red
+                            : Colors.transparent,
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: CropType.values
+                          .map(
+                            (cropType) => ChoiceChip(
+                              label: Text(
+                                _cropTypeLabel(cropType),
+                                style: TextStyle(
+                                  color: _selectedCropType == cropType
+                                      ? Colors.white
+                                      : AppColors.primaryDark,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              selected: _selectedCropType == cropType,
+                              onSelected: (_) {
+                                setState(() {
+                                  _selectedCropType = cropType;
+                                  _cropSelectionError = false;
+                                });
+                              },
+                              selectedColor: AppColors.primary,
+                              backgroundColor: Colors.white,
+                              side: BorderSide(
+                                color: _selectedCropType == cropType
+                                    ? AppColors.primary
+                                    : AppColors.primaryLight,
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                ),
+                if (_cropSelectionError) ...[
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Choose the crop before continuing.',
+                    style: TextStyle(color: Colors.red, fontSize: 12),
+                  ),
+                ],
               ],
             ),
           ),
@@ -288,8 +346,8 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
                 shape: BoxShape.circle,
               ),
               padding: const EdgeInsets.all(16),
-              child: const Icon(Icons.play_arrow,
-                  color: Colors.white, size: 36),
+              child:
+                  const Icon(Icons.play_arrow, color: Colors.white, size: 36),
             ),
         ],
       ),

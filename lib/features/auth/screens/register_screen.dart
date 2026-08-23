@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../shared/widgets/custom_text_field.dart';
 import '../providers/auth_provider.dart';
+import '../widgets/legal_document_sheet.dart';
 import '../../home/home_screen.dart';
 import 'login_screen.dart';
 
@@ -87,6 +88,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _showLegalDocument(LegalDocument document) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => LegalDocumentSheet(document: document),
+    );
   }
 
   Future<void> _showEmailVerificationPrompt(String message) async {
@@ -360,9 +368,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                   fontWeight: FontWeight.w700,
                                   color: AppColors.primary),
                               recognizer: TapGestureRecognizer()
-                                ..onTap = () {
-                                  // TODO: open Terms of Service
-                                },
+                                ..onTap = () => _showLegalDocument(
+                                    LegalDocument.termsOfService),
                             ),
                             const TextSpan(text: ' and '),
                             TextSpan(
@@ -371,9 +378,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                   fontWeight: FontWeight.w700,
                                   color: AppColors.primary),
                               recognizer: TapGestureRecognizer()
-                                ..onTap = () {
-                                  // TODO: open Privacy Policy
-                                },
+                                ..onTap = () => _showLegalDocument(
+                                    LegalDocument.privacyPolicy),
                             ),
                             const TextSpan(text: '.'),
                           ],

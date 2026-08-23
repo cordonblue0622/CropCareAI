@@ -11,6 +11,7 @@ import 'data/remote/ai_backend_service.dart';
 import 'data/remote/supabase_service.dart';
 import 'data/repositories/auth_repository.dart';
 import 'features/auth/providers/auth_provider.dart';
+import 'features/auth/screens/reset_password_screen.dart';
 import 'features/chat/providers/chat_provider.dart';
 import 'features/crops/providers/crops_provider.dart';
 import 'features/crops/screens/crop_detail_screen.dart';
@@ -23,7 +24,9 @@ import 'services/sync_service.dart';
 import 'services/video_cleanup_service.dart';
 
 class CropCareApp extends StatefulWidget {
-  const CropCareApp({super.key});
+  const CropCareApp({super.key, required this.authProvider});
+
+  final AuthProvider authProvider;
 
   @override
   State<CropCareApp> createState() => _CropCareAppState();
@@ -35,8 +38,15 @@ class _CropCareAppState extends State<CropCareApp> {
 
   StreamSubscription<String>? _tapSub;
   StreamSubscription<bool>? _backendConnectivitySub;
+  StreamSubscription<bool>? _connectivityToastSub;
   AuthProvider? _authProvider;
   VoidCallback? _authWarmUpListener;
+  OverlayEntry? _connectivityToast;
+  Timer? _connectivityToastTimer;
+  bool? _lastConnectivityState;
+  bool _offlineBannerDismissed = false;
+  bool _notificationPermissionRequested = false;
+  bool _passwordRecoveryRouteOpen = false;
 
   @override
   void initState() {
@@ -46,6 +56,7 @@ class _CropCareAppState extends State<CropCareApp> {
       _tapSub = NotificationService.instance.tapStream.listen(_handleTap);
       _runVideoCleanup();
       _initializeBackendWarmUp();
+      _initializeConnectivityStatus();
     });
   }
 
@@ -53,6 +64,9 @@ class _CropCareAppState extends State<CropCareApp> {
   void dispose() {
     _tapSub?.cancel();
     _backendConnectivitySub?.cancel();
+    _connectivityToastSub?.cancel();
+    _connectivityToastTimer?.cancel();
+    _connectivityToast?.remove();
     if (_authProvider != null && _authWarmUpListener != null) {
       _authProvider!.removeListener(_authWarmUpListener!);
     }
@@ -88,10 +102,23 @@ class _CropCareAppState extends State<CropCareApp> {
       await aiBackend.warmUpIfNeeded(force: force);
     }
 
+    Future<void> initializeNotificationsIfAuthenticated() async {
+      if (!auth.isAuthenticated || _notificationPermissionRequested) {
+        return;
+      }
+      _notificationPermissionRequested = true;
+      await NotificationService.instance.requestPermission();
+    }
+
     _authProvider = auth;
     _authWarmUpListener = () {
+      if (auth.passwordRecoveryRequested) {
+        unawaited(_openPasswordRecovery(auth));
+        return;
+      }
       if (auth.isAuthenticated) {
         Future<void>.microtask(warmUpIfOnline);
+        Future<void>.microtask(initializeNotificationsIfAuthenticated);
       }
     };
     auth.addListener(_authWarmUpListener!);
@@ -105,6 +132,131 @@ class _CropCareAppState extends State<CropCareApp> {
     });
 
     Future<void>.microtask(warmUpIfOnline);
+    Future<void>.microtask(initializeNotificationsIfAuthenticated);
+    if (auth.passwordRecoveryRequested) {
+      unawaited(_openPasswordRecovery(auth));
+    }
+  }
+
+  Future<void> _openPasswordRecovery(AuthProvider auth) async {
+    if (_passwordRecoveryRouteOpen) return;
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) return;
+
+    _passwordRecoveryRouteOpen = true;
+    auth.clearPasswordRecoveryRequest();
+    await navigator.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const ResetPasswordScreen()),
+      (_) => false,
+    );
+    _passwordRecoveryRouteOpen = false;
+  }
+
+  void _initializeConnectivityStatus() {
+    final ctx = _navigatorKey.currentContext;
+    if (ctx == null) return;
+    final connectivity = ctx.read<ConnectivityService>();
+
+    connectivity.isConnected.then((online) {
+      if (!mounted) return;
+      _lastConnectivityState = online;
+      if (!online) {
+        _showConnectivityToast(online: false);
+      }
+    });
+    _connectivityToastSub = connectivity.onConnectivityChanged.listen((online) {
+      if (!mounted || _lastConnectivityState == online) return;
+      _lastConnectivityState = online;
+      if (!online) _offlineBannerDismissed = false;
+      _showConnectivityToast(online: online);
+    });
+  }
+
+  void _showConnectivityToast({required bool online}) {
+    if (!online && _offlineBannerDismissed) return;
+    _connectivityToastTimer?.cancel();
+    _connectivityToast?.remove();
+
+    final overlay = _navigatorKey.currentState?.overlay;
+    if (overlay == null) return;
+
+    final color = online ? const Color(0xFF2E7D32) : const Color(0xFF3F4A43);
+    _connectivityToast = OverlayEntry(
+      builder: (context) => SafeArea(
+        child: IgnorePointer(
+          ignoring: online,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: Material(
+                color: Colors.transparent,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(6),
+                    boxShadow: const [
+                      BoxShadow(color: Color(0x26000000), blurRadius: 6),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        online ? Icons.cloud_done_outlined : Icons.cloud_off,
+                        color: Colors.white,
+                        size: 17,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        online ? 'Back online' : 'You are offline',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (!online) ...[
+                        const Spacer(),
+                        IconButton(
+                          onPressed: _dismissOfflineBanner,
+                          icon: const Icon(Icons.close),
+                          tooltip: 'Dismiss offline status',
+                          color: Colors.white,
+                          iconSize: 18,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 36,
+                            height: 36,
+                          ),
+                          padding: EdgeInsets.zero,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    overlay.insert(_connectivityToast!);
+    if (online) {
+      _connectivityToastTimer = Timer(const Duration(seconds: 3), () {
+        _connectivityToast?.remove();
+        _connectivityToast = null;
+      });
+    }
+  }
+
+  void _dismissOfflineBanner() {
+    _offlineBannerDismissed = true;
+    _connectivityToast?.remove();
+    _connectivityToast = null;
   }
 
   Future<void> _handleTap(String payload) async {
@@ -211,10 +363,8 @@ class _CropCareAppState extends State<CropCareApp> {
         ),
 
         // Auth state
-        ChangeNotifierProxyProvider<AuthRepository, AuthProvider>(
-          create: (ctx) =>
-              AuthProvider(authRepository: ctx.read<AuthRepository>()),
-          update: (_, repo, prev) => prev ?? AuthProvider(authRepository: repo),
+        ChangeNotifierProvider<AuthProvider>.value(
+          value: widget.authProvider,
         ),
 
         // Crops

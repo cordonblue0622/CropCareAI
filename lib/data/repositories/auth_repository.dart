@@ -118,6 +118,7 @@ class AuthRepository {
     required String email,
     required String password,
     required String fullName,
+    required String emailRedirectTo,
     String? barangay,
     required String municipality,
     required String province,
@@ -128,6 +129,7 @@ class AuthRepository {
         email: email,
         password: password,
         fullName: fullName,
+        emailRedirectTo: emailRedirectTo,
         barangay: barangay,
         municipality: municipality,
         province: province,
@@ -186,7 +188,10 @@ class AuthRepository {
       return AuthResult(success: false, error: e.message);
     } catch (_) {
       return const AuthResult(
-          success: false, error: 'An unexpected error occurred.');
+        success: false,
+        error:
+            'Could not create your account. Check your internet connection and try again.',
+      );
     }
   }
 
@@ -232,7 +237,10 @@ class AuthRepository {
       return AuthResult(success: false, error: e.message);
     } catch (_) {
       return const AuthResult(
-          success: false, error: 'An unexpected error occurred.');
+        success: false,
+        error:
+            'Could not sign in. Check your internet connection and try again.',
+      );
     }
   }
 
@@ -335,8 +343,14 @@ class AuthRepository {
 
   Future<void> signOut() => supabaseService.signOut();
 
-  Future<void> sendPasswordReset(String email) =>
-      supabaseService.sendPasswordResetEmail(email);
+  Future<void> sendPasswordReset(
+    String email, {
+    required String redirectTo,
+  }) =>
+      supabaseService.sendPasswordResetEmail(email, redirectTo: redirectTo);
+
+  Future<void> updatePassword(String password) =>
+      supabaseService.updatePassword(password);
 
   UserModel? get currentUser {
     final u = supabaseService.currentUser;

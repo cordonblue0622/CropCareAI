@@ -5,6 +5,7 @@ class DiagnosisModel {
   final String id;
   final String cropId;
   final String userId;
+  final String? chatSessionId;
   final DiagnosisMode diagnosisMode;
   final String? labelKey;
   final String diseaseName;
@@ -27,6 +28,7 @@ class DiagnosisModel {
     required this.id,
     required this.cropId,
     required this.userId,
+    this.chatSessionId,
     required this.diagnosisMode,
     this.labelKey,
     required this.diseaseName,
@@ -59,6 +61,7 @@ class DiagnosisModel {
       id: map['id'] as String,
       cropId: map['crop_id'] as String,
       userId: map['user_id'] as String,
+      chatSessionId: map['chat_session_id'] as String?,
       diagnosisMode: DiagnosisModeX.fromValue(
           map['diagnosis_mode'] as String? ?? 'offline'),
       labelKey: map['label_key'] as String?,
@@ -88,6 +91,7 @@ class DiagnosisModel {
       'id': id,
       'crop_id': cropId,
       'user_id': userId,
+      'chat_session_id': chatSessionId,
       'diagnosis_mode': diagnosisMode.value,
       'label_key': labelKey,
       'disease_name': diseaseName,

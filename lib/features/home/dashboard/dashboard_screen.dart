@@ -160,8 +160,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     List<CropModel> crops, {
     int? limit,
   }) {
-    final sorted = [...crops]
-      ..sort((a, b) {
+    final sorted = [...crops]..sort((a, b) {
         final updatedCompare = b.updatedAt.compareTo(a.updatedAt);
         if (updatedCompare != 0) {
           return updatedCompare;
@@ -353,7 +352,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _ensureWeatherLoaded(farmLocation);
     final filteredActiveCrops = _filterCrops(crops.activeCrops);
     final dashboardActiveCrops =
-      _recentActiveCrops(filteredActiveCrops, limit: 5);
+        _recentActiveCrops(filteredActiveCrops, limit: 5);
     final allRecentActiveCrops = _recentActiveCrops(crops.activeCrops);
     final filteredDiseases = _filterDiseases(_dashboardDiseases(crops));
     final hasSearchQuery = _searchQuery.trim().isNotEmpty;
@@ -495,7 +494,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     sub: 'Combined Crop Performance',
                     onViewAll: allRecentActiveCrops.isEmpty
                         ? null
-                        : () => _showVitalityDialog(context, allRecentActiveCrops),
+                        : () =>
+                            _showVitalityDialog(context, allRecentActiveCrops),
                   ),
                   const SizedBox(height: 12),
                   _buildVitality(crops, dashboardActiveCrops),
@@ -885,34 +885,34 @@ class _SearchBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(30),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 8,
-              offset: const Offset(0, 2))
-        ],
-      ),
-      child: TextField(
-        controller: controller,
-        onChanged: onChanged,
-        textInputAction: TextInputAction.search,
-        decoration: InputDecoration(
-          hintText: 'Search crops or diseases',
-          prefixIcon: const Icon(Icons.search,
-              color: AppColors.textGray, size: 20),
-          suffixIcon: controller.text.isEmpty
-              ? null
-              : IconButton(
-                  onPressed: onClear,
-                  icon: const Icon(Icons.close, color: AppColors.textGray),
-                ),
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(vertical: 14),
+    return TextField(
+      controller: controller,
+      onChanged: onChanged,
+      textInputAction: TextInputAction.search,
+      decoration: InputDecoration(
+        hintText: 'Search crops or diseases',
+        prefixIcon:
+            const Icon(Icons.search, color: AppColors.textGray, size: 20),
+        suffixIcon: controller.text.isEmpty
+            ? null
+            : IconButton(
+                onPressed: onClear,
+                icon: const Icon(Icons.close, color: AppColors.textGray),
+              ),
+        filled: true,
+        fillColor: AppColors.backgroundWhite,
+        contentPadding: const EdgeInsets.symmetric(vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
         ),
       ),
     );
@@ -1219,14 +1219,15 @@ class _TodayTasksCardState extends State<_TodayTasksCard> {
     final totalCount = todayTasks.length + missedTasks.length;
     final showingAll = _expanded || totalCount <= _collapsedVisibleCount;
     final visibleMissed = showingAll
-      ? missedTasks
-      : missedTasks.take(_collapsedVisibleCount).toList(growable: false);
+        ? missedTasks
+        : missedTasks.take(_collapsedVisibleCount).toList(growable: false);
     final remainingSlots = showingAll
-      ? todayTasks.length
-      : (_collapsedVisibleCount - visibleMissed.length).clamp(0, _collapsedVisibleCount);
+        ? todayTasks.length
+        : (_collapsedVisibleCount - visibleMissed.length)
+            .clamp(0, _collapsedVisibleCount);
     final visibleToday = showingAll
-      ? todayTasks
-      : todayTasks.take(remainingSlots).toList(growable: false);
+        ? todayTasks
+        : todayTasks.take(remainingSlots).toList(growable: false);
     final hiddenCount = totalCount - visibleMissed.length - visibleToday.length;
 
     return Container(
@@ -1265,7 +1266,7 @@ class _TodayTasksCardState extends State<_TodayTasksCard> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
                   color:
-                  missedTasks.isNotEmpty ? Colors.red : AppColors.primary,
+                      missedTasks.isNotEmpty ? Colors.red : AppColors.primary,
                   borderRadius: BorderRadius.circular(10)),
               child: Text('$totalCount',
                   style: const TextStyle(
@@ -1338,7 +1339,8 @@ class _TodayTasksCardState extends State<_TodayTasksCard> {
                   onDone: () => _openTask(context, t),
                 )),
           ],
-          if (hiddenCount > 0 || (_expanded && totalCount > _collapsedVisibleCount)) ...[
+          if (hiddenCount > 0 ||
+              (_expanded && totalCount > _collapsedVisibleCount)) ...[
             const SizedBox(height: 4),
             Align(
               alignment: Alignment.centerLeft,

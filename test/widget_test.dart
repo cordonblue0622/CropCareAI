@@ -12,6 +12,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:cropcare_ai/app.dart';
 import 'package:cropcare_ai/core/constants/app_constants.dart';
+import 'package:cropcare_ai/data/local/database_helper.dart';
+import 'package:cropcare_ai/data/remote/supabase_service.dart';
+import 'package:cropcare_ai/data/repositories/auth_repository.dart';
+import 'package:cropcare_ai/features/auth/providers/auth_provider.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -25,7 +29,13 @@ void main() {
   });
 
   testWidgets('App builds smoke test', (WidgetTester tester) async {
-    await tester.pumpWidget(const CropCareApp());
+    final authProvider = AuthProvider(
+      authRepository: AuthRepository(
+        supabaseService: SupabaseService(),
+        dbHelper: DatabaseHelper.instance,
+      ),
+    );
+    await tester.pumpWidget(CropCareApp(authProvider: authProvider));
     await tester.pump(const Duration(milliseconds: 700));
     expect(find.byType(MaterialApp), findsOneWidget);
   });

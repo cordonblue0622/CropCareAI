@@ -99,10 +99,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(error.message.toString())),
       );
-    } catch (error) {
+    } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Dataset import failed: $error')),
+        const SnackBar(
+          content: Text('Could not import this dataset. Please try again.'),
+        ),
       );
     } finally {
       if (mounted) {
@@ -233,8 +235,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
             }),
             decoration: InputDecoration(
               hintText: 'Search diseases, symptoms...',
-              prefixIcon: const Icon(Icons.search,
-                  color: AppColors.textGray, size: 20),
+              prefixIcon:
+                  const Icon(Icons.search, color: AppColors.textGray, size: 20),
               suffixIcon: _search.isNotEmpty
                   ? IconButton(
                       icon: const Icon(Icons.clear, size: 18),
@@ -285,8 +287,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           child: Row(children: [
             Text(
               '${_filtered.length} disease${_filtered.length == 1 ? '' : 's'} found',
-              style: const TextStyle(
-                  fontSize: 13, color: AppColors.textGray),
+              style: const TextStyle(fontSize: 13, color: AppColors.textGray),
             ),
           ]),
         ),
@@ -302,23 +303,22 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                        const Icon(Icons.menu_book,
-                            size: 56, color: AppColors.textLightGray),
-                        const SizedBox(height: 12),
-                        Text(
-                          _all.isEmpty
-                              ? 'No disease entries in database'
-                              : 'No results found',
-                          style: const TextStyle(
-                              color: AppColors.textGray, fontSize: 15),
-                        ),
-                      ]))
+                          const Icon(Icons.menu_book,
+                              size: 56, color: AppColors.textLightGray),
+                          const SizedBox(height: 12),
+                          Text(
+                            _all.isEmpty
+                                ? 'No disease entries in database'
+                                : 'No results found',
+                            style: const TextStyle(
+                                color: AppColors.textGray, fontSize: 15),
+                          ),
+                        ]))
                   : ListView.separated(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
                       itemCount: _filtered.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 12),
-                      itemBuilder: (_, i) =>
-                          _DiseaseCard(kb: _filtered[i]),
+                      itemBuilder: (_, i) => _DiseaseCard(kb: _filtered[i]),
                     ),
         ),
       ]),
@@ -365,7 +365,8 @@ class _DiseaseCardState extends State<_DiseaseCard> {
                 borderRadius: BorderRadius.circular(6),
               ),
               child: Text(
-                kb.cropType.name[0].toUpperCase() + kb.cropType.name.substring(1),
+                kb.cropType.name[0].toUpperCase() +
+                    kb.cropType.name.substring(1),
                 style: const TextStyle(
                     fontSize: 11,
                     color: AppColors.primary,
@@ -397,7 +398,8 @@ class _DiseaseCardState extends State<_DiseaseCard> {
             child: Text(
               kb.description!,
               maxLines: _expanded ? null : 2,
-              overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+              overflow:
+                  _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
               style: const TextStyle(
                   fontSize: 13, color: AppColors.textGray, height: 1.4),
             ),
@@ -408,9 +410,7 @@ class _DiseaseCardState extends State<_DiseaseCard> {
           if (kb.symptoms != null && kb.symptoms!.isNotEmpty) ...[
             const _SectionDivider(),
             _ExpandedSection(
-                title: 'Symptoms',
-                icon: Icons.visibility,
-                items: kb.symptoms!),
+                title: 'Symptoms', icon: Icons.visibility, items: kb.symptoms!),
           ],
           if (kb.treatmentSteps != null && kb.treatmentSteps!.isNotEmpty) ...[
             const _SectionDivider(),
@@ -420,8 +420,7 @@ class _DiseaseCardState extends State<_DiseaseCard> {
                 items: kb.treatmentSteps!,
                 numbered: true),
           ],
-          if (kb.preventionSteps != null &&
-              kb.preventionSteps!.isNotEmpty) ...[
+          if (kb.preventionSteps != null && kb.preventionSteps!.isNotEmpty) ...[
             const _SectionDivider(),
             _ExpandedSection(
                 title: 'Prevention',
@@ -432,8 +431,8 @@ class _DiseaseCardState extends State<_DiseaseCard> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: AppColors.backgroundGreenLight,
                   borderRadius: BorderRadius.circular(8),
@@ -442,8 +441,7 @@ class _DiseaseCardState extends State<_DiseaseCard> {
                   const Icon(Icons.schedule,
                       size: 15, color: AppColors.primary),
                   const SizedBox(width: 6),
-                  Text(
-                      'Estimated recovery: ${kb.estimatedRecoveryDays} days',
+                  Text('Estimated recovery: ${kb.estimatedRecoveryDays} days',
                       style: const TextStyle(
                           color: AppColors.primary,
                           fontSize: 12,
@@ -464,16 +462,16 @@ class _DiseaseCardState extends State<_DiseaseCard> {
                 child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                  const Icon(Icons.warning_amber,
-                      size: 16, color: Colors.orange),
-                  const SizedBox(width: 8),
-                  Expanded(
-                      child: Text(kb.cautionNotes!,
-                          style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.orange,
-                              height: 1.4))),
-                ]),
+                      const Icon(Icons.warning_amber,
+                          size: 16, color: Colors.orange),
+                      const SizedBox(width: 8),
+                      Expanded(
+                          child: Text(kb.cautionNotes!,
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.orange,
+                                  height: 1.4))),
+                    ]),
               ),
             ),
         ],
@@ -486,13 +484,11 @@ class _DiseaseCardState extends State<_DiseaseCard> {
               padding: const EdgeInsets.all(16)),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
             Text(_expanded ? 'Show less' : 'View details',
-                style: const TextStyle(
-                    fontWeight: FontWeight.w600, fontSize: 13)),
+                style:
+                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
             const SizedBox(width: 4),
             Icon(
-                _expanded
-                    ? Icons.keyboard_arrow_up
-                    : Icons.keyboard_arrow_down,
+                _expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
                 size: 18),
           ]),
         ),
@@ -530,9 +526,8 @@ class _ExpandedSection extends StatelessWidget {
         const SizedBox(height: 6),
         ...items.asMap().entries.map((e) => Padding(
               padding: const EdgeInsets.only(bottom: 5),
-              child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+              child:
+                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 numbered
                     ? Container(
                         width: 20,
@@ -553,8 +548,7 @@ class _ExpandedSection extends StatelessWidget {
                         height: 6,
                         margin: const EdgeInsets.only(top: 5, right: 10),
                         decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: AppColors.primary),
+                            shape: BoxShape.circle, color: AppColors.primary),
                       ),
                 Expanded(
                     child: Text(e.value,

@@ -1,5 +1,6 @@
 import '../core/constants/app_enums.dart';
 import '../data/models/diagnosis_model.dart';
+import '../data/models/progress_update_model.dart';
 import '../data/models/treatment_task_model.dart';
 
 /// One day in the 14-day health-score curve.
@@ -46,6 +47,7 @@ class HealthScoreService {
   static List<HealthScorePoint> compute14DayCurve({
     required List<TreatmentTaskModel> tasks,
     required List<DiagnosisModel> diagnoses,
+    List<ProgressUpdateModel> progressUpdates = const [],
     required DateTime now,
   }) {
     final today = DateTime(now.year, now.month, now.day);
@@ -56,6 +58,7 @@ class HealthScoreService {
         ? firstDiagnosisDay
         : earliestVisibleDay;
     final points = <HealthScorePoint>[];
+    final assessedStatuses = <DateTime, ProgressStatus>{};
 
     for (DateTime day = startDay;
         !day.isAfter(today);
@@ -70,11 +73,16 @@ class HealthScoreService {
           .toList();
 
       final severity = _latestSeverity(diagnoses, endOfDay);
-      final score = _scoreForDay(
-        totalTasks: dueByDay.length,
-        completedTasks: completedByDay.length,
-        severity: severity,
-      );
+      final assessment = _latestAssessment(progressUpdates, endOfDay);
+      final score = assessment?.healthScore?.round() ??
+          _scoreForDay(
+            totalTasks: dueByDay.length,
+            completedTasks: completedByDay.length,
+            severity: severity,
+          );
+      if (assessment != null) {
+        assessedStatuses[day] = assessment.progressStatus;
+      }
 
       points.add(HealthScorePoint(
         date: day,
@@ -90,7 +98,10 @@ class HealthScoreService {
     for (int i = 0; i < points.length; i++) {
       final point = points[i];
       ProgressStatus status;
-      if (point.totalTasks == 0 || i < 3) {
+      final assessedStatus = assessedStatuses[point.date];
+      if (assessedStatus != null) {
+        status = assessedStatus;
+      } else if (point.totalTasks == 0 || i < 3) {
         status = ProgressStatus.insufficientData;
       } else {
         final delta = point.score - points[i - 3].score;
@@ -113,6 +124,25 @@ class HealthScoreService {
     }
 
     return result;
+  }
+
+  static ProgressUpdateModel? _latestAssessment(
+    List<ProgressUpdateModel> progressUpdates,
+    DateTime endOfDay,
+  ) {
+    ProgressUpdateModel? latest;
+    for (final update in progressUpdates) {
+      if (update.isDeleted ||
+          update.healthScore == null ||
+          update.progressStatus == ProgressStatus.insufficientData ||
+          update.updateDate.isAfter(endOfDay)) {
+        continue;
+      }
+      if (latest == null || update.updateDate.isAfter(latest.updateDate)) {
+        latest = update;
+      }
+    }
+    return latest;
   }
 
   static int computeCurrentScore({
@@ -179,27 +209,26 @@ class HealthScoreService {
     required int completedTasks,
     required Severity? severity,
   }) {
-    final baseline = _baselineFor(severity);
-    if (totalTasks <= 0) {
-      return baseline;
-    }
-
-    final completionRatio = (completedTasks / totalTasks).clamp(0.0, 1.0);
-    return (baseline + ((100 - baseline) * completionRatio)).round();
+    final completionScore = totalTasks <= 0
+        ? 100.0
+        : 100.0 * (completedTasks / totalTasks).clamp(0.0, 1.0);
+    return (completionScore - _severityPenalty(severity))
+        .clamp(0.0, 100.0)
+        .round();
   }
 
-  static int _baselineFor(Severity? severity) {
+  static double _severityPenalty(Severity? severity) {
     switch (severity) {
       case Severity.healthy:
-        return 92;
+        return 0;
       case Severity.mild:
-        return 70;
+        return 10;
       case Severity.moderate:
-        return 50;
-      case Severity.severe:
         return 25;
+      case Severity.severe:
+        return 45;
       default:
-        return 55;
+        return 0;
     }
   }
 }

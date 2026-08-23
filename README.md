@@ -9,6 +9,9 @@ lives in [`ml/README.md`](ml/README.md). It prepares production-eligible
 CropCare v2 classifier datasets, writes label/manifest metadata, and exports
 the future `cropcare_efficientnet_v2.tflite` artifact.
 
+Disease-treatment dataset guidance is documented in
+[`docs/treatment-plan-authoring.md`](docs/treatment-plan-authoring.md).
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.

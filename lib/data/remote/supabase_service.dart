@@ -16,6 +16,7 @@ class SupabaseService {
     required String email,
     required String password,
     required String fullName,
+    required String emailRedirectTo,
     String? barangay,
     String? municipality,
     String? province,
@@ -24,6 +25,7 @@ class SupabaseService {
     return _client.auth.signUp(
       email: email,
       password: password,
+      emailRedirectTo: emailRedirectTo,
       data: {
         'full_name': fullName,
         if (barangay != null && barangay.trim().isNotEmpty)
@@ -72,8 +74,15 @@ class SupabaseService {
 
   Future<void> signOut() => _client.auth.signOut();
 
-  Future<void> sendPasswordResetEmail(String email) =>
-      _client.auth.resetPasswordForEmail(email);
+  Future<void> sendPasswordResetEmail(
+    String email, {
+    required String redirectTo,
+  }) =>
+      _client.auth.resetPasswordForEmail(email, redirectTo: redirectTo);
+
+  Future<void> updatePassword(String password) async {
+    await _client.auth.updateUser(UserAttributes(password: password));
+  }
 
   Future<bool> signInWithOAuthProvider({
     required OAuthProvider provider,
@@ -361,8 +370,8 @@ class SupabaseService {
       await _client.storage.from(bucket).uploadBinary(
             path,
             Uint8List.fromList(bytes),
-            fileOptions: const FileOptions(
-                contentType: 'image/jpeg', upsert: true),
+            fileOptions:
+                const FileOptions(contentType: 'image/jpeg', upsert: true),
           );
       return _client.storage.from(bucket).getPublicUrl(path);
     } catch (error) {
@@ -435,6 +444,17 @@ class SupabaseService {
       query = query.eq('crop_type', cropType);
     }
     return query.order('disease_name', ascending: true);
+  }
+
+  Future<List<Map<String, dynamic>>> getDiseaseTreatmentDaySteps(
+    String diseaseKnowledgeBaseId,
+  ) {
+    return _client
+        .from('disease_treatment_day_steps')
+        .select()
+        .eq('disease_knowledge_base_id', diseaseKnowledgeBaseId)
+        .eq('is_active', true)
+        .order('day_number', ascending: true);
   }
 
   Future<List<Map<String, dynamic>>> getChatSessionsByCrop(

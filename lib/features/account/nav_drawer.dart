@@ -156,15 +156,20 @@ class NavDrawer extends StatelessWidget {
             _DrawerItem(
               icon: Icons.help_outline,
               label: 'Help & FAQ',
-              onTap: () => Navigator.pop(context),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ChatScreen(
+                      startFreshSession: true,
+                      initialQuery:
+                          'I need help using CropCare AI. Explain what you can help with in the app, including scans, daily check-ins, treatment plans, crop syncing, and the five supported crops.',
+                    ),
+                  ),
+                );
+              },
             ),
-
-            const Divider(indent: 16, endIndent: 16),
-
-            // Preferences
-            const _DrawerSectionLabel(label: 'Preferences'),
-            _OfflineModeToggle(),
-
             const Divider(indent: 16, endIndent: 16),
 
             // Sign out
@@ -222,29 +227,6 @@ class _DrawerItem extends StatelessWidget {
       trailing: const Icon(Icons.chevron_right,
           color: AppColors.textLightGray, size: 18),
       onTap: onTap,
-    );
-  }
-}
-
-class _OfflineModeToggle extends StatefulWidget {
-  @override
-  State<_OfflineModeToggle> createState() => _OfflineModeToggleState();
-}
-
-class _OfflineModeToggleState extends State<_OfflineModeToggle> {
-  bool _offline = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return SwitchListTile(
-      secondary: const Icon(Icons.wifi_off, color: AppColors.primary, size: 22),
-      title: const Text('Offline Mode',
-          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-      subtitle: const Text('Use local data when offline',
-          style: TextStyle(fontSize: 12, color: AppColors.textGray)),
-      value: _offline,
-      activeThumbColor: AppColors.primary,
-      onChanged: (v) => setState(() => _offline = v),
     );
   }
 }

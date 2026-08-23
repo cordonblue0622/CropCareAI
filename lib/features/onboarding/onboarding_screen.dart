@@ -78,7 +78,6 @@ class _Page1 extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // Green gradient placeholder (replace with actual image)
               Container(
                 decoration: const BoxDecoration(
                   gradient: LinearGradient(
@@ -175,16 +174,13 @@ class _Page1 extends StatelessWidget {
                 RichText(
                   text: const TextSpan(
                     style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.textGray,
-                        height: 1.55),
+                        fontSize: 14, color: AppColors.textGray, height: 1.55),
                     children: [
                       TextSpan(
                           text:
                               'Snap a photo or record a short video of your '),
                       TextSpan(
-                          text:
-                              'tomato, pechay, pepper, eggplant,',
+                          text: 'tomato, pechay, pepper, eggplant,',
                           style: TextStyle(
                               fontWeight: FontWeight.w700,
                               color: Color(0xFF1A4D2E))),
@@ -278,8 +274,7 @@ class _Page2 extends StatelessWidget {
                           fontWeight: FontWeight.w700,
                           color: Color(0xFF1A5C2E))),
                   TextSpan(
-                      text:
-                          ' to get instant help while working in the field.'),
+                      text: ' to get instant help while working in the field.'),
                 ],
               ),
             ),
@@ -342,7 +337,8 @@ class _Page2 extends StatelessWidget {
             const SizedBox(height: 14),
 
             // Voice command chips
-            const _VoiceChip(icon: Icons.person_outlined, text: '"Identify this pest"'),
+            const _VoiceChip(
+                icon: Icons.person_outlined, text: '"Identify this pest"'),
             const SizedBox(height: 8),
             const _VoiceChip(
                 icon: Icons.history_rounded, text: '"Read last treatment"'),
@@ -433,7 +429,10 @@ class _Page3 extends StatelessWidget {
                     const SizedBox(height: 10),
                     const Text(
                       'Follow your personalized treatment plan, mark tasks on your calendar, and see your crops get healthy again.',
-                      style: TextStyle(fontSize: 14, color: AppColors.textGray, height: 1.55),
+                      style: TextStyle(
+                          fontSize: 14,
+                          color: AppColors.textGray,
+                          height: 1.55),
                     ),
                     const SizedBox(height: 18),
 
@@ -443,8 +442,8 @@ class _Page3 extends StatelessWidget {
 
                     // Task card
                     Container(
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(14),
@@ -569,7 +568,8 @@ class _BottomRow extends StatelessWidget {
                         fontSize: 17, fontWeight: FontWeight.w700)),
                 const SizedBox(width: 8),
                 trailingIcon ??
-                    const Icon(Icons.arrow_forward, size: 18, color: Colors.white),
+                    const Icon(Icons.arrow_forward,
+                        size: 18, color: Colors.white),
               ],
             ),
           ),
@@ -594,7 +594,10 @@ class _StepBadge extends StatelessWidget {
       child: Text(
         label,
         style: const TextStyle(
-            color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8),
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.8),
       ),
     );
   }
@@ -602,7 +605,16 @@ class _StepBadge extends StatelessWidget {
 
 class _Waveform extends StatelessWidget {
   final List<double> bars = const [
-    0.4, 0.7, 1.0, 0.6, 0.9, 0.5, 0.8, 1.0, 0.6, 0.4
+    0.4,
+    0.7,
+    1.0,
+    0.6,
+    0.9,
+    0.5,
+    0.8,
+    1.0,
+    0.6,
+    0.4
   ];
 
   @override
@@ -690,7 +702,8 @@ class _MiniCalendar extends StatelessWidget {
           Row(
             children: [
               Text(monthLabel,
-                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w800, fontSize: 15)),
               const Spacer(),
               Icon(Icons.chevron_left, color: Colors.grey.shade500),
               Icon(Icons.chevron_right, color: Colors.grey.shade500),
