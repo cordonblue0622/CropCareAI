@@ -1,0 +1,60 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600&display=swap');
+
+:root { --forest:#123f2b; --leaf:#4f7f42; --lime:#ddebba; --paper:#f5f8ed; --ink:#14271d; --muted:#5e6e63; --line:rgba(20,39,29,.16); }
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; }
+body { margin:0; background:var(--paper); color:var(--ink); font-family:"DM Sans",sans-serif; letter-spacing:0; }
+a { color:inherit; }
+.site-header { position:absolute; z-index:5; top:0; left:0; right:0; display:flex; align-items:center; justify-content:space-between; max-width:1240px; margin:auto; padding:22px 28px; color:white; }
+.brand { display:flex; align-items:center; gap:10px; text-decoration:none; font-weight:700; }
+.brand img { width:38px; height:38px; border-radius:50%; }
+.header-link { border-bottom:1px solid rgba(255,255,255,.65); text-decoration:none; font-size:14px; }
+.hero { position:relative; min-height:min(780px,92vh); overflow:hidden; display:grid; grid-template-columns:minmax(0,1fr) 390px; align-items:center; gap:80px; padding:110px max(6vw,28px) 70px; color:white; }
+.hero-photo,.hero-shade { position:absolute; inset:0; width:100%; height:100%; }
+.hero-photo { object-fit:cover; object-position:center; }
+.hero-shade { background:linear-gradient(90deg,rgba(6,42,25,.94) 0%,rgba(8,48,29,.76) 48%,rgba(8,44,27,.25) 100%); }
+.hero-content,.phone { position:relative; z-index:2; }
+.hero-content { max-width:690px; }
+.eyebrow { margin:0 0 12px; color:#cde89b; font-size:13px; font-weight:700; text-transform:uppercase; }
+h1,h2 { font-family:"Fraunces",serif; letter-spacing:0; }
+h1 { max-width:680px; margin:0; font-size:clamp(64px,9vw,126px); line-height:.86; }
+.hero-copy { max-width:610px; margin:28px 0; font-size:clamp(18px,2.2vw,27px); line-height:1.45; }
+.download-row { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+.download-button { min-height:52px; display:inline-flex; align-items:center; padding:0 22px; border-radius:7px; background:#d7ef9d; color:#123f2b; font-weight:700; text-decoration:none; box-shadow:0 14px 34px rgba(0,0,0,.2); }
+.download-button:hover { background:white; }
+.release-label { color:rgba(255,255,255,.76); font-size:13px; }
+.phone { width:310px; min-height:570px; justify-self:center; border:8px solid #17221c; border-radius:36px; padding:12px; background:#17221c; box-shadow:0 35px 80px rgba(0,0,0,.4); transform:rotate(3deg); }
+.phone-top { width:86px; height:18px; margin:-8px auto 8px; border-radius:0 0 14px 14px; background:#17221c; }
+.phone-screen { min-height:525px; border-radius:24px; padding:28px 18px; background:#f4f7ef; color:var(--ink); }
+.app-heading { display:flex; align-items:center; gap:10px; font-weight:700; }
+.app-heading img { width:38px; height:38px; border-radius:50%; }
+.app-heading small { display:block; margin-top:2px; color:var(--muted); font-weight:400; }
+.scan-panel { display:grid; place-items:center; min-height:210px; margin:30px 0 24px; border-radius:8px; padding:28px; background:#dcebc3; text-align:center; }
+.scan-panel span { display:grid; place-items:center; width:74px; height:74px; border:2px dashed var(--forest); border-radius:50%; font-size:12px; font-weight:700; }
+.scan-panel strong { margin-top:15px; font-family:"Fraunces",serif; font-size:24px; }
+.scan-panel small { color:var(--muted); }
+.health-line { display:flex; justify-content:space-between; }
+.health-track { height:8px; margin:10px 0 24px; background:#d8ded7; }
+.health-track span { display:block; width:82%; height:100%; background:#4d8c58; }
+.task { display:flex; gap:10px; align-items:center; border-top:1px solid var(--line); padding-top:16px; }
+.task>span { display:grid; place-items:center; width:29px; height:29px; border-radius:50%; background:var(--forest); color:white; }
+.task p,.task small { margin:0; display:block; }
+.task small { color:var(--muted); }
+.feature-band { display:grid; grid-template-columns:repeat(3,1fr); gap:0; border-bottom:1px solid var(--line); }
+.feature-band article { min-height:230px; padding:48px max(4vw,28px); border-right:1px solid var(--line); }
+.feature-band article:last-child { border-right:0; }
+.feature-band span { color:var(--leaf); font-size:12px; }
+.feature-band strong { display:block; margin:18px 0 9px; font-family:"Fraunces",serif; font-size:26px; }
+.feature-band p { margin:0; color:var(--muted); line-height:1.6; }
+.install-section { display:grid; grid-template-columns:.7fr 1.3fr; gap:80px; max-width:1180px; margin:auto; padding:100px 28px; }
+.install-section .eyebrow { color:var(--leaf); }
+h2 { margin:0; font-size:clamp(42px,6vw,72px); line-height:1; }
+ol { list-style:none; margin:0; padding:0; counter-reset:steps; }
+li { display:grid; grid-template-columns:130px 1fr; gap:24px; border-top:1px solid var(--line); padding:22px 0; }
+li strong { color:var(--forest); }
+li span { color:var(--muted); line-height:1.5; }
+.store-note { grid-column:2; margin:0; border-left:3px solid var(--leaf); padding:14px 18px; background:#e7f0d5; color:#415247; line-height:1.55; }
+footer { display:flex; justify-content:space-between; padding:24px 28px; background:var(--forest); color:rgba(255,255,255,.72); }
+footer span:first-child { color:white; font-weight:700; }
+@media (max-width:850px) { .hero { min-height:760px; grid-template-columns:1fr; padding-bottom:50px; } .hero-shade { background:linear-gradient(rgba(6,42,25,.9),rgba(6,42,25,.68)); } .phone { display:none; } .feature-band { grid-template-columns:1fr; } .feature-band article { min-height:0; border-right:0; border-bottom:1px solid var(--line); } .install-section { grid-template-columns:1fr; gap:42px; padding-block:72px; } .store-note { grid-column:1; } }
+@media (max-width:520px) { .site-header { padding:18px; } .hero { min-height:700px; padding-inline:20px; } h1 { font-size:64px; } .hero-copy { font-size:19px; } .download-row { align-items:flex-start; flex-direction:column; } .download-button { width:100%; justify-content:center; } .feature-band article { padding:34px 22px; } .install-section { padding-inline:22px; } li { grid-template-columns:1fr; gap:5px; } footer { gap:16px; flex-direction:column; } }

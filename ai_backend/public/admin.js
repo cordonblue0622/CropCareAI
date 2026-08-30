@@ -166,12 +166,17 @@ async function registerAccount(event) {
       }),
       cache: "no-store",
     });
+    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       let message = "The account could not be created.";
-      try { message = (await response.json()).msg || message; } catch (_) {}
+      message = payload.msg || payload.message || message;
       throw new Error(message);
     }
-    success.textContent = "Account created. Confirm your email, then contact a superadmin for access approval.";
+    const createdUser = payload.user || payload;
+    if (!createdUser.id || (Array.isArray(createdUser.identities) && createdUser.identities.length === 0)) {
+      throw new Error("No new account was created. This email may already be registered; try signing in or use a different email.");
+    }
+    success.textContent = "Account created. Open the confirmation email from Supabase, then ask a superadmin to approve access.";
   } catch (failure) {
     error.textContent = failure.message;
   } finally {
@@ -490,6 +495,17 @@ function titleCase(value) {
   return String(value || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function cropIcon(crop) {
+  const icons = {
+    eggplant: "🍆",
+    pechay: "🥬",
+    pepper: "🌶️",
+    squash: "🎃",
+    tomato: "🍅",
+  };
+  return icons[String(crop || "").trim().toLowerCase()] || "🌱";
+}
+
 function buildCropCards(groups, onSelect, emptyMessage) {
   const grid = element("div", "crop-card-grid");
   const entries = Object.entries(groups).sort(([left], [right]) => left.localeCompare(right));
@@ -498,7 +514,7 @@ function buildCropCards(groups, onSelect, emptyMessage) {
     const card = element("button", "crop-card");
     card.type = "button";
     card.append(
-      element("span", "crop-card-mark", titleCase(crop).slice(0, 2)),
+      element("span", "crop-card-mark", cropIcon(crop)),
       element("strong", "", titleCase(crop)),
       element("small", "", `${rows.length} ${rows.length === 1 ? "record" : "records"}`),
     );
@@ -733,7 +749,7 @@ async function renderCropData() {
     api("/v1/admin/resources/crops?limit=100"),
   ]);
   const ordinaryUsers = usersResponse.items.filter((user) => !user.admin_role && !user.admin_access_requested);
-  const cropsByUser = groupBy(cropsResponse.items.filter((crop) => crop.is_deleted !== true), "user_id");
+  const cropsByUser = groupBy(cropsResponse.items, "user_id");
   const panel = element("section", "panel glass");
   panel.append(panelHeader(labels.crops[0], labels.crops[1]));
   const list = element("div", "user-crop-list");
@@ -763,8 +779,15 @@ async function renderCropData() {
 
 function buildUserCropRow(crop) {
   const row = element("article", "user-crop-row");
+  row.tabIndex = 0;
+  row.setAttribute("role", "button");
+  row.setAttribute("aria-label", `View activity for ${crop.crop_name || titleCase(crop.crop_type)}`);
   const copy = element("div");
-  copy.append(element("h4", "", crop.crop_name || titleCase(crop.crop_type)), element("small", "", [titleCase(crop.crop_type), crop.plot_code, crop.location_label].filter(Boolean).join(" · ")));
+  copy.append(
+    element("span", "crop-row-icon", cropIcon(crop.crop_type)),
+    element("h4", "", crop.crop_name || titleCase(crop.crop_type)),
+    element("small", "", [titleCase(crop.crop_type), crop.is_deleted ? "Archived" : null, crop.plot_code, crop.location_label].filter(Boolean).join(" · ")),
+  );
   const stats = element("div", "crop-stats");
   [["Health score", formatValue(crop.latest_health_score, "latest_health_score")], ["Status", titleCase(crop.status || "unknown")], ["Progress", titleCase(crop.latest_progress_status || "insufficient data")], ["Last updated", formatValue(crop.updated_at || crop.last_checked_at, "updated_at")]].forEach(([label, value]) => {
     const stat = element("span");
@@ -777,10 +800,60 @@ function buildUserCropRow(crop) {
   edit.addEventListener("click", () => openRecordDialog("crops", crop));
   const archive = element("button", "danger-button", "Archive");
   archive.type = "button";
+  archive.disabled = crop.is_deleted === true;
+  archive.textContent = crop.is_deleted === true ? "Archived" : "Archive";
   archive.addEventListener("click", () => archiveRecord("crops", crop));
   actions.append(edit, archive);
   row.append(copy, stats, actions);
+  row.addEventListener("click", (event) => {
+    if (!event.target.closest("button")) showCropActivity(crop);
+  });
+  row.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      showCropActivity(crop);
+    }
+  });
   return row;
+}
+
+async function showCropActivity(crop) {
+  const loading = element("div", "empty-state", "Loading crop activity...");
+  openDetailDialog(titleCase(crop.crop_type), crop.crop_name || titleCase(crop.crop_type), loading);
+  try {
+    const response = await api(`/v1/admin/crops/${encodeURIComponent(crop.id)}/activity`);
+    const body = element("div", "crop-activity-view");
+    const summary = element("section", "crop-activity-summary");
+    const icon = element("span", "crop-activity-icon", cropIcon(response.crop.crop_type));
+    const summaryCopy = element("div");
+    summaryCopy.append(
+      element("strong", "", response.crop.crop_name || titleCase(response.crop.crop_type)),
+      element("small", "", `${titleCase(response.crop.status || "unknown")} · ${response.crop.latest_health_score ?? "--"}% health`),
+    );
+    summary.append(icon, summaryCopy);
+    body.append(summary);
+
+    const timeline = element("div", "crop-activity-timeline");
+    (response.events || []).forEach((activity) => {
+      const item = element("article", "crop-activity-item");
+      const marker = element("span", `activity-marker ${activity.type || "update"}`);
+      const copy = element("div");
+      copy.append(
+        element("strong", "", activity.title),
+        element("p", "", activity.detail),
+        element("small", "", formatValue(activity.timestamp, "created_at")),
+      );
+      const health = element("span", "activity-health", activity.health_score === null || activity.health_score === undefined ? "--" : `${Math.round(Number(activity.health_score))}%`);
+      health.title = "Health score at this point";
+      item.append(marker, copy, health);
+      timeline.append(item);
+    });
+    if (!timeline.children.length) timeline.append(element("div", "empty-state compact", "No activity has been recorded for this crop yet."));
+    body.append(timeline);
+    $("#detailDialogBody").replaceChildren(body);
+  } catch (failure) {
+    $("#detailDialogBody").replaceChildren(element("div", "empty-state", failure.message));
+  }
 }
 
 async function renderAdminProfile() {

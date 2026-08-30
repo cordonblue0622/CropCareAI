@@ -786,6 +786,191 @@ class AdminService:
             diagnoses=datasets["diagnoses"],
         )
 
+    async def crop_activity(self, crop_id: str) -> dict[str, Any]:
+        requests = {
+            "crop": (
+                "crops",
+                "id,user_id,crop_type,crop_name,plot_code,location_label,status,latest_progress_status,latest_health_score,is_deleted,created_at,updated_at",
+                {"id": f"eq.{crop_id}", "limit": "1"},
+            ),
+            "progress": (
+                "progress_updates",
+                "id,crop_id,note,update_source,progress_status,health_score,completed_task_count,missed_task_count,update_date,created_at,is_deleted",
+                {"crop_id": f"eq.{crop_id}", "order": "update_date.desc", "limit": "100"},
+            ),
+            "tasks": (
+                "treatment_tasks",
+                "id,crop_id,title,description,status,completed_at,due_at,created_at,updated_at,is_deleted",
+                {"crop_id": f"eq.{crop_id}", "order": "updated_at.desc", "limit": "200"},
+            ),
+            "treatments": (
+                "treatments",
+                "id,crop_id,disease_name,treatment_title,status,started_at,ended_at,updated_at,is_deleted",
+                {"crop_id": f"eq.{crop_id}", "order": "updated_at.desc", "limit": "50"},
+            ),
+            "diagnoses": (
+                "diagnoses",
+                "id,crop_id,disease_name,severity,confidence_score,summary,diagnosed_at,created_at,is_deleted",
+                {"crop_id": f"eq.{crop_id}", "order": "diagnosed_at.desc", "limit": "100"},
+            ),
+            "audit": (
+                "admin_audit_events",
+                "id,action,changed_fields,created_at",
+                {"resource": "eq.crops", "record_id": f"eq.{crop_id}", "order": "created_at.desc", "limit": "100"},
+            ),
+        }
+        datasets: dict[str, list[dict[str, Any]]] = {}
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            for key, (table, fields, filters) in requests.items():
+                response = await client.get(
+                    f"{self._settings.supabase_url}/rest/v1/{table}",
+                    headers=self._headers(),
+                    params={"select": fields, **filters},
+                )
+                self._raise_for_response(response)
+                rows = response.json()
+                datasets[key] = rows if isinstance(rows, list) else []
+
+        if not datasets["crop"]:
+            raise HTTPException(status_code=404, detail="The selected crop was not found.")
+        crop = datasets["crop"][0]
+        return {
+            "crop": crop,
+            "events": self._build_crop_activity(
+                crop=crop,
+                progress=datasets["progress"],
+                tasks=datasets["tasks"],
+                treatments=datasets["treatments"],
+                diagnoses=datasets["diagnoses"],
+                audit=datasets["audit"],
+            ),
+        }
+
+    @classmethod
+    def _build_crop_activity(
+        cls,
+        *,
+        crop: dict[str, Any],
+        progress: list[dict[str, Any]],
+        tasks: list[dict[str, Any]],
+        treatments: list[dict[str, Any]],
+        diagnoses: list[dict[str, Any]],
+        audit: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+
+        def add_event(
+            event_type: str,
+            title: str,
+            detail: str,
+            timestamp: Any,
+            *,
+            health_score: Any = None,
+            status_value: Any = None,
+        ) -> None:
+            parsed = cls._parse_datetime(timestamp)
+            if parsed is None:
+                return
+            events.append(
+                {
+                    "type": event_type,
+                    "title": title,
+                    "detail": detail,
+                    "timestamp": parsed.isoformat(),
+                    "health_score": health_score,
+                    "status": status_value,
+                }
+            )
+
+        add_event(
+            "created",
+            "Crop added",
+            f"{crop.get('crop_name') or crop.get('crop_type') or 'Crop'} was added for monitoring.",
+            crop.get("created_at"),
+        )
+        if crop.get("updated_at") != crop.get("created_at"):
+            action = "Crop archived" if crop.get("is_deleted") else "Crop record updated"
+            add_event(
+                "archive" if crop.get("is_deleted") else "edit",
+                action,
+                f"Current name: {crop.get('crop_name') or 'Unnamed crop'}. Current status: {crop.get('status') or 'unknown'}.",
+                crop.get("updated_at"),
+                health_score=crop.get("latest_health_score"),
+                status_value=crop.get("latest_progress_status") or crop.get("status"),
+            )
+
+        for row in progress:
+            if row.get("is_deleted"):
+                continue
+            details = [str(row.get("note") or "Crop health check-in recorded.")]
+            completed = row.get("completed_task_count")
+            missed = row.get("missed_task_count")
+            if completed or missed:
+                details.append(f"Tasks: {completed or 0} completed, {missed or 0} missed.")
+            add_event(
+                "progress",
+                "Health check-in",
+                " ".join(details),
+                row.get("update_date") or row.get("created_at"),
+                health_score=row.get("health_score"),
+                status_value=row.get("progress_status"),
+            )
+
+        for row in tasks:
+            if row.get("is_deleted") or not (row.get("completed_at") or row.get("status") == "completed"):
+                continue
+            add_event(
+                "task",
+                str(row.get("title") or "Daily treatment task completed"),
+                str(row.get("description") or "The user marked this treatment task complete."),
+                row.get("completed_at") or row.get("updated_at"),
+                status_value="completed",
+            )
+
+        for row in treatments:
+            if row.get("is_deleted"):
+                continue
+            status_value = str(row.get("status") or "planned")
+            timestamp = row.get("ended_at") or row.get("updated_at") or row.get("started_at")
+            add_event(
+                "treatment",
+                "Treatment completed" if status_value == "completed" else "Treatment updated",
+                f"{row.get('treatment_title') or 'Treatment plan'} for {row.get('disease_name') or 'the crop'}.",
+                timestamp,
+                status_value=status_value,
+            )
+
+        for row in diagnoses:
+            if row.get("is_deleted"):
+                continue
+            confidence = row.get("confidence_score")
+            confidence_text = f" ({round(float(confidence) * 100)}% confidence)" if isinstance(confidence, (int, float)) else ""
+            add_event(
+                "diagnosis",
+                f"Diagnosis: {row.get('disease_name') or 'Unknown condition'}",
+                f"Severity: {row.get('severity') or 'not recorded'}{confidence_text}.",
+                row.get("diagnosed_at") or row.get("created_at"),
+                status_value=row.get("severity"),
+            )
+
+        for row in audit:
+            fields = row.get("changed_fields") if isinstance(row.get("changed_fields"), list) else []
+            add_event(
+                "admin",
+                f"Administrator {row.get('action') or 'update'}",
+                f"Changed: {', '.join(str(field).replace('_', ' ') for field in fields) or 'crop record'}.",
+                row.get("created_at"),
+            )
+
+        events.sort(key=lambda event: event["timestamp"])
+        latest_health = None
+        for event in events:
+            if isinstance(event.get("health_score"), (int, float)):
+                latest_health = event["health_score"]
+            elif latest_health is not None:
+                event["health_score"] = latest_health
+        return list(reversed(events))
+
     @staticmethod
     def _parse_datetime(value: Any) -> datetime | None:
         if not isinstance(value, str) or not value.strip():

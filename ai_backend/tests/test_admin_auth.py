@@ -276,6 +276,44 @@ def test_admin_content_and_invitation_routes_are_registered() -> None:
     assert "/v1/admin/treatment-protocols" in paths
     assert "/v1/admin/treatment-protocols/{disease_id}" in paths
     assert "/v1/admin/analytics" in paths
+    assert "/v1/admin/crops/{crop_id}/activity" in paths
+
+
+def test_crop_activity_is_newest_first_and_carries_health_score() -> None:
+    events = AdminService._build_crop_activity(
+        crop={
+            "crop_name": "North tomato",
+            "crop_type": "tomato",
+            "status": "completed",
+            "latest_progress_status": "improving",
+            "latest_health_score": 91,
+            "is_deleted": False,
+            "created_at": "2026-08-01T08:00:00Z",
+            "updated_at": "2026-08-03T08:00:00Z",
+        },
+        progress=[{
+            "note": "Leaves are recovering.",
+            "health_score": 78,
+            "progress_status": "improving",
+            "completed_task_count": 1,
+            "missed_task_count": 0,
+            "update_date": "2026-08-02T08:00:00Z",
+            "is_deleted": False,
+        }],
+        tasks=[{
+            "title": "Day 1 sanitation",
+            "description": "Removed affected leaves.",
+            "status": "completed",
+            "completed_at": "2026-08-02T12:00:00Z",
+            "is_deleted": False,
+        }],
+        treatments=[],
+        diagnoses=[],
+        audit=[],
+    )
+
+    assert [event["type"] for event in events] == ["edit", "task", "progress", "created"]
+    assert events[1]["health_score"] == 78
 
 
 def test_admin_analytics_returns_aggregate_research_metrics() -> None:

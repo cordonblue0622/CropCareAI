@@ -39,6 +39,15 @@ async def admin_analytics(
     return await service.analytics()
 
 
+@router.get("/crops/{crop_id}/activity")
+async def crop_activity(
+    crop_id: str,
+    _: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return await service.crop_activity(crop_id)
+
+
 @router.get("/resources")
 async def resource_catalog(
     _: AuthenticatedUser = Depends(require_admin_user),
