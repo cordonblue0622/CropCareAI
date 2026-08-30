@@ -165,6 +165,7 @@ def test_user_invitation_allowlist_never_accepts_admin_role_or_password() -> Non
             "email": " ANA@EXAMPLE.COM ",
             "password": "not-accepted",
             "admin_role": "superadmin",
+            "role": "admin",
         }
     )
 
@@ -174,7 +175,61 @@ def test_user_invitation_allowlist_never_accepts_admin_role_or_password() -> Non
         "farm_address": "Farm Road",
         "phone": "09171234567",
         "email": "ana@example.com",
+        "role": "admin",
     }
+
+
+def test_user_invitation_defaults_to_non_admin_role() -> None:
+    cleaned = AdminService._clean_invite_payload(
+        {
+            "first_name": "Ana",
+            "last_name": "Farmer",
+            "farm_address": "Farm Road",
+            "email": "ana@example.com",
+        }
+    )
+
+    assert cleaned["role"] == "user"
+
+
+def test_user_invitation_rejects_unknown_role() -> None:
+    with pytest.raises(HTTPException) as exc:
+        AdminService._clean_invite_payload(
+            {
+                "first_name": "Ana",
+                "last_name": "Farmer",
+                "farm_address": "Farm Road",
+                "email": "ana@example.com",
+                "role": "superadmin",
+            }
+        )
+
+    assert exc.value.status_code == 422
+
+
+def test_regular_admin_cannot_invite_an_administrator() -> None:
+    service = AdminService(Settings())
+    actor = AuthenticatedUser(
+        id="admin-1",
+        email="admin@example.com",
+        role="admin",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            service.invite_user(
+                {
+                    "first_name": "Ana",
+                    "last_name": "Farmer",
+                    "farm_address": "Farm Road",
+                    "email": "ana@example.com",
+                    "role": "admin",
+                },
+                actor,
+            )
+        )
+
+    assert exc.value.status_code == 403
 
 
 def test_treatment_protocol_rejects_incomplete_daily_steps_before_supabase_call() -> None:
@@ -211,6 +266,7 @@ def test_disease_resource_includes_admin_content_fields() -> None:
     assert {"severity", "treatment_title", "treatment_information"}.issubset(
         RESOURCES["diseases"].editable
     )
+    assert "label_key" not in RESOURCES["diseases"].fields
 
 
 def test_admin_content_and_invitation_routes_are_registered() -> None:

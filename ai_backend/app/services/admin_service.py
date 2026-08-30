@@ -52,7 +52,7 @@ RESOURCES: dict[str, AdminResource] = {
     "diseases": AdminResource(
         table="disease_knowledge_base",
         fields=(
-            "id", "crop_type", "label_key", "disease_name", "scientific_name",
+            "id", "crop_type", "disease_name", "scientific_name",
             "description", "symptoms", "causes", "treatment_steps",
             "prevention_steps", "estimated_recovery_days", "severity",
             "severity_notes", "caution_notes", "treatment_title",
@@ -60,7 +60,7 @@ RESOURCES: dict[str, AdminResource] = {
             "created_at", "updated_at",
         ),
         editable=(
-            "crop_type", "label_key", "disease_name", "scientific_name",
+            "crop_type", "disease_name", "scientific_name",
             "description", "symptoms", "causes", "treatment_steps",
             "prevention_steps", "estimated_recovery_days", "severity",
             "severity_notes", "caution_notes", "treatment_title",
@@ -179,6 +179,7 @@ class AdminService:
         last_name = str(payload.get("last_name") or "").strip()[:100]
         farm_address = str(payload.get("farm_address") or "").strip()[:500]
         phone = str(payload.get("phone") or "").strip()[:50] or None
+        role = str(payload.get("role") or "user").strip().lower()
         if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
             raise HTTPException(status_code=422, detail="A valid email address is required.")
         if not first_name or not last_name or not farm_address:
@@ -186,12 +187,15 @@ class AdminService:
                 status_code=422,
                 detail="First name, last name, and farm address are required.",
             )
+        if role not in {"user", "admin"}:
+            raise HTTPException(status_code=422, detail="Role must be user or admin.")
         return {
             "email": email,
             "first_name": first_name,
             "last_name": last_name,
             "farm_address": farm_address,
             "phone": phone,
+            "role": role,
         }
 
     @staticmethod
@@ -425,6 +429,11 @@ class AdminService:
         actor: AuthenticatedUser,
     ) -> dict[str, Any]:
         data = self._clean_invite_payload(payload)
+        if data["role"] == "admin" and actor.role != "superadmin":
+            raise HTTPException(
+                status_code=403,
+                detail="Only a superadmin can invite an administrator.",
+            )
         full_name = f"{data['first_name']} {data['last_name']}"
         metadata = {
             "full_name": full_name,
@@ -445,6 +454,18 @@ class AdminService:
         if not user_id:
             raise HTTPException(status_code=502, detail="Supabase did not return the invited account.")
 
+        if data["role"] == "admin":
+            existing_metadata = invited.get("app_metadata") if isinstance(invited, dict) else {}
+            app_metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+            app_metadata["admin_role"] = "admin"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                role_response = await client.put(
+                    f"{self._settings.supabase_url}/auth/v1/admin/users/{user_id}",
+                    headers=self._headers(),
+                    json={"app_metadata": app_metadata},
+                )
+            self._raise_for_response(role_response)
+
         profile = {
             "id": user_id,
             "email": data["email"],
@@ -464,8 +485,13 @@ class AdminService:
                 json=profile,
             )
         self._raise_for_response(profile_response)
-        await self._audit(actor, "create", "users", user_id, profile)
-        return {"id": user_id, "email": data["email"], "profile": profile}
+        await self._audit(actor, "create", "users", user_id, {**profile, "role": data["role"]})
+        return {
+            "id": user_id,
+            "email": data["email"],
+            "role": data["role"],
+            "profile": profile,
+        }
 
     async def list_treatment_protocols(self) -> list[dict[str, Any]]:
         diseases = await self.list_resource("diseases", limit=100)

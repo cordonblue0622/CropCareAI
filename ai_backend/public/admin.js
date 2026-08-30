@@ -911,6 +911,21 @@ function openInviteUserDialog() {
     wrap.append(label, input);
     fields.append(wrap);
   });
+  const roleWrap = element("div");
+  const roleLabel = element("label", "", "Role *");
+  const roleSelect = element("select");
+  roleSelect.name = "role";
+  roleSelect.id = "field-role";
+  roleSelect.required = true;
+  roleLabel.htmlFor = roleSelect.id;
+  [["user", "Non-admin"], ["admin", "Admin"]].forEach(([value, labelText]) => {
+    const option = element("option", "", labelText);
+    option.value = value;
+    option.disabled = value === "admin" && state.admin?.role !== "superadmin";
+    roleSelect.append(option);
+  });
+  roleWrap.append(roleLabel, roleSelect);
+  fields.append(roleWrap);
   const note = element("p", "field-wide approval-note", "Supabase will email an invitation link. The user confirms the address and creates their own password; administrators never see it.");
   fields.append(note);
   $("#recordDialog").showModal();
@@ -1104,7 +1119,7 @@ async function saveRecord(event) {
       await api("/v1/admin/users/invite", { method: "POST", body: JSON.stringify(data) });
       $("#recordDialog").close();
       showStatus("Invitation sent. The user must confirm their email and create a password.");
-      state.userTab = "users";
+      state.userTab = data.role === "admin" ? "admins" : "users";
       await renderUsers();
       return;
     }

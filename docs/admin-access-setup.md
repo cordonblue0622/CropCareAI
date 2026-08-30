@@ -99,4 +99,6 @@ The **Add user** action calls Supabase Auth's invitation endpoint. The invitee
 confirms the email through the received link and creates a password on the
 hosted CropCare page. The backend stores the supplied name, farm address, and
 optional phone in the shared `profiles` row; no password is generated or
-visible to an administrator.
+visible to an administrator. The role selector defaults to **Non-admin**. Only
+a signed-in superadmin can select **Admin** and assign the trusted
+`app_metadata.admin_role` value during invitation.

@@ -115,7 +115,7 @@ nav { display: grid; gap: 4px; margin-top: 18px; }
 .admin-identity { display: flex; width: 100%; gap: 9px; align-items: center; margin-bottom: 10px; border: 0; border-radius: 9px; padding: 7px; background: transparent; color: inherit; text-align: left; }
 .admin-identity:hover, .admin-identity:focus-visible { background: rgba(14,75,45,.1); outline: none; }
 .admin-identity > span { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 50%; background: var(--forest); color: white; font-weight: 800; }
-.admin-identity > span:last-child { display: block; width: auto; height: auto; min-width: 0; border-radius: 0; background: transparent; color: inherit; font-weight: inherit; }
+.admin-identity > span:last-child { display: block; width: auto; height: auto; min-width: 0; border-radius: 0; background: transparent; color: inherit; font-weight: inherit; text-align: left; }
 .admin-identity strong, .admin-identity small { display: block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-identity strong { font-size: 11px; }
 .admin-identity small { color: var(--muted); font-size: 9px; text-transform: uppercase; }
