@@ -12,6 +12,17 @@ from app.schemas.user import AuthenticatedUser
 router = APIRouter()
 
 
+def _normalize_crop(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    aliases = {
+        "bell pepper": "pepper",
+        "capsicum": "pepper",
+        "bok choy": "pechay",
+        "bokchoy": "pechay",
+    }
+    return aliases.get(normalized, normalized)
+
+
 @router.post("/progress", response_model=ProgressCheckInResponse)
 async def assess_crop_progress(
     payload: ProgressCheckInRequest,
@@ -62,7 +73,7 @@ async def _assess(
         "the health score MUST reflect the active disease burden — score between 20 and 65 for active visible disease. "
         "Do NOT score above 70 unless the photo clearly shows the disease symptoms have substantially resolved or are absent. "
         "Return ONLY valid JSON with this exact structure: "
-        '{"accepted": <true|false>, '
+        '{"accepted": <true|false>, "observed_crop": "<tomato|pepper|squash|eggplant|pechay|unknown>", '
         '"rejection_reason": "<short redo instruction or empty>", '
         '"health_score": <number 0-100>, '
         '"progress_status": "<improving|stable|declining|critical>", '
@@ -120,11 +131,26 @@ async def _assess(
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         data = json.loads(raw)
         accepted = bool(data.get("accepted", True))
+        tracked_crop = _normalize_crop(payload.crop_type)
+        observed_crop = _normalize_crop(data.get("observed_crop"))
         rejection_reason = str(data.get("rejection_reason", "")).strip() or None
         health_score = float(max(0, min(100, data.get("health_score", prev_score))))
         progress_status = str(data.get("progress_status", "stable"))
         assessment = str(data.get("assessment", "Assessment not available."))
         next_steps = [str(s) for s in data.get("next_steps", [])]
+        if observed_crop != tracked_crop:
+            accepted = False
+            rejection_reason = (
+                f"The photo could not be verified as your tracked {tracked_crop} crop. "
+                "Please submit a clear close-up photo of that crop."
+            )
+            health_score = prev_score
+            progress_status = "stable"
+            assessment = (
+                f"The AI could not confirm that this image shows the tracked {tracked_crop} crop, "
+                "so it was not used to update the health trend."
+            )
+            next_steps = []
         if not accepted:
             health_score = prev_score
             if not next_steps:

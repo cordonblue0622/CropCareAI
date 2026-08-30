@@ -29,5 +29,7 @@ services:
         value: cropcareai://auth/reset-password
       - key: ADMIN_INVITE_REDIRECT_URL
         value: https://cropcareai-nxn4.onrender.com/admin
+      - key: ADMIN_AUTH_REDIRECT_URL
+        value: https://cropcareai-nxn4.onrender.com/admin
       - key: OPENAI_API_KEY
         sync: false

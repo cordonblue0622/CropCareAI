@@ -58,6 +58,18 @@ async def get_current_user(
     return await auth_service.verify_access_token(credentials.credentials)
 
 
+async def require_authenticated_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> AuthenticatedUser:
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sign-in is required.",
+        )
+    return await auth_service.verify_access_token(credentials.credentials)
+
+
 async def require_admin_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     auth_service: AuthService = Depends(get_auth_service),

@@ -299,6 +299,26 @@ class LlmService:
             )
             answer_body, meta = self._split_ccai_json(raw_answer)
 
+            if self._has_verified_crop_mismatch(active_crop, meta):
+                return ChatResponse(
+                    answer=(
+                        f"I cannot safely give {active_crop} treatment from this result because "
+                        "the crop identification conflicts with the active crop. Please send a clear, "
+                        f"close-up photo of the affected {active_crop} leaf so I can verify it first."
+                    ),
+                    recommended_actions=[],
+                    warnings=[],
+                    sources=self._response_sources(
+                        payload,
+                        knowledge_records,
+                        include_openai=True,
+                        include_web_search=used_web_search,
+                    ),
+                    model=self._settings.openai_model,
+                    in_app_crop_scope=True,
+                    show_treatment_ui=False,
+                )
+
             recommended_actions = self._build_recommended_actions(
                 payload,
                 knowledge_records,
@@ -401,12 +421,12 @@ class LlmService:
         payload: ChatRequest,
         knowledge_records: list[dict[str, Any]],
     ) -> str:
-        if payload.diagnosis and (payload.diagnosis.crop_type or "").strip():
-            return self._normalize_verified_crop(payload.diagnosis.crop_type or "")
-
         hint_crop = self._normalize_verified_crop(payload.hint_crop_type or "")
         if hint_crop in _SUPPORTED_TREATMENT_CARD_CROPS:
             return hint_crop
+
+        if payload.diagnosis and (payload.diagnosis.crop_type or "").strip():
+            return self._normalize_verified_crop(payload.diagnosis.crop_type or "")
 
         for record in knowledge_records:
             crop_type = self._normalize_verified_crop(str(record.get("crop_type") or ""))
@@ -418,6 +438,20 @@ class LlmService:
             + [turn.content for turn in payload.conversation_history[-6:]]
         )
         return self._infer_crop_from_text(recent_text)
+
+    def _has_verified_crop_mismatch(
+        self,
+        active_crop: str,
+        meta: dict[str, Any],
+    ) -> bool:
+        verified_crop = self._normalize_verified_crop(
+            str(meta.get("verified_crop") or "")
+        )
+        return (
+            active_crop in _SUPPORTED_TREATMENT_CARD_CROPS
+            and verified_crop in _SUPPORTED_TREATMENT_CARD_CROPS
+            and verified_crop != active_crop
+        )
 
     def _infer_crop_from_text(self, text: str) -> str:
         normalized = (text or "").strip().lower()

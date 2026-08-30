@@ -41,8 +41,12 @@ class Settings(BaseSettings):
         alias="PASSWORD_RESET_REDIRECT_URL",
     )
     admin_invite_redirect_url: str = Field(
-        default="http://127.0.0.1:8765/admin",
+        default="https://cropcareai-nxn4.onrender.com/admin",
         alias="ADMIN_INVITE_REDIRECT_URL",
+    )
+    admin_auth_redirect_url: str = Field(
+        default="https://cropcareai-nxn4.onrender.com/admin",
+        alias="ADMIN_AUTH_REDIRECT_URL",
     )
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")

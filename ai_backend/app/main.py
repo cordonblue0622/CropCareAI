@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.account import router as account_router
 from app.api.admin import router as admin_router
 from app.api.chat import router as chat_router
 from app.api.detect import router as detect_router
@@ -47,6 +48,7 @@ app.include_router(chat_router, prefix="/v1", tags=["chat"])
 app.include_router(transcribe_router, prefix="/v1", tags=["transcribe"])
 app.include_router(progress_router, prefix="/v1", tags=["progress"])
 app.include_router(admin_router, prefix="/v1", tags=["admin"])
+app.include_router(account_router, prefix="/v1", tags=["account"])
 
 public_dir = Path(__file__).resolve().parents[1] / "public"
 app.mount("/admin/assets", StaticFiles(directory=public_dir), name="admin-assets")
@@ -79,6 +81,7 @@ async def admin_public_config() -> dict[str, str | bool]:
         "supabaseUrl": settings.supabase_url,
         "supabaseAnonKey": settings.supabase_anon_key,
         "adminDataConfigured": bool(settings.supabase_service_role_key),
+        "adminAuthRedirectUrl": settings.admin_auth_redirect_url,
     }
 
 
