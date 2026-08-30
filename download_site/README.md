@@ -18,8 +18,9 @@ practical static-file limit.
 1. Increase `version` in the root `pubspec.yaml`. Both the semantic version and
    build number must move forward, for example `1.0.1+2` to `1.0.2+3`.
 2. Build with `tool/build_release_apk.bat` using the same Android signing key.
-3. In GitHub, create a release and upload the root `CropCareAI-release.apk`
-   file as a release asset. Keep that exact filename.
+3. In the public `cordonblue0622/CropCareAI-Downloads` repository, create a
+   release and upload the root `CropCareAI-release.apk` file as a release
+   asset. Keep that exact filename.
 
 The site reads GitHub's latest-release API and updates its version, size, and
 download target automatically. Installing a newer APK with the same package ID
