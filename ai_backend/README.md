@@ -95,6 +95,30 @@ At that point, set `ENABLE_MOCK_SERVICES=false` in `.env` and run the backend fr
 
 Open `http://127.0.0.1:8000/docs` for Swagger UI.
 
+## Administrator portal
+
+The protected administrator workspace is served at `http://127.0.0.1:8000/admin`
+locally and `/admin` on the deployed backend. It manages users, disease library
+records, treatments, crops, diagnoses, and system audit data.
+
+Before using it:
+
+1. Keep `REQUIRE_AUTH=true` and configure `SUPABASE_URL`,
+  `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` on the backend.
+2. Run `docs/supabase-admin-security.sql` once in the Supabase SQL editor.
+3. Follow `docs/admin-access-setup.md` to bootstrap the first superadmin.
+4. After that, a superadmin approves normal administrator registrations from
+  **User management** in the portal. Never place administrator roles in
+  `user_metadata`; users can update that metadata.
+5. Open `/admin` over HTTPS in production and sign in with the approved account.
+
+The service-role key is never returned to the browser. Administrator API routes
+always require a bearer token and verify the trusted `app_metadata` role, even
+when ordinary development API authentication is disabled. User removal is a
+reversible suspension, records are archived instead of hard-deleted, API fields
+are allowlisted, confidential auth fields and media URLs are excluded, and
+mutations write audit metadata without storing changed values.
+
 ## Render deployment
 
 Use Render only for the online augmentation endpoints.

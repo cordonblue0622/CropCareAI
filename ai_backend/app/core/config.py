@@ -4,10 +4,12 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_BACKEND_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_BACKEND_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -22,8 +24,14 @@ class Settings(BaseSettings):
     require_auth: bool = Field(default=False, alias="REQUIRE_AUTH")
     cors_origins: str = Field(default="*", alias="CORS_ORIGINS")
 
-    supabase_url: str = Field(default="", alias="SUPABASE_URL")
-    supabase_anon_key: str = Field(default="", alias="SUPABASE_ANON_KEY")
+    supabase_url: str = Field(
+        default="",
+        alias="SUPABASE_URL",
+    )
+    supabase_anon_key: str = Field(
+        default="",
+        alias="SUPABASE_ANON_KEY",
+    )
     supabase_service_role_key: str = Field(
         default="",
         alias="SUPABASE_SERVICE_ROLE_KEY",
@@ -34,11 +42,11 @@ class Settings(BaseSettings):
 
     flutter_command: str = Field(default="flutter", alias="FLUTTER_COMMAND")
     tflite_model_path: str = Field(
-        default="../assets/models/cropcare_efficientnet_v2.tflite",
+        default="../assets/models/plant_disease_efficientnetv2s.tflite",
         alias="TFLITE_MODEL_PATH",
     )
     tflite_labels_path: str = Field(
-        default="../assets/models/labels_v2.txt",
+        default="../assets/models/plant_disease_efficientnetv2s_labels.txt",
         alias="TFLITE_LABELS_PATH",
     )
 

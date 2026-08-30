@@ -24,8 +24,12 @@ class AuthService:
                 detail="Invalid access token.",
             )
 
+        app_metadata = user_payload.get("app_metadata")
+        trusted_metadata = app_metadata if isinstance(app_metadata, dict) else {}
+        admin_role = str(trusted_metadata.get("admin_role") or "").strip().lower()
+
         return AuthenticatedUser(
             id=user_payload.get("id", ""),
             email=user_payload.get("email"),
-            role=user_payload.get("role") or "authenticated",
+            role=admin_role or "authenticated",
         )
