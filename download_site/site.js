@@ -1,8 +1,7 @@
 "use strict";
 
-const repository = "cordonblue0622/CropCareAI";
+const repository = "cordonblue0622/CropCareAI-Downloads";
 const releaseApi = `https://api.github.com/repos/${repository}/releases/latest`;
-const fallbackUrl = `https://github.com/${repository}/releases/latest`;
 const downloadButton = document.querySelector("#downloadButton");
 const releaseLabel = document.querySelector("#releaseLabel");
 
@@ -18,7 +17,5 @@ fetch(releaseApi, { headers: { Accept: "application/vnd.github+json" } })
     releaseLabel.textContent = `${release.name || release.tag_name} · ${(apk.size / 1024 / 1024).toFixed(1)} MB`;
   })
   .catch(() => {
-    downloadButton.href = fallbackUrl;
-    downloadButton.textContent = "View Android releases";
-    releaseLabel.textContent = "The latest signed build appears here when published.";
+    releaseLabel.textContent = "Latest signed Android version";
   });
