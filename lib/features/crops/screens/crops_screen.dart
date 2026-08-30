@@ -76,19 +76,23 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
       appBar: AppBar(
-        backgroundColor: AppColors.backgroundCream,
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
         title: const Text('My Crops',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
+            style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 20)),
         actions: [
           IconButton(
-            icon: const Icon(Icons.add, color: AppColors.primary, size: 28),
+            icon: const Icon(Icons.add_rounded, color: Colors.white, size: 28),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const AddCropScreen()),
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.filter_list, color: AppColors.textGray),
+            icon: const Icon(Icons.filter_list, color: Colors.white),
             onPressed: () => _showFilterSheet(context),
           ),
         ],
@@ -101,7 +105,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
         child: Column(children: [
           // Search bar
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
             child: TextField(
               controller: _searchCtrl,
               onChanged: (v) => setState(() => _searchQuery = v),
@@ -127,7 +131,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
             height: 40,
             child: ListView(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 18),
               children: [
                 _FilterChip(
                     label: 'All',
@@ -143,7 +147,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
           const SizedBox(height: 12),
 
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 18),
             child: Row(
               children: [
                 Expanded(
@@ -192,10 +196,10 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
                                 hasActiveFilters ? _clearFilters : null,
                           )
                         : ListView.separated(
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
+                            padding: const EdgeInsets.fromLTRB(18, 0, 18, 112),
                             itemCount: activeCrops.length,
                             separatorBuilder: (_, __) =>
-                                const SizedBox(height: 16),
+                                const SizedBox(height: 12),
                             itemBuilder: (_, i) => GestureDetector(
                               onTap: () async {
                                 await Navigator.push(
@@ -227,7 +231,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
                                 hasActiveFilters ? _clearFilters : null,
                           )
                         : ListView(
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
+                            padding: const EdgeInsets.fromLTRB(18, 0, 18, 112),
                             children: [
                               if (healedCrops.isNotEmpty) ...[
                                 _CompletionSectionHeader(
@@ -424,16 +428,18 @@ class _SectionChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(10),
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
-          color: selected ? AppColors.primary : Colors.white,
-          borderRadius: BorderRadius.circular(18),
+          color: selected
+              ? AppColors.backgroundGreenLight
+              : AppColors.backgroundWhite,
+          borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: selected ? AppColors.primary : AppColors.primaryLight,
+            color: selected ? AppColors.primary : AppColors.borderGreen,
           ),
         ),
         child: Row(
@@ -443,10 +449,10 @@ class _SectionChip extends StatelessWidget {
               child: Text(
                 label,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
+                style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
-                  color: selected ? Colors.white : AppColors.primaryDark,
+                  color: AppColors.primaryDark,
                 ),
               ),
             ),
@@ -455,9 +461,9 @@ class _SectionChip extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
                 color: selected
-                    ? Colors.white.withOpacity(0.2)
+                    ? AppColors.primary
                     : AppColors.backgroundGreenLight,
-                borderRadius: BorderRadius.circular(999),
+                borderRadius: BorderRadius.circular(6),
               ),
               child: Text(
                 '$count',
@@ -567,9 +573,9 @@ class _FilterChip extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
           color: selected ? AppColors.primary : Colors.white,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(8),
           border: Border.all(
-              color: selected ? AppColors.primary : Colors.transparent),
+              color: selected ? AppColors.primary : AppColors.borderGreen),
         ),
         child: Text(
           label,
@@ -636,20 +642,15 @@ class _CropCard extends StatelessWidget {
 
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 8,
-              offset: const Offset(0, 2))
-        ],
+        color: AppColors.backgroundWhite,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.borderGreen),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         // Image
         Stack(children: [
           ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
             child: SizedBox(
               height: 160,
               width: double.infinity,

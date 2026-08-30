@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../shared/widgets/custom_text_field.dart';
-import '../../../shared/widgets/social_button.dart';
 import '../providers/auth_provider.dart';
 import '../../home/home_screen.dart';
 import 'register_screen.dart';
@@ -44,20 +43,6 @@ class _LoginScreenState extends State<LoginScreen> {
     } else {
       _showError(auth.errorMessage ?? 'Sign-in failed.');
     }
-  }
-
-  Future<void> _signInWithGoogle() async {
-    final auth = context.read<AuthProvider>();
-    final ok = await auth.signInWithGoogle();
-    if (!mounted) return;
-    if (!ok) _showError(auth.errorMessage ?? 'Google sign-in failed.');
-  }
-
-  Future<void> _signInWithFacebook() async {
-    final auth = context.read<AuthProvider>();
-    final ok = await auth.signInWithFacebook();
-    if (!mounted) return;
-    if (!ok) _showError(auth.errorMessage ?? 'Facebook sign-in failed.');
   }
 
   Future<void> _forgotPassword() async {
@@ -219,18 +204,18 @@ class _LoginScreenState extends State<LoginScreen> {
                                   onFieldSubmitted: (_) => _signIn(),
                                   style: const TextStyle(
                                       fontSize: 15, color: AppColors.textDark),
-                                    decoration: InputDecoration(
+                                  decoration: InputDecoration(
                                     hintText: '••••••••',
-                                    hintStyle: TextStyle(
+                                    hintStyle: const TextStyle(
                                         color: AppColors.textLightGray),
-                                    prefixIcon: Padding(
+                                    prefixIcon: const Padding(
                                       padding:
                                           EdgeInsets.only(left: 14, right: 10),
                                       child: Icon(Icons.lock_outline_rounded,
                                           color: AppColors.textLightGray,
                                           size: 20),
                                     ),
-                                    prefixIconConstraints: BoxConstraints(
+                                    prefixIconConstraints: const BoxConstraints(
                                         minWidth: 44, minHeight: 44),
                                     suffixIcon: IconButton(
                                       tooltip: _obscurePassword
@@ -286,58 +271,6 @@ class _LoginScreenState extends State<LoginScreen> {
                                                 fontSize: 17,
                                                 fontWeight: FontWeight.w700)),
                                   ),
-                                ),
-                                const SizedBox(height: 22),
-
-                                // OR divider
-                                Row(
-                                  children: [
-                                    Expanded(
-                                        child: Divider(
-                                            color: Colors.grey.shade300)),
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 12),
-                                      child: Text(
-                                        'OR CONTINUE WITH',
-                                        style: TextStyle(
-                                            fontSize: 10,
-                                            letterSpacing: 1.2,
-                                            color: Colors.grey.shade500,
-                                            fontWeight: FontWeight.w600),
-                                      ),
-                                    ),
-                                    Expanded(
-                                        child: Divider(
-                                            color: Colors.grey.shade300)),
-                                  ],
-                                ),
-                                const SizedBox(height: 16),
-
-                                // Social buttons
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: SocialButton(
-                                        label: 'Google',
-                                        icon: _GoogleIcon(),
-                                        onPressed: auth.isLoading
-                                            ? null
-                                            : _signInWithGoogle,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: SocialButton(
-                                        label: 'Facebook',
-                                        icon: const Icon(Icons.facebook_rounded,
-                                            color: Color(0xFF1877F2), size: 22),
-                                        onPressed: auth.isLoading
-                                            ? null
-                                            : _signInWithFacebook,
-                                      ),
-                                    ),
-                                  ],
                                 ),
                               ],
                             ),
@@ -411,32 +344,12 @@ class _LogoSection extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Icon
-        Container(
-          width: 72,
-          height: 72,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(18),
-            boxShadow: [
-              BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.1),
-                  blurRadius: 16,
-                  offset: const Offset(0, 4)),
-            ],
-          ),
-          child: Center(
-            child: Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: AppColors.primaryDark,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Icon(Icons.eco_rounded,
-                  color: Colors.lightGreenAccent, size: 28),
-            ),
-          ),
+        Image.asset(
+          'assets/images/cropcare_logo.png',
+          width: 92,
+          height: 92,
+          fit: BoxFit.contain,
+          semanticLabel: 'CropCare AI logo',
         ),
         const SizedBox(height: 14),
         const Text(
@@ -455,50 +368,4 @@ class _LogoSection extends StatelessWidget {
       ],
     );
   }
-}
-
-class _GoogleIcon extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 22,
-      height: 22,
-      child: CustomPaint(painter: _GooglePainter()),
-    );
-  }
-}
-
-class _GooglePainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final r = size.width / 2;
-
-    // Draw coloured arcs to simulate the Google logo
-    const colors = [
-      Color(0xFF4285F4), // blue
-      Color(0xFF34A853), // green
-      Color(0xFFFBBC05), // yellow
-      Color(0xFFEA4335), // red
-    ];
-    final sweeps = [90.0, 90.0, 90.0, 90.0];
-    double start = -90;
-
-    for (int i = 0; i < 4; i++) {
-      canvas.drawArc(
-        Rect.fromCircle(center: center, radius: r),
-        start * (3.14159 / 180),
-        sweeps[i] * (3.14159 / 180),
-        false,
-        Paint()
-          ..color = colors[i]
-          ..strokeWidth = 3
-          ..style = PaintingStyle.stroke,
-      );
-      start += sweeps[i];
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter old) => false;
 }

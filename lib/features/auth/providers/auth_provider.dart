@@ -1,10 +1,9 @@
 import 'package:flutter/foundation.dart';
-import 'package:google_sign_in/google_sign_in.dart';
-import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:async';
 import '../../../core/constants/app_constants.dart';
 import '../../../data/models/user_model.dart';
+import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/repositories/auth_repository.dart';
 
 enum AuthStatus { unknown, authenticated, unauthenticated, loading }
@@ -118,14 +117,20 @@ class AuthProvider extends ChangeNotifier {
     return _handleSignUpResult(result);
   }
 
-  Future<bool> updateProfileLocation({
+  Future<bool> updateProfile({
+    String? fullName,
+    String? displayName,
+    String? phone,
     String? barangay,
     required String municipality,
     required String province,
     required String country,
   }) async {
     try {
-      final user = await authRepository.updateProfileLocation(
+      final user = await authRepository.updateProfile(
+        fullName: fullName,
+        displayName: displayName,
+        phone: phone,
         barangay: barangay,
         municipality: municipality,
         province: province,
@@ -145,6 +150,29 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  Future<bool> requestEmailChange(String email) async {
+    try {
+      await authRepository.requestEmailChange(
+        email,
+        emailRedirectTo: _emailConfirmationRedirectUrl,
+      );
+      _errorMessage = null;
+      _infoMessage = 'Check your email to confirm the new address.';
+      notifyListeners();
+      return true;
+    } on AuthException catch (error) {
+      _errorMessage = error.message;
+      _infoMessage = null;
+      notifyListeners();
+      return false;
+    } catch (_) {
+      _errorMessage = 'Could not request the email change.';
+      _infoMessage = null;
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<bool> signIn({
     required String email,
     required String password,
@@ -155,103 +183,6 @@ class AuthProvider extends ChangeNotifier {
     return _handleResult(result);
   }
 
-  // ─── Google Sign-In ───────────────────────────────────────────────────────
-
-  Future<bool> signInWithGoogle() async {
-    _setLoading();
-    try {
-      if (kIsWeb) {
-        final started =
-            await authRepository.supabaseService.signInWithOAuthProvider(
-          provider: OAuthProvider.google,
-          redirectTo: _webRedirectUrl,
-        );
-        if (!started) {
-          _setError('Could not start Google sign-in.');
-          return false;
-        }
-        return true;
-      }
-
-      final GoogleSignIn googleSignIn = GoogleSignIn(
-        clientId: AppConstants.googleIosClientId,
-        serverClientId: AppConstants.googleWebClientId,
-        scopes: ['email', 'profile'],
-      );
-
-      final googleUser = await googleSignIn.signIn();
-      if (googleUser == null) {
-        _setError('Google sign-in cancelled.');
-        return false;
-      }
-
-      final googleAuth = await googleUser.authentication;
-      if (googleAuth.idToken == null) {
-        _setError('Failed to get Google ID token.');
-        return false;
-      }
-
-      final response =
-          await authRepository.supabaseService.signInWithGoogleIdToken(
-        idToken: googleAuth.idToken!,
-        accessToken: googleAuth.accessToken,
-      );
-
-      final result = await authRepository.handleSocialAuthResponse(response);
-      return _handleResult(result);
-    } on AuthException catch (e) {
-      _setError(e.message);
-      return false;
-    } catch (e) {
-      _setError(e.toString());
-      return false;
-    }
-  }
-
-  // ─── Facebook Sign-In ─────────────────────────────────────────────────────
-
-  Future<bool> signInWithFacebook() async {
-    _setLoading();
-    try {
-      if (kIsWeb) {
-        final started =
-            await authRepository.supabaseService.signInWithOAuthProvider(
-          provider: OAuthProvider.facebook,
-          redirectTo: _webRedirectUrl,
-        );
-        if (!started) {
-          _setError('Could not start Facebook sign-in.');
-          return false;
-        }
-        return true;
-      }
-
-      final LoginResult fbResult = await FacebookAuth.instance.login(
-        permissions: ['email', 'public_profile'],
-      );
-
-      if (fbResult.status != LoginStatus.success) {
-        _setError('Facebook sign-in cancelled or failed.');
-        return false;
-      }
-
-      final token = fbResult.accessToken!.tokenString;
-      final response =
-          await authRepository.supabaseService.signInWithFacebookToken(
-        accessToken: token,
-      );
-
-      final result = await authRepository.handleSocialAuthResponse(response);
-      return _handleResult(result);
-    } on AuthException catch (e) {
-      _setError(e.message);
-      return false;
-    } catch (e) {
-      _setError(e.toString());
-      return false;
-    }
-  }
-
   // ─── Sign Out ─────────────────────────────────────────────────────────────
 
   Future<void> signOut() async {
@@ -260,6 +191,26 @@ class AuthProvider extends ChangeNotifier {
     _currentUser = null;
     _status = AuthStatus.unauthenticated;
     notifyListeners();
+  }
+
+  Future<bool> deleteAccount(AiBackendService backend) async {
+    _setLoading();
+    try {
+      await backend.deleteAccount();
+      await authRepository.clearDeletedAccountFromDevice();
+      _currentUser = null;
+      _status = AuthStatus.unauthenticated;
+      _errorMessage = null;
+      _infoMessage = null;
+      notifyListeners();
+      return true;
+    } catch (error) {
+      _status = AuthStatus.authenticated;
+      _errorMessage = error.toString();
+      _infoMessage = null;
+      notifyListeners();
+      return false;
+    }
   }
 
   // ─── Password Reset ───────────────────────────────────────────────────────

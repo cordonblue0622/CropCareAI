@@ -21,6 +21,9 @@ class SupabaseService {
     String? municipality,
     String? province,
     String? country,
+    required DateTime legalAcceptedAt,
+    required String termsVersion,
+    required String privacyPolicyVersion,
   }) {
     return _client.auth.signUp(
       email: email,
@@ -36,7 +39,26 @@ class SupabaseService {
           'province': province.trim(),
         if (country != null && country.trim().isNotEmpty)
           'country': country.trim(),
+        'legal_accepted_at': legalAcceptedAt.toUtc().toIso8601String(),
+        'terms_version': termsVersion,
+        'privacy_policy_version': privacyPolicyVersion,
       },
+    );
+  }
+
+  Future<void> recordLegalConsent({
+    required DateTime acceptedAt,
+    required String termsVersion,
+    required String privacyPolicyVersion,
+  }) async {
+    await _client.auth.updateUser(
+      UserAttributes(
+        data: {
+          'legal_accepted_at': acceptedAt.toUtc().toIso8601String(),
+          'terms_version': termsVersion,
+          'privacy_policy_version': privacyPolicyVersion,
+        },
+      ),
     );
   }
 
@@ -47,28 +69,6 @@ class SupabaseService {
     return _client.auth.signInWithPassword(
       email: email,
       password: password,
-    );
-  }
-
-  /// Sign-in with a Google ID token obtained from google_sign_in package.
-  Future<AuthResponse> signInWithGoogleIdToken({
-    required String idToken,
-    String? accessToken,
-  }) {
-    return _client.auth.signInWithIdToken(
-      provider: OAuthProvider.google,
-      idToken: idToken,
-      accessToken: accessToken,
-    );
-  }
-
-  /// Sign-in with a Facebook access token obtained from flutter_facebook_auth.
-  Future<AuthResponse> signInWithFacebookToken({
-    required String accessToken,
-  }) {
-    return _client.auth.signInWithIdToken(
-      provider: OAuthProvider.facebook,
-      idToken: accessToken,
     );
   }
 
@@ -84,17 +84,13 @@ class SupabaseService {
     await _client.auth.updateUser(UserAttributes(password: password));
   }
 
-  Future<bool> signInWithOAuthProvider({
-    required OAuthProvider provider,
-    String? redirectTo,
-    String? scopes,
-    Map<String, String>? queryParams,
-  }) {
-    return _client.auth.signInWithOAuth(
-      provider,
-      redirectTo: redirectTo,
-      scopes: scopes,
-      queryParams: queryParams,
+  Future<void> requestEmailChange(
+    String email, {
+    required String emailRedirectTo,
+  }) async {
+    await _client.auth.updateUser(
+      UserAttributes(email: email),
+      emailRedirectTo: emailRedirectTo,
     );
   }
 

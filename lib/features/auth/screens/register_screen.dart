@@ -136,16 +136,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 // ── Header row (logo + name) ───────────────────────────
                 Row(
                   children: [
-                    // CropCare stamp logo
-                    Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: AppColors.primaryDark,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Icon(Icons.eco_rounded,
-                          color: Colors.lightGreenAccent, size: 26),
+                    Image.asset(
+                      'assets/images/cropcare_logo.png',
+                      width: 52,
+                      height: 52,
+                      fit: BoxFit.contain,
+                      semanticLabel: 'CropCare AI logo',
                     ),
                     const SizedBox(width: 10),
                     const Text(
@@ -395,7 +391,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   width: double.infinity,
                   height: 58,
                   child: ElevatedButton(
-                    onPressed: auth.isLoading ? null : _createAccount,
+                    onPressed: auth.isLoading || !_agreedToTerms
+                        ? null
+                        : _createAccount,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       foregroundColor: Colors.white,

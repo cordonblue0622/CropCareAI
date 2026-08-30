@@ -157,5 +157,24 @@ void main() {
         isFalse,
       );
     });
+
+    test('rebases a late first check-in so its date becomes Day 1', () {
+      final originalStart = DateTime(2026, 8, 24, 9);
+      final lateDayOne = DateTime(2026, 8, 28, 14, 30);
+
+      final rebasedDayOne = TreatmentPlanService.rebaseTaskDate(
+        originalDueAt: DateTime(2026, 8, 24, 9),
+        originalStartAt: originalStart,
+        newStartAt: lateDayOne,
+      );
+      final rebasedDayTwo = TreatmentPlanService.rebaseTaskDate(
+        originalDueAt: DateTime(2026, 8, 25, 9),
+        originalStartAt: originalStart,
+        newStartAt: lateDayOne,
+      );
+
+      expect(rebasedDayOne, DateTime(2026, 8, 28, 9));
+      expect(rebasedDayTwo, DateTime(2026, 8, 29, 9));
+    });
   });
 }

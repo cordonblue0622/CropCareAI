@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 const MethodChannel _permissionChannel =
-  MethodChannel('flutter.baseflow.com/permissions/methods');
+    MethodChannel('flutter.baseflow.com/permissions/methods');
 
 // ---------------------------------------------------------------------------
 // Fake ConnectivityService
@@ -40,6 +40,9 @@ class _FakeAiBackendService implements AiBackendService {
   bool transcribeCalled = false;
 
   @override
+  Future<void> deleteAccount() async {}
+
+  @override
   Future<void> warmUpIfNeeded({bool force = false}) async {}
 
   @override
@@ -62,6 +65,7 @@ class _FakeAiBackendService implements AiBackendService {
     String? cropId,
     dynamic diagnosis,
     List<int>? imageBytes,
+    List<List<int>> imageBytesList = const [],
     String? imageMimeType,
     List<Map<String, String>> conversationHistory = const [],
     String? locale,

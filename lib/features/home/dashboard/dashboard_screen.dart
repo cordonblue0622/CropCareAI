@@ -388,7 +388,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             SliverAppBar(
               floating: true,
               pinned: false,
-              backgroundColor: AppColors.backgroundCream,
+              toolbarHeight: 76,
+              backgroundColor: AppColors.primary,
+              shape: const RoundedRectangleBorder(
+                borderRadius: BorderRadius.vertical(
+                  bottom: Radius.circular(18),
+                ),
+              ),
               automaticallyImplyLeading: false,
               titleSpacing: 0,
               title: Padding(
@@ -399,7 +405,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       onTap: () => Scaffold.of(ctx).openDrawer(),
                       child: CircleAvatar(
                         radius: 20,
-                        backgroundColor: AppColors.primaryLight,
+                        backgroundColor: AppColors.surfaceLime,
                         backgroundImage: user?.avatarUrl != null
                             ? CachedNetworkImageProvider(user!.avatarUrl!)
                             : null,
@@ -422,9 +428,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           Text(_greeting(),
                               style: const TextStyle(
                                   fontSize: 10,
-                                  color: AppColors.textGray,
+                                  color: Colors.white70,
                                   fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.5)),
+                                  letterSpacing: 0)),
                           if (notifs.missedTasks.isNotEmpty) ...[
                             const SizedBox(width: 6),
                             Container(
@@ -446,7 +452,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               style: const TextStyle(
                                   fontSize: 18,
                                   fontWeight: FontWeight.w800,
-                                  color: AppColors.textDark)),
+                                  color: Colors.white)),
                         ]),
                       ],
                     ),
@@ -454,7 +460,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Stack(children: [
                     IconButton(
                       icon: const Icon(Icons.notifications_outlined,
-                          color: AppColors.textDark),
+                          color: Colors.white),
                       onPressed: () => _pushNotifications(context),
                     ),
                     if (notifs.unreadCount > 0)
@@ -473,7 +479,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 112),
               sliver: SliverList(
                 delegate: SliverChildListDelegate([
                   // Search
@@ -497,7 +503,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         : () =>
                             _showVitalityDialog(context, allRecentActiveCrops),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildVitality(crops, dashboardActiveCrops),
                   const SizedBox(height: 24),
 
@@ -506,7 +512,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     title: 'Active Crops',
                     onViewAll: widget.onOpenMyCrops,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildActiveCrops(context, dashboardActiveCrops),
                   const SizedBox(height: 24),
 
@@ -520,7 +526,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   if (hasSearchQuery &&
                       dashboardActiveCrops.isEmpty &&
                       filteredDiseases.isEmpty)
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 16),
 
                   // Today's Tasks
                   _TodayTasksCard(
@@ -549,7 +555,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     sub: farmLocation != null ? '📍 $farmLocation' : null,
                     onViewAll: () => _pushLibrary(context),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildDiseases(context, filteredDiseases),
                 ]),
               ),
@@ -561,7 +567,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         heroTag: 'dashboard_crop_doctor_fab',
         onPressed: () => _openChat(context),
         tooltip: 'Open crop doctor',
-        backgroundColor: AppColors.buttonOrange,
+        backgroundColor: AppColors.primaryDark,
         child: const Icon(
           Icons.energy_savings_leaf_rounded,
           color: Colors.white,
@@ -594,11 +600,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return _emptyState(Icons.energy_savings_leaf_outlined, 'No crops yet.');
     }
     return SizedBox(
-      height: 152,
+      height: 130,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: activeCrops.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
         itemBuilder: (_, i) => _VitalityCard(
           crop: activeCrops[i],
           onTap: () => _openCropProgress(context, activeCrops[i]),
@@ -718,11 +724,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return _emptyState(Icons.grass, 'No active crops.');
     }
     return SizedBox(
-      height: 148,
+      height: 128,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: activeCrops.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
         itemBuilder: (_, i) {
           final crop = activeCrops[i];
           return GestureDetector(
@@ -805,11 +811,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
     }
     return SizedBox(
-      height: 160,
+      height: 136,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: items.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
         itemBuilder: (_, i) => _DiseaseCard(
           name: humanizeDiseaseLabel(items[i].diseaseName),
           risk: _diseaseRiskLabel(items[i]),
@@ -866,7 +872,7 @@ class _SectionHeader extends StatelessWidget {
         TextButton(
           onPressed: onViewAll,
           child: const Text('View All',
-              style: TextStyle(color: AppColors.primary, fontSize: 13)),
+              style: TextStyle(color: AppColors.primary, fontSize: 12)),
         ),
     ]);
   }
@@ -901,17 +907,17 @@ class _SearchBar extends StatelessWidget {
               ),
         filled: true,
         fillColor: AppColors.backgroundWhite,
-        contentPadding: const EdgeInsets.symmetric(vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(vertical: 10),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.borderGreen),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.borderGreen),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
           borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
         ),
       ),
@@ -942,17 +948,12 @@ class _VitalityCard extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 168,
-        padding: const EdgeInsets.all(14),
+        width: 150,
+        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 8,
-                offset: const Offset(0, 2))
-          ],
+          color: AppColors.backgroundWhite,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.borderGreen),
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(crop.cropType.name.toUpperCase(),
@@ -972,21 +973,21 @@ class _VitalityCard extends StatelessWidget {
               color: AppColors.textDark,
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           Text('${score.toStringAsFixed(0)}%',
               style: const TextStyle(
-                  fontSize: 26,
+                  fontSize: 22,
                   fontWeight: FontWeight.w800,
                   color: AppColors.textDark)),
           const Spacer(),
           SizedBox(
-            height: 32,
+            height: 24,
             child: CustomPaint(
               painter: _SparklinePainter(score: score),
               size: Size.infinite,
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1070,26 +1071,20 @@ class _ActiveCropCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 140,
+      width: 128,
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        color: AppColors.backgroundWhite,
+        borderRadius: BorderRadius.circular(10),
         border: crop.status == CropStatus.recovering
             ? Border.all(color: Colors.orange, width: 2)
-            : null,
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 8,
-              offset: const Offset(0, 2))
-        ],
+            : Border.all(color: AppColors.borderGreen),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Stack(children: [
           ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
             child: SizedBox(
-              height: 100,
+              height: 80,
               width: double.infinity,
               child: FutureBuilder<String?>(
                 future: previewImageFuture,
@@ -1125,7 +1120,7 @@ class _ActiveCropCard extends StatelessWidget {
           ),
         ]),
         Padding(
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.all(8),
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(crop.cropName,
@@ -1233,14 +1228,9 @@ class _TodayTasksCardState extends State<_TodayTasksCard> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 8,
-              offset: const Offset(0, 2))
-        ],
+        color: AppColors.backgroundWhite,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.borderGreen),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         // ─── Header ───────────────────────────────────────────────────────
@@ -1285,7 +1275,7 @@ class _TodayTasksCardState extends State<_TodayTasksCard> {
                       fontWeight: FontWeight.w600)),
             ),
         ]),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
 
         // ─── Empty state ──────────────────────────────────────────────────
         if (totalCount == 0)
@@ -1377,10 +1367,11 @@ class _DashboardTaskRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: AppColors.backgroundCream,
+        color:
+            isMissed ? const Color(0xFFFFF2EE) : AppColors.backgroundGreenLight,
         borderRadius: BorderRadius.circular(10),
         border: Border(
             left: BorderSide(
@@ -1480,35 +1471,41 @@ class _SmartTipCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-          color: AppColors.primary, borderRadius: BorderRadius.circular(16)),
+        color: AppColors.surfaceLime,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.borderGreen),
+      ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Row(children: [
-          Icon(Icons.lightbulb_outline, color: Colors.white70, size: 20),
+          Icon(Icons.lightbulb_outline, color: AppColors.primary, size: 20),
           SizedBox(width: 8),
           Text('Smart Tip',
               style: TextStyle(
-                  color: Colors.white,
+                  color: AppColors.textDark,
                   fontWeight: FontWeight.w700,
-                  fontSize: 15)),
+                  fontSize: 14)),
         ]),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
         Text(
           message,
-          style:
-              const TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
+          style: const TextStyle(
+            color: AppColors.textMedium,
+            fontSize: 13,
+            height: 1.5,
+          ),
         ),
         if (onLearnMore != null && actionLabel != null) ...[
           const SizedBox(height: 14),
           OutlinedButton(
             onPressed: onLearnMore,
             style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.white,
-              side: const BorderSide(color: Colors.white, width: 1),
+              foregroundColor: AppColors.primaryDark,
+              side: const BorderSide(color: AppColors.primary, width: 1),
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20)),
+                  borderRadius: BorderRadius.circular(8)),
             ),
             child: Text(actionLabel!,
                 style:
@@ -1552,8 +1549,10 @@ class _DiseaseCard extends StatelessWidget {
       child: Container(
         width: 140,
         decoration: BoxDecoration(
-            color: AppColors.primaryDark,
-            borderRadius: BorderRadius.circular(14)),
+          color: AppColors.backgroundWhite,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.borderGreen),
+        ),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -1561,13 +1560,13 @@ class _DiseaseCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Icon(Icons.bug_report_outlined,
-                    color: Colors.white54, size: 32),
+                    color: AppColors.primary, size: 32),
                 const Spacer(),
                 Text(name,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                        color: Colors.white,
+                        color: AppColors.textDark,
                         fontWeight: FontWeight.w800,
                         fontSize: 14)),
                 Text(risk,

@@ -160,6 +160,28 @@ class AiBackendService {
     );
   }
 
+  Future<void> deleteAccount() async {
+    await warmUpIfNeeded();
+    final response = await _client
+        .delete(
+          Uri.parse('$baseUrl/v1/account'),
+          headers: _headers(),
+        )
+        .timeout(const Duration(seconds: 45));
+    if (response.statusCode == 204) return;
+
+    var message = 'Your account could not be deleted. Please try again.';
+    try {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final detail = decoded['detail'];
+      if (detail is String && detail.trim().isNotEmpty) message = detail.trim();
+    } catch (_) {}
+    throw AiBackendHttpException(
+      statusCode: response.statusCode,
+      message: message,
+    );
+  }
+
   Future<AiBackendDetectResponse> detectImage({
     required List<int> imageBytes,
     required String filename,

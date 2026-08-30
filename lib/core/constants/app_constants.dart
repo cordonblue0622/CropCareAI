@@ -7,12 +7,6 @@ class AppConstants {
   static const String supabaseAnonKey =
       'sb_publishable_pGlOzhxq3XFUFg4KKQhJFg_2D6Gd9pg';
 
-  // ─── Google OAuth ─────────────────────────────────────────────────────────
-  // OAuth client IDs are public client identifiers, not client secrets.
-  static const String googleWebClientId =
-      '411826613527-oqsj420bgp309pfd1n5fum62orni43go.apps.googleusercontent.com';
-  static const String googleIosClientId = 'YOUR_GOOGLE_IOS_CLIENT_ID';
-
   // ─── Authentication ──────────────────────────────────────────────────────
   // Register this callback in Supabase Auth URL Configuration.
   static const String passwordResetRedirectUrl = String.fromEnvironment(
@@ -24,6 +18,10 @@ class AppConstants {
     'EMAIL_CONFIRMATION_REDIRECT_URL',
     defaultValue: 'cropcareai://auth/callback',
   );
+
+  static const String termsVersion = '2026-08-30';
+  static const String privacyPolicyVersion = '2026-08-30';
+  static const String privacyContactEmail = 'cropcareai.team@gmail.com';
 
   // ─── Weather API ───────────────────────────────────────────────────────────
   // Optional. Set with --dart-define=WEATHER_API_KEY=... to enable weather data.

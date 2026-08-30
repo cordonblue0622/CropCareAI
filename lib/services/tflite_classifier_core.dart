@@ -96,31 +96,15 @@ class TfliteClassifierCore {
             })
             .clamp(0.0, 1.0)
             .toDouble();
-    final cropTypeAligned = requestedCropType == null ||
-        requestedCropType.isEmpty ||
-        predictedCropType == null ||
-        requestedCropType == predictedCropType;
     final isUnsupportedCropFamily = predictedCropType == null;
     final isSelectedCropMismatch = requestedCropType != null &&
         requestedCropType.isNotEmpty &&
         predictedCropType != null &&
         requestedCropType != predictedCropType;
-    final isBelowMinimumConfidence =
-        score < AppConstants.temporaryScannerMinConfidence;
     final isBelowAcceptedConfidence =
         score < AppConstants.temporaryScannerAcceptedConfidence;
     final isAmbiguous = ranked.length > 1 &&
         scoreMargin < AppConstants.temporaryScannerAcceptedMargin;
-    final isProvisionalCropFamilyMatch = isBelowMinimumConfidence &&
-        score >= AppConstants.temporaryScannerProvisionalConfidence &&
-        sameCropConfidence >=
-            AppConstants.temporaryScannerProvisionalCropFamilyConfidence &&
-        cropTypeAligned &&
-        predictedCropType != null;
-    final isTopPredictionFallbackMatch = isBelowMinimumConfidence &&
-        cropTypeAligned &&
-        predictedCropType != null &&
-        labelSpec.supportedInKnowledgeBase;
 
     final topPredictions = ranked
         .take(3)
@@ -166,16 +150,16 @@ class TfliteClassifierCore {
       );
     }
 
-    if (isBelowMinimumConfidence &&
-        !isProvisionalCropFamilyMatch &&
-        !isTopPredictionFallbackMatch) {
+    if (isBelowAcceptedConfidence || isAmbiguous) {
       final rejectionNotes = <String>[];
-      rejectionNotes.add(
-        'Top prediction confidence was ${(score * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerMinConfidence * 100).toStringAsFixed(0)}% minimum offline threshold.',
-      );
+      if (isBelowAcceptedConfidence) {
+        rejectionNotes.add(
+          'Top prediction confidence was ${(score * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerAcceptedConfidence * 100).toStringAsFixed(0)}% offline acceptance threshold.',
+        );
+      }
       if (isAmbiguous) {
         rejectionNotes.add(
-          'Top prediction margin was ${(scoreMargin * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerAcceptedMargin * 100).toStringAsFixed(0)}% confidence-gap threshold.',
+          'Top prediction margin was ${(scoreMargin * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerAcceptedMargin * 100).toStringAsFixed(0)}% confidence-gap threshold. The scan is too ambiguous to diagnose safely.',
         );
       }
       return AiBackendDetectResponse(
@@ -203,14 +187,6 @@ class TfliteClassifierCore {
       'Top predictions: $topPredictions',
       'Top prediction margin: ${(scoreMargin * 100).toStringAsFixed(1)}%',
       'Predicted crop-family confidence: ${(sameCropConfidence * 100).toStringAsFixed(1)}%',
-      if (isProvisionalCropFamilyMatch)
-        'Accepted as a provisional offline match because ${(sameCropConfidence * 100).toStringAsFixed(1)}% of the model confidence stayed within the ${labelSpec.cropType!.value} label family, even though the top class was below the normal ${(AppConstants.temporaryScannerMinConfidence * 100).toStringAsFixed(0)}% threshold.',
-      if (!isProvisionalCropFamilyMatch && isTopPredictionFallbackMatch)
-        'Accepted as a low-confidence top-prediction fallback for demo use because the best class maps to a supported ${labelSpec.cropType!.value} diagnosis, even though the score stayed below the normal ${(AppConstants.temporaryScannerMinConfidence * 100).toStringAsFixed(0)}% threshold.',
-      if (isBelowAcceptedConfidence)
-        'Confidence is below the preferred ${(AppConstants.temporaryScannerAcceptedConfidence * 100).toStringAsFixed(0)}% offline acceptance threshold, so treat this as a provisional match and verify with another photo if possible.',
-      if (isAmbiguous)
-        'This prediction is close to another class. Review the affected area closely or retake the image for a stronger confirmation.',
       if (!labelSpec.supportedInKnowledgeBase)
         'This predicted class is not fully covered by the current app knowledge base yet.',
       if (score < AppConstants.temporaryScannerMinConfidence)

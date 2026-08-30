@@ -75,11 +75,7 @@ class HealthScoreService {
       final severity = _latestSeverity(diagnoses, endOfDay);
       final assessment = _latestAssessment(progressUpdates, endOfDay);
       final score = assessment?.healthScore?.round() ??
-          _scoreForDay(
-            totalTasks: dueByDay.length,
-            completedTasks: completedByDay.length,
-            severity: severity,
-          );
+          _baselineHealthScore(severity);
       if (assessment != null) {
         assessedStatuses[day] = assessment.progressStatus;
       }
@@ -215,6 +211,10 @@ class HealthScoreService {
     return (completionScore - _severityPenalty(severity))
         .clamp(0.0, 100.0)
         .round();
+  }
+
+  static int _baselineHealthScore(Severity? severity) {
+    return (100.0 - _severityPenalty(severity)).round();
   }
 
   static double _severityPenalty(Severity? severity) {

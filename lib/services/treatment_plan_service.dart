@@ -131,6 +131,41 @@ class TreatmentPlanService {
         .every(activeDays.contains);
   }
 
+  /// Moves an unfinished task to the same treatment-day offset from a new
+  /// Day 1 while preserving its planned time of day.
+  static DateTime rebaseTaskDate({
+    required DateTime originalDueAt,
+    required DateTime originalStartAt,
+    required DateTime newStartAt,
+  }) {
+    final originalDay = DateTime(
+      originalDueAt.year,
+      originalDueAt.month,
+      originalDueAt.day,
+    );
+    final originalStartDay = DateTime(
+      originalStartAt.year,
+      originalStartAt.month,
+      originalStartAt.day,
+    );
+    final newStartDay = DateTime(
+      newStartAt.year,
+      newStartAt.month,
+      newStartAt.day,
+    );
+    final dayOffset = originalDay.difference(originalStartDay).inDays;
+    return DateTime(
+      newStartDay.year,
+      newStartDay.month,
+      newStartDay.day,
+      originalDueAt.hour,
+      originalDueAt.minute,
+      originalDueAt.second,
+      originalDueAt.millisecond,
+      originalDueAt.microsecond,
+    ).add(Duration(days: dayOffset < 0 ? 0 : dayOffset));
+  }
+
   static List<String> _uniqueSteps(List<String> steps) {
     final result = <String>[];
     for (final step in steps) {

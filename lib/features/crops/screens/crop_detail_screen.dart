@@ -517,6 +517,16 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           submittedScore = newScore;
           submittedStatus = newStatus;
           submittedUpdate = update;
+          TreatmentTimelineRebaseResult? rebase;
+          if (activeTreatment != null &&
+              !_hasTreatmentCheckIn(activeTreatment.id)) {
+            rebase = await cropsProvider.rebaseTreatmentTimeline(
+              treatment: activeTreatment,
+              tasks: _tasks,
+              startedAt: update.updateDate,
+              syncNow: false,
+            );
+          }
           await cropsProvider.saveProgressUpdate(update, syncNow: false);
           await cropsProvider.updateCropHealthScore(
             _crop.id,
@@ -526,6 +536,14 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           );
           if (!mounted) return;
           setState(() {
+            if (rebase != null) {
+              _treatments = _treatments
+                  .map((treatment) => treatment.id == rebase!.treatment.id
+                      ? rebase.treatment
+                      : treatment)
+                  .toList();
+              _tasks = rebase.tasks;
+            }
             _crop = _crop.copyWith(
               latestHealthScore: newScore,
               latestProgressStatus: newStatus,
@@ -563,6 +581,13 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         return;
       }
     }
+  }
+
+  bool _hasTreatmentCheckIn(String treatmentId) {
+    return _progress.any(
+      (update) =>
+          !update.isDeleted && update.treatmentId != null && update.treatmentId == treatmentId,
+    );
   }
 
   bool _isTreatmentTimelineComplete(String treatmentId) {

@@ -3,8 +3,10 @@ import 'package:country_picker/country_picker.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../data/models/user_model.dart';
+import '../../../data/remote/ai_backend_service.dart';
 import '../auth/providers/auth_provider.dart';
 import '../auth/screens/login_screen.dart';
+import '../auth/widgets/legal_document_sheet.dart';
 import '../chat/providers/chat_provider.dart';
 import '../chat/screens/chat_screen.dart';
 import '../crops/providers/crops_provider.dart';
@@ -18,11 +20,90 @@ class AccountScreen extends StatelessWidget {
   const AccountScreen({super.key});
 
   Future<void> _signOut(BuildContext context) async {
-    await context.read<AuthProvider>().signOut();
+    final auth = context.read<AuthProvider>();
+    final chat = context.read<ChatProvider>();
+    final crops = context.read<CropsProvider>();
+    final notifications = context.read<NotificationsProvider>();
+    await auth.signOut();
+    chat.clear();
+    crops.clear();
+    notifications.clear();
+    if (!context.mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (_) => false,
+    );
+  }
+
+  void _showLegalDocument(BuildContext context, LegalDocument document) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => LegalDocumentSheet(document: document),
+    );
+  }
+
+  Future<void> _deleteAccount(BuildContext context) async {
+    final confirmation = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Permanently Delete Account?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This permanently deletes your sign-in, profile, crops, diagnoses, treatments, tasks, progress, chats, notifications, and stored chat images. This cannot be undone.',
+              ),
+              const SizedBox(height: 16),
+              const Text('Type DELETE to confirm.'),
+              const SizedBox(height: 8),
+              TextField(
+                controller: confirmation,
+                autofocus: true,
+                textCapitalization: TextCapitalization.characters,
+                onChanged: (_) => setDialogState(() {}),
+                decoration: const InputDecoration(hintText: 'DELETE'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: confirmation.text.trim() == 'DELETE'
+                  ? () => Navigator.pop(dialogContext, true)
+                  : null,
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              child: const Text('Delete Permanently'),
+            ),
+          ],
+        ),
+      ),
+    );
+    confirmation.dispose();
+    if (confirmed != true || !context.mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    final auth = context.read<AuthProvider>();
+    final deleted = await auth.deleteAccount(context.read<AiBackendService>());
+    if (!context.mounted) return;
+    if (!deleted) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(auth.errorMessage ??
+              'Your account could not be deleted. Please try again.'),
+        ),
+      );
+      return;
+    }
+
     context.read<ChatProvider>().clear();
     context.read<CropsProvider>().clear();
     context.read<NotificationsProvider>().clear();
-    if (!context.mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const LoginScreen()),
       (_) => false,
@@ -34,6 +115,7 @@ class AccountScreen extends StatelessWidget {
     final user = context.watch<AuthProvider>().currentUser;
     final displayName =
         user?.displayName ?? user?.fullName ?? user?.email ?? 'Farmer';
+    final formattedLocation = user?.formattedLocation;
     final initials = displayName
         .split(' ')
         .take(2)
@@ -44,45 +126,47 @@ class AccountScreen extends StatelessWidget {
       backgroundColor: AppColors.backgroundCream,
       drawer: const NavDrawer(),
       appBar: AppBar(
-        backgroundColor: AppColors.backgroundCream,
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
         leading: Builder(
           builder: (ctx) => IconButton(
-            icon: const Icon(Icons.menu, color: AppColors.textDark),
+            icon: const Icon(Icons.menu, color: Colors.white),
             onPressed: () => Scaffold.of(ctx).openDrawer(),
           ),
         ),
         title: const Text('My Account',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
+            style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 20)),
         actions: [
           IconButton(
-            icon: const Icon(Icons.edit_outlined, color: AppColors.primary),
+            icon: const Icon(Icons.edit_outlined, color: Colors.white),
             onPressed: () => _showEditProfile(context, user),
           ),
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 112),
         children: [
           // Profile header
           Container(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [AppColors.primaryDark, AppColors.primary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(20),
+              color: AppColors.surfaceMint,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.borderGreen),
             ),
-            child: Column(children: [
+            child: Row(children: [
               // Avatar
               Container(
                 width: 80,
                 height: 80,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Colors.white.withOpacity(0.2),
-                  border: Border.all(color: Colors.white, width: 2),
+                  color: AppColors.primary,
+                  border:
+                      Border.all(color: AppColors.backgroundWhite, width: 3),
                 ),
                 child: Center(
                   child: Text(initials,
@@ -92,32 +176,59 @@ class AccountScreen extends StatelessWidget {
                           color: Colors.white)),
                 ),
               ),
-              const SizedBox(height: 12),
-              Text(
-                user?.displayName ?? user?.fullName ?? 'Farmer',
-                style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
-                    color: Colors.white),
-              ),
-              const SizedBox(height: 4),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(12),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      user?.displayName ?? user?.fullName ?? 'Farmer',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      user?.email ?? '',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textMedium,
+                        fontSize: 13,
+                      ),
+                    ),
+                    if (formattedLocation != null &&
+                      formattedLocation.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.location_on_outlined,
+                            size: 15,
+                            color: AppColors.primary,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              formattedLocation,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: AppColors.textGray,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
                 ),
-                child: const Text('LEAD AGRONOMIST',
-                    style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1)),
               ),
-              const SizedBox(height: 8),
-              Text(user?.email ?? '',
-                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
             ]),
           ),
           const SizedBox(height: 20),
@@ -200,6 +311,31 @@ class AccountScreen extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+
+          _SectionCard(
+            title: 'Legal & Privacy',
+            children: [
+              _NavItem(
+                icon: Icons.description_outlined,
+                label: 'Terms of Service',
+                onTap: () =>
+                    _showLegalDocument(context, LegalDocument.termsOfService),
+              ),
+              _NavItem(
+                icon: Icons.privacy_tip_outlined,
+                label: 'Privacy Policy & Your Rights',
+                onTap: () =>
+                    _showLegalDocument(context, LegalDocument.privacyPolicy),
+              ),
+              _NavItem(
+                icon: Icons.health_and_safety_outlined,
+                label: 'AI & Crop Safety Notice',
+                onTap: () =>
+                    _showLegalDocument(context, LegalDocument.aiSafetyNotice),
+              ),
+            ],
+          ),
           const SizedBox(height: 24),
 
           // Sign out
@@ -210,11 +346,23 @@ class AccountScreen extends StatelessWidget {
               foregroundColor: Colors.red,
               minimumSize: const Size(double.infinity, 52),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
+                  borderRadius: BorderRadius.circular(10)),
             ),
             icon: const Icon(Icons.logout),
             label: const Text('Sign Out',
                 style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(height: 12),
+          TextButton.icon(
+            onPressed: context.watch<AuthProvider>().isLoading
+                ? null
+                : () => _deleteAccount(context),
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.red.shade800,
+              minimumSize: const Size(double.infinity, 48),
+            ),
+            icon: const Icon(Icons.delete_forever_outlined),
+            label: const Text('Delete Account and Data'),
           ),
         ],
       ),
@@ -248,8 +396,8 @@ class AccountScreen extends StatelessWidget {
     showAboutDialog(
       context: context,
       applicationName: 'CropCare AI',
-      applicationVersion: '1.0.0',
-      applicationLegalese: '© 2024 CropCare AI. All rights reserved.',
+      applicationVersion: '1.0.1',
+      applicationLegalese: '© 2026 CropCare AI. All rights reserved.',
       children: const [
         Padding(
           padding: EdgeInsets.only(top: 12),
@@ -284,6 +432,10 @@ class _EditProfileSheet extends StatefulWidget {
 
 class _EditProfileSheetState extends State<_EditProfileSheet> {
   final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _fullNameCtrl;
+  late final TextEditingController _displayNameCtrl;
+  late final TextEditingController _emailCtrl;
+  late final TextEditingController _phoneCtrl;
   late final TextEditingController _countryCtrl;
   late final TextEditingController _provinceCtrl;
   late final TextEditingController _municipalityCtrl;
@@ -293,6 +445,11 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
   @override
   void initState() {
     super.initState();
+    _fullNameCtrl = TextEditingController(text: widget.user?.fullName ?? '');
+    _displayNameCtrl =
+        TextEditingController(text: widget.user?.displayName ?? '');
+    _emailCtrl = TextEditingController(text: widget.user?.email ?? '');
+    _phoneCtrl = TextEditingController(text: widget.user?.phone ?? '');
     _countryCtrl = TextEditingController(text: widget.user?.country ?? '');
     _provinceCtrl = TextEditingController(text: widget.user?.province ?? '');
     _municipalityCtrl =
@@ -302,6 +459,10 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
 
   @override
   void dispose() {
+    _fullNameCtrl.dispose();
+    _displayNameCtrl.dispose();
+    _emailCtrl.dispose();
+    _phoneCtrl.dispose();
     _countryCtrl.dispose();
     _provinceCtrl.dispose();
     _municipalityCtrl.dispose();
@@ -325,12 +486,30 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
     setState(() => _isSaving = true);
     final messenger = ScaffoldMessenger.of(context);
     final auth = context.read<AuthProvider>();
-    final ok = await auth.updateProfileLocation(
+    final ok = await auth.updateProfile(
+      fullName: _fullNameCtrl.text.trim(),
+      displayName: _displayNameCtrl.text.trim(),
+      phone: _phoneCtrl.text.trim(),
       country: _countryCtrl.text.trim(),
       province: _provinceCtrl.text.trim(),
       municipality: _municipalityCtrl.text.trim(),
       barangay: _barangayCtrl.text.trim(),
     );
+
+    if (ok && _emailCtrl.text.trim() != widget.user?.email) {
+      final emailChanged =
+          await auth.requestEmailChange(_emailCtrl.text.trim());
+      if (!emailChanged) {
+        if (!mounted) return;
+        setState(() => _isSaving = false);
+        messenger.showSnackBar(
+          SnackBar(
+              content: Text(
+                  auth.errorMessage ?? 'Could not request the email change.')),
+        );
+        return;
+      }
+    }
 
     if (!mounted) return;
     setState(() => _isSaving = false);
@@ -338,7 +517,11 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
     if (ok) {
       Navigator.of(context).pop();
       messenger.showSnackBar(
-        const SnackBar(content: Text('Profile updated.')),
+        SnackBar(
+          content: Text(_emailCtrl.text.trim() != widget.user?.email
+              ? 'Profile updated. Check your email to confirm the new address.'
+              : 'Profile updated.'),
+        ),
       );
     } else {
       messenger.showSnackBar(
@@ -375,7 +558,7 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                       children: [
                         const Expanded(
                           child: Text(
-                            'Edit Farm Location',
+                            'Edit Profile',
                             style: TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.w800,
@@ -391,7 +574,7 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                     ),
                     const SizedBox(height: 4),
                     const Text(
-                      'Keep your farm location up to date so weather-based tips stay accurate.',
+                      'Update your account details and farm location.',
                       style: TextStyle(
                         fontSize: 13,
                         color: AppColors.textGray,
@@ -399,6 +582,52 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                       ),
                     ),
                     const SizedBox(height: 20),
+                    CustomTextField(
+                      label: 'FULL NAME',
+                      hint: 'Your full name',
+                      controller: _fullNameCtrl,
+                      prefixIcon: const Icon(Icons.badge_outlined,
+                          color: AppColors.textLightGray, size: 20),
+                    ),
+                    const SizedBox(height: 16),
+                    CustomTextField(
+                      label: 'DISPLAY NAME',
+                      hint: 'Name shown in the app',
+                      controller: _displayNameCtrl,
+                      prefixIcon: const Icon(Icons.person_outline,
+                          color: AppColors.textLightGray, size: 20),
+                    ),
+                    const SizedBox(height: 16),
+                    CustomTextField(
+                      label: 'EMAIL ADDRESS',
+                      hint: 'farmer@example.com',
+                      controller: _emailCtrl,
+                      keyboardType: TextInputType.emailAddress,
+                      prefixIcon: const Icon(Icons.alternate_email,
+                          color: AppColors.textLightGray, size: 20),
+                      validator: (value) {
+                        final email = value?.trim() ?? '';
+                        if (!RegExp(r'^[^@]+@[^@]+\.[^@]+$').hasMatch(email)) {
+                          return 'Enter a valid email address';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'A confirmation email is required before a new address takes effect.',
+                      style: TextStyle(fontSize: 11, color: AppColors.textGray),
+                    ),
+                    const SizedBox(height: 16),
+                    CustomTextField(
+                      label: 'PHONE',
+                      hint: 'Optional phone number',
+                      controller: _phoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      prefixIcon: const Icon(Icons.phone_outlined,
+                          color: AppColors.textLightGray, size: 20),
+                    ),
+                    const SizedBox(height: 16),
                     CustomTextField(
                       label: 'COUNTRY',
                       hint: 'Select country',
@@ -526,8 +755,9 @@ class _SectionCard extends StatelessWidget {
       const SizedBox(height: 8),
       Container(
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
+          color: AppColors.backgroundWhite,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.borderGreen),
         ),
         child: Column(children: children),
       ),

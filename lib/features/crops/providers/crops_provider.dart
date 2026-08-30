@@ -875,6 +875,69 @@ class CropsProvider extends ChangeNotifier {
     }
   }
 
+  /// Reanchors treatment tasks when a farmer begins later than the originally
+  /// recommended Day 1. Completion timestamps and statuses are retained so
+  /// the moved Day 1 remains green in the calendar history.
+  Future<TreatmentTimelineRebaseResult> rebaseTreatmentTimeline({
+    required TreatmentModel treatment,
+    required List<TreatmentTaskModel> tasks,
+    required DateTime startedAt,
+    bool syncNow = true,
+  }) async {
+    final previousStart = treatment.startedAt ?? treatment.createdAt;
+    final normalizedStart = DateTime(
+      startedAt.year,
+      startedAt.month,
+      startedAt.day,
+      previousStart.hour,
+      previousStart.minute,
+    );
+    final now = DateTime.now();
+    final updatedTreatment = treatment.copyWith(
+      startedAt: normalizedStart,
+      updatedAt: now,
+    );
+    await _upsertLocallyAndQueue(
+      table: AppConstants.treatmentsTable,
+      recordId: updatedTreatment.id,
+      localData: updatedTreatment.toMap(),
+      remoteData: _treatmentRemoteMap(updatedTreatment),
+    );
+
+    final updatedTasks = <TreatmentTaskModel>[];
+    for (final task in tasks) {
+      if (task.treatmentId != treatment.id || task.isDeleted) {
+        updatedTasks.add(task);
+        continue;
+      }
+
+      final updatedTask = task.copyWith(
+        dueAt: TreatmentPlanService.rebaseTaskDate(
+          originalDueAt: task.dueAt,
+          originalStartAt: previousStart,
+          newStartAt: normalizedStart,
+        ),
+        updatedAt: now,
+      );
+      await _upsertLocallyAndQueue(
+        table: AppConstants.treatmentTasksTable,
+        recordId: updatedTask.id,
+        localData: updatedTask.toMap(),
+        remoteData: _treatmentTaskRemoteMap(updatedTask),
+      );
+      updatedTasks.add(updatedTask);
+    }
+
+    notifyListeners();
+    if (syncNow) {
+      await _attemptSync();
+    }
+    return TreatmentTimelineRebaseResult(
+      treatment: updatedTreatment,
+      tasks: updatedTasks,
+    );
+  }
+
   Future<void> saveProgressUpdate(
     ProgressUpdateModel update, {
     bool syncNow = true,
@@ -1621,6 +1684,16 @@ class CropsProvider extends ChangeNotifier {
   String _buildStableLabelKey(CropType cropType, String diseaseName) {
     return '${cropType.value}_${_normalizeKey(diseaseName)}';
   }
+}
+
+class TreatmentTimelineRebaseResult {
+  final TreatmentModel treatment;
+  final List<TreatmentTaskModel> tasks;
+
+  const TreatmentTimelineRebaseResult({
+    required this.treatment,
+    required this.tasks,
+  });
 }
 
 class TreatmentExtensionResult {

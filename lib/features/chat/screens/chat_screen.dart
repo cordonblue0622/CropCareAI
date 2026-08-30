@@ -68,7 +68,20 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _init());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await _init();
+      } catch (error, stackTrace) {
+        debugPrint('Conversation initialization failed: $error');
+        debugPrintStack(stackTrace: stackTrace);
+        if (mounted) {
+          setState(() {
+            _sendErrorMessage =
+                'Conversation could not start. Check your connection and retry.';
+          });
+        }
+      }
+    });
   }
 
   Future<void> _init() async {
@@ -165,8 +178,12 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  /// Hint sent to the AI backend when TFLite did not produce a diagnosis.
-  String? _effectiveHintCropType() {
+  /// Resolves the crop context sent to the AI backend.
+  /// A farmer's explicit correction supersedes an earlier scanner hint.
+  String? _effectiveHintCropType({String? latestUserMessage}) {
+    final correctedCrop = _tryCropTypeFromLabel(latestUserMessage);
+    if (correctedCrop != null) return correctedCrop.value;
+
     final w = (widget.hintCropType ?? '').trim().toLowerCase();
     if (w.isNotEmpty) return w;
 
@@ -241,7 +258,7 @@ class _ChatScreenState extends State<ChatScreen> {
             attachedAudioPath: attachedAudioPath,
             attachedVideoPath: attachedVideoPath,
             isVideoFrame: isVideoFrame,
-            hintCropType: _effectiveHintCropType(),
+            hintCropType: _effectiveHintCropType(latestUserMessage: content),
           );
       if (mounted) {
         _scrollToBottom();
@@ -334,8 +351,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     final chat = context.watch<ChatProvider>();
     final messages = chat.currentMessages;
-    final hasInitialScanContext =
-        widget.initialImageBytes != null || widget.initialDiagnosis != null;
+    final waitingForInitialResponse =
+        messages.isEmpty && (chat.isLoading || chat.isTyping || _sending);
 
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
@@ -375,16 +392,29 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(children: [
         // Messages
         Expanded(
-          child: chat.isLoading && messages.isEmpty && !hasInitialScanContext
+          child: waitingForInitialResponse
               ? const Center(
-                  child: CircularProgressIndicator(color: AppColors.primary))
-              : messages.isEmpty && !hasInitialScanContext
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(color: AppColors.primary),
+                      SizedBox(height: 12),
+                      Text(
+                        'Preparing your crop analysis...',
+                        style: TextStyle(color: AppColors.textGray),
+                      ),
+                    ],
+                  ),
+                )
+              : messages.isEmpty
                   ? _WelcomeView(
                       onSuggest: (s) => _sendMessage(s),
                     )
                   : ListView(
                       controller: _scrollCtrl,
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                      keyboardDismissBehavior:
+                          ScrollViewKeyboardDismissBehavior.onDrag,
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
                       children: [
                         // _ScanImageCard removed — the image is already shown
                         // as a bubble inside the first user message.

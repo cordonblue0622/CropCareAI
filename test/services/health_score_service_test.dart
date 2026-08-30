@@ -118,7 +118,7 @@ void main() {
       expect(curve.every((p) => p.score == 90), isTrue);
     });
 
-    test('mix of completed and missed → score reflects ratio', () {
+    test('pre-assessment score stays at the diagnosis baseline', () {
       final tasks = [
         task(
             id: 't1',
@@ -133,9 +133,9 @@ void main() {
         diagnoses: const [],
         now: today,
       );
-      // From day-5 onward: 1 completed of 4 due → 25.
+      // Task completion does not measure plant health before an AI check-in.
       final last = curve.last;
-      expect(last.score, 25);
+      expect(last.score, 100);
       expect(last.completedTasks, 1);
       expect(last.totalTasks, 4);
     });
@@ -197,6 +197,32 @@ void main() {
       expect(checkInPoint.status, ProgressStatus.improving);
       expect(curve.last.score, 78);
       expect(curve.last.status, ProgressStatus.improving);
+    });
+
+    test('a worsening AI assessment plots below the diagnosis baseline', () {
+      final curve = HealthScoreService.compute14DayCurve(
+        tasks: const [],
+        diagnoses: [
+          diagnosis(
+            id: 'dx',
+            severity: Severity.moderate,
+            diagnosedAt: today.subtract(const Duration(days: 13)),
+          ),
+        ],
+        progressUpdates: [
+          progressUpdate(
+            id: 'check-in',
+            updateDate: today,
+            healthScore: 28,
+            status: ProgressStatus.worsening,
+          ),
+        ],
+        now: today,
+      );
+
+      expect(curve.first.score, 75);
+      expect(curve.last.score, 28);
+      expect(curve.last.status, ProgressStatus.worsening);
     });
   });
 }

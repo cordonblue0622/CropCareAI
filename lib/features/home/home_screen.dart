@@ -122,30 +122,35 @@ class _BottomNav extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
       decoration: BoxDecoration(
-        color: AppColors.primaryDark,
+        color: AppColors.backgroundWhite,
+        border: Border.all(color: AppColors.borderGreen),
+        borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
-            blurRadius: 12,
-            offset: const Offset(0, -4),
+            color: AppColors.primaryDark.withValues(alpha: 0.12),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
           ),
         ],
       ),
+      clipBehavior: Clip.none,
       child: SafeArea(
+        top: false,
         child: SizedBox(
-          height: 62,
+          height: 68,
           child: Row(
             children: [
               _NavItem(
                   icon: Icons.grid_view_rounded,
-                  label: 'DASHBOARD',
+                  label: 'Home',
                   index: 0,
                   current: currentIndex,
                   onTap: onTap),
               _NavItem(
                   icon: Icons.energy_savings_leaf_rounded,
-                  label: 'MY CROPS',
+                  label: 'Crops',
                   index: 1,
                   current: currentIndex,
                   onTap: onTap),
@@ -158,13 +163,13 @@ class _BottomNav extends StatelessWidget {
               ),
               _NavItem(
                   icon: Icons.mic,
-                  label: 'VOICE',
+                  label: 'Voice',
                   index: 3,
                   current: currentIndex,
                   onTap: onTap),
               _NavItem(
                   icon: Icons.person_rounded,
-                  label: 'ACCOUNT',
+                  label: 'Account',
                   index: 4,
                   current: currentIndex,
                   onTap: onTap),
@@ -195,18 +200,18 @@ class _NavItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final selected = index == current;
     return Expanded(
-      child: GestureDetector(
+      child: InkWell(
         onTap: () => onTap(index),
-        behavior: HitTestBehavior.opaque,
+        borderRadius: BorderRadius.circular(14),
         child: Padding(
-          padding: const EdgeInsets.only(top: 10, bottom: 3),
+          padding: const EdgeInsets.only(top: 9, bottom: 7),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               Icon(
                 icon,
-                size: 21,
-                color: selected ? AppColors.primaryLight : Colors.white54,
+                size: 22,
+                color: selected ? AppColors.primary : AppColors.textLightGray,
               ),
               const SizedBox(height: 3),
               Text(
@@ -215,8 +220,7 @@ class _NavItem extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 9,
                   fontWeight: FontWeight.w700,
-                  color: selected ? AppColors.primaryLight : Colors.white54,
-                  letterSpacing: 0.5,
+                  color: selected ? AppColors.primary : AppColors.textGray,
                 ),
               ),
             ],
@@ -247,36 +251,35 @@ class _FeaturedNavItem extends StatelessWidget {
     final selected = index == current;
 
     return Expanded(
-      child: GestureDetector(
+      child: InkWell(
         onTap: () => onTap(index),
-        behavior: HitTestBehavior.opaque,
+        borderRadius: BorderRadius.circular(18),
         child: Padding(
           padding: const EdgeInsets.only(bottom: 4),
           child: SizedBox(
-            height: 70,
+            height: 76,
             child: Stack(
               clipBehavior: Clip.none,
               alignment: Alignment.bottomCenter,
               children: [
                 Positioned(
-                  top: -12,
+                  top: -16,
                   child: Container(
-                    width: 58,
-                    height: 58,
+                    width: 60,
+                    height: 60,
                     decoration: BoxDecoration(
-                      color: selected
-                          ? AppColors.primaryLight
-                          : AppColors.primaryMedium,
+                      color:
+                          selected ? AppColors.primaryDark : AppColors.primary,
                       shape: BoxShape.circle,
                       border: Border.all(
-                        color: Colors.white.withOpacity(0.96),
-                        width: 4,
+                        color: AppColors.backgroundWhite,
+                        width: 5,
                       ),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.18),
-                          blurRadius: 12,
-                          offset: const Offset(0, 4),
+                          color: AppColors.primaryDark.withValues(alpha: 0.22),
+                          blurRadius: 16,
+                          offset: const Offset(0, 7),
                         ),
                       ],
                     ),
@@ -295,8 +298,7 @@ class _FeaturedNavItem extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 9,
                       fontWeight: FontWeight.w700,
-                      color: selected ? AppColors.primaryLight : Colors.white54,
-                      letterSpacing: 0.5,
+                      color: selected ? AppColors.primary : AppColors.textGray,
                     ),
                   ),
                 ),
@@ -326,31 +328,35 @@ class AppPushedScreenBottomNav extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
       decoration: BoxDecoration(
-        color: AppColors.primaryDark,
+        color: AppColors.backgroundWhite,
+        border: Border.all(color: AppColors.borderGreen),
+        borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
-            blurRadius: 12,
-            offset: const Offset(0, -4),
+            color: AppColors.primaryDark.withValues(alpha: 0.12),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
           ),
         ],
       ),
       child: SafeArea(
+        top: false,
         child: SizedBox(
-          height: 62,
+          height: 68,
           child: Row(
             children: [
               _NavItem(
                 icon: Icons.grid_view_rounded,
-                label: 'DASHBOARD',
+                label: 'Home',
                 index: 0,
                 current: currentIndex,
                 onTap: (i) => _onTap(context, i),
               ),
               _NavItem(
                 icon: Icons.energy_savings_leaf_rounded,
-                label: 'MY CROPS',
+                label: 'Crops',
                 index: 1,
                 current: currentIndex,
                 onTap: (i) => _onTap(context, i),
@@ -364,14 +370,14 @@ class AppPushedScreenBottomNav extends StatelessWidget {
               ),
               _NavItem(
                 icon: Icons.mic,
-                label: 'VOICE',
+                label: 'Voice',
                 index: 3,
                 current: currentIndex,
                 onTap: (i) => _onTap(context, i),
               ),
               _NavItem(
                 icon: Icons.person_rounded,
-                label: 'ACCOUNT',
+                label: 'Account',
                 index: 4,
                 current: currentIndex,
                 onTap: (i) => _onTap(context, i),

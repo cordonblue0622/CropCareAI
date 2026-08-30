@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/constants/app_constants.dart';
 import '../local/database_helper.dart';
 import '../models/user_model.dart';
 import '../remote/supabase_service.dart';
@@ -134,6 +135,9 @@ class AuthRepository {
         municipality: municipality,
         province: province,
         country: country,
+        legalAcceptedAt: DateTime.now(),
+        termsVersion: AppConstants.termsVersion,
+        privacyPolicyVersion: AppConstants.privacyPolicyVersion,
       );
 
       final supabaseUser = response.user;
@@ -244,37 +248,10 @@ class AuthRepository {
     }
   }
 
-  // ─── Social Sign-In helpers ───────────────────────────────────────────────
-
-  Future<AuthResult> handleSocialAuthResponse(AuthResponse response) async {
-    final supabaseUser = response.user;
-    if (supabaseUser == null) {
-      return const AuthResult(success: false, error: 'Social sign-in failed.');
-    }
-
-    var profile = await supabaseService.getProfile(supabaseUser.id);
-    if (profile == null) {
-      await _ensureRemoteProfile(
-        userId: supabaseUser.id,
-        email: supabaseUser.email ?? '',
-        fullName: _cleanString(supabaseUser.userMetadata?['full_name']),
-        avatarUrl: _cleanString(supabaseUser.userMetadata?['avatar_url']),
-        barangay: _cleanString(supabaseUser.userMetadata?['barangay']),
-        municipality: _cleanString(supabaseUser.userMetadata?['municipality']),
-        province: _cleanString(supabaseUser.userMetadata?['province']),
-        country: _cleanString(supabaseUser.userMetadata?['country']),
-      );
-      profile = await supabaseService.getProfile(supabaseUser.id);
-    }
-
-    final user = _buildUserModel(supabaseUser, profile: profile);
-
-    await dbHelper.upsertUser(user.toMap());
-
-    return AuthResult(success: true, user: user);
-  }
-
-  Future<UserModel> updateProfileLocation({
+  Future<UserModel> updateProfile({
+    String? fullName,
+    String? displayName,
+    String? phone,
     String? barangay,
     required String municipality,
     required String province,
@@ -289,14 +266,11 @@ class AuthRepository {
     final mergedProfile = <String, dynamic>{
       if (existingProfile != null) ...existingProfile,
       'id': supabaseUser.id,
-      'full_name': _cleanString(existingProfile?['full_name']) ??
-          _cleanString(supabaseUser.userMetadata?['full_name']),
-      'display_name': _cleanString(existingProfile?['display_name']) ??
-          _cleanString(supabaseUser.userMetadata?['display_name']),
+      'full_name': _cleanString(fullName),
+      'display_name': _cleanString(displayName),
       'email':
           supabaseUser.email ?? _cleanString(existingProfile?['email']) ?? '',
-      'phone': _cleanString(existingProfile?['phone']) ??
-          _cleanString(supabaseUser.userMetadata?['phone']),
+      'phone': _cleanString(phone),
       'avatar_url': _cleanString(existingProfile?['avatar_url']) ??
           _cleanString(supabaseUser.userMetadata?['avatar_url']),
       'barangay': _cleanString(barangay),
@@ -312,6 +286,15 @@ class AuthRepository {
     await dbHelper.upsertUser(user.toMap());
     return user;
   }
+
+  Future<void> requestEmailChange(
+    String email, {
+    required String emailRedirectTo,
+  }) =>
+      supabaseService.requestEmailChange(
+        email,
+        emailRedirectTo: emailRedirectTo,
+      );
 
   Future<void> _ensureRemoteProfile({
     required String userId,
@@ -342,6 +325,14 @@ class AuthRepository {
   // ─── Misc ─────────────────────────────────────────────────────────────────
 
   Future<void> signOut() => supabaseService.signOut();
+
+  Future<void> clearDeletedAccountFromDevice() async {
+    try {
+      await supabaseService.signOut();
+    } finally {
+      await dbHelper.deleteDatabaseFile();
+    }
+  }
 
   Future<void> sendPasswordReset(
     String email, {

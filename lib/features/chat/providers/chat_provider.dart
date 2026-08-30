@@ -62,7 +62,7 @@ class ChatProvider extends ChangeNotifier {
         _knowledgeBase = _mergeBundledKnowledge(
           rows.map(DiseaseKnowledgeModel.fromMap).toList(),
         );
-        await _db.upsertRows(
+        await _cacheRows(
           AppConstants.diseaseKnowledgeTable,
           _knowledgeBase.map((knowledge) => knowledge.toMap()),
         );
@@ -71,12 +71,17 @@ class ChatProvider extends ChangeNotifier {
       }
     } catch (_) {}
 
-    final cachedRows = await _db.queryDiseaseKnowledge('');
+    List<Map<String, dynamic>> cachedRows = const [];
+    try {
+      cachedRows = await _db.queryDiseaseKnowledge('');
+    } catch (error, stackTrace) {
+      _logCacheFailure('load disease knowledge', error, stackTrace);
+    }
     if (cachedRows.isNotEmpty) {
       _knowledgeBase = _mergeBundledKnowledge(
         cachedRows.map(DiseaseKnowledgeModel.fromMap).toList(),
       );
-      await _db.upsertRows(
+      await _cacheRows(
         AppConstants.diseaseKnowledgeTable,
         _knowledgeBase.map((knowledge) => knowledge.toMap()),
       );
@@ -87,7 +92,7 @@ class ChatProvider extends ChangeNotifier {
     final bundled = BundledDiseaseKnowledge.records();
     if (bundled.isNotEmpty) {
       _knowledgeBase = bundled;
-      await _db.upsertRows(
+      await _cacheRows(
         AppConstants.diseaseKnowledgeTable,
         bundled.map((knowledge) => knowledge.toMap()),
       );
@@ -120,10 +125,15 @@ class ChatProvider extends ChangeNotifier {
       );
       _sessions = await _filterHistorySessions(fetchedSessions);
     } catch (_) {
-      final rows =
-          await _db.queryByUserId(AppConstants.chatSessionsTable, userId);
-      final fetchedSessions = rows.map(ChatSessionModel.fromMap).toList();
-      _sessions = await _filterHistorySessions(fetchedSessions);
+      try {
+        final rows =
+            await _db.queryByUserId(AppConstants.chatSessionsTable, userId);
+        final fetchedSessions = rows.map(ChatSessionModel.fromMap).toList();
+        _sessions = await _filterHistorySessions(fetchedSessions);
+      } catch (error, stackTrace) {
+        _logCacheFailure('load chat sessions', error, stackTrace);
+        _sessions = [];
+      }
     }
     notifyListeners();
   }
@@ -148,7 +158,7 @@ class ChatProvider extends ChangeNotifier {
     try {
       await _supabase.upsertChatSession(_sessionRemoteMap(session));
     } catch (_) {}
-    await _db.upsertRow(AppConstants.chatSessionsTable, session.toMap());
+    await _cacheRow(AppConstants.chatSessionsTable, session.toMap());
     notifyListeners();
   }
 
@@ -165,8 +175,13 @@ class ChatProvider extends ChangeNotifier {
         _currentMessages.map((message) => message.toMap()),
       );
     } catch (_) {
-      final rows = await _db.queryChatMessages(session.id);
-      _currentMessages = rows.map(ChatMessageModel.fromMap).toList();
+      try {
+        final rows = await _db.queryChatMessages(session.id);
+        _currentMessages = rows.map(ChatMessageModel.fromMap).toList();
+      } catch (error, stackTrace) {
+        _logCacheFailure('load chat messages', error, stackTrace);
+        _currentMessages = [];
+      }
     }
 
     // Restore images from Supabase Storage URLs stored in metadata.
@@ -215,7 +230,7 @@ class ChatProvider extends ChangeNotifier {
       await _supabase.upsertChatSession(_sessionRemoteMap(updated));
     } catch (_) {}
 
-    await _db.upsertRow(AppConstants.chatSessionsTable, updated.toMap());
+    await _cacheRow(AppConstants.chatSessionsTable, updated.toMap());
     notifyListeners();
   }
 
@@ -398,10 +413,9 @@ class ChatProvider extends ChangeNotifier {
                   );
         final requiresMoreInput =
             _needsAdditionalInputResponse(backendResponse.answer);
-        final attachedDiagnosisCanShowPlan = attachedDiagnosis != null &&
-            _supportedTreatmentCardCrops.contains(effectiveCropType);
         final backendAllowsPlan = !requiresMoreInput &&
-            (backendResponse.showTreatmentUi || attachedDiagnosisCanShowPlan);
+            backendResponse.inAppCropScope &&
+            backendResponse.showTreatmentUi;
         final normalizedActions = backendAllowsPlan
             ? (backendResponse.recommendedActions.isNotEmpty
                 ? backendResponse.recommendedActions
@@ -464,13 +478,15 @@ class ChatProvider extends ChangeNotifier {
         await Future.delayed(const Duration(milliseconds: 500));
         final fallbackDiseaseName =
             (attachedDiagnosis?.diseaseName ?? '').trim();
-        final fallbackCropType = attachedDiagnosis != null
-            ? _inferCropType(
-                labelKey: attachedDiagnosis.labelKey,
-                diseaseName: fallbackDiseaseName,
-                aiContent: '',
-              )
-            : (resolvedHintCropType ?? '');
+        final fallbackCropType = (resolvedHintCropType ?? '').isNotEmpty
+            ? resolvedHintCropType!
+            : attachedDiagnosis != null
+                ? _inferCropType(
+                    labelKey: attachedDiagnosis.labelKey,
+                    diseaseName: fallbackDiseaseName,
+                    aiContent: '',
+                  )
+                : '';
         final fallbackLabelKey =
             (attachedDiagnosis?.labelKey ?? '').trim().isNotEmpty
                 ? attachedDiagnosis!.labelKey!.trim()
@@ -1181,7 +1197,7 @@ class ChatProvider extends ChangeNotifier {
         'created_at': msg.createdAt.toIso8601String(),
       });
     } catch (_) {}
-    await _db.upsertRow(AppConstants.chatMessagesTable, msg.toMap());
+    await _cacheRow(AppConstants.chatMessagesTable, msg.toMap());
   }
 
   Future<void> _touchCurrentSession({
@@ -1215,7 +1231,7 @@ class ChatProvider extends ChangeNotifier {
     try {
       await _supabase.upsertChatSession(_sessionRemoteMap(updated));
     } catch (_) {}
-    await _db.upsertRow(AppConstants.chatSessionsTable, updated.toMap());
+    await _cacheRow(AppConstants.chatSessionsTable, updated.toMap());
   }
 
   Future<List<ChatSessionModel>> _filterHistorySessions(
@@ -1224,7 +1240,12 @@ class ChatProvider extends ChangeNotifier {
     final filtered = <ChatSessionModel>[];
 
     for (final session in sessions) {
-      final localRows = await _db.queryChatMessages(session.id);
+      List<Map<String, dynamic>> localRows = const [];
+      try {
+        localRows = await _db.queryChatMessages(session.id);
+      } catch (error, stackTrace) {
+        _logCacheFailure('filter chat history', error, stackTrace);
+      }
       var messages = localRows.map(ChatMessageModel.fromMap).toList();
 
       if (!_hasVisibleUserInput(messages)) {
@@ -1350,7 +1371,38 @@ class ChatProvider extends ChangeNotifier {
       _sessions[index] = updated;
     }
 
-    await _db.upsertRow(AppConstants.chatSessionsTable, updated.toMap());
+    await _cacheRow(AppConstants.chatSessionsTable, updated.toMap());
+  }
+
+  Future<void> _cacheRow(
+    String table,
+    Map<String, dynamic> row,
+  ) async {
+    try {
+      await _db.upsertRow(table, row);
+    } catch (error, stackTrace) {
+      _logCacheFailure('save $table', error, stackTrace);
+    }
+  }
+
+  Future<void> _cacheRows(
+    String table,
+    Iterable<Map<String, dynamic>> rows,
+  ) async {
+    try {
+      await _db.upsertRows(table, rows);
+    } catch (error, stackTrace) {
+      _logCacheFailure('save $table', error, stackTrace);
+    }
+  }
+
+  void _logCacheFailure(
+    String operation,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    debugPrint('Chat cache could not $operation: $error');
+    debugPrintStack(stackTrace: stackTrace);
   }
 
   Map<String, dynamic> _sessionRemoteMap(ChatSessionModel s) {
