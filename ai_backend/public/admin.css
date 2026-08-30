@@ -81,6 +81,7 @@ input, select, textarea {
 }
 textarea { min-height: 92px; resize: vertical; }
 input:focus, select:focus, textarea:focus { border-color: var(--leaf); box-shadow: 0 0 0 3px rgba(63, 128, 81, 0.12); }
+.auth-name-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .form-error { min-height: 18px; margin: 10px 0 0; color: var(--danger); font-size: 12px; }
 .form-success { min-height: 18px; margin: 10px 0 0; color: var(--forest); font-size: 12px; line-height: 1.45; }
 .form-success:not(:empty) { margin: 18px 0 14px; padding: 10px 12px; border-left: 3px solid var(--leaf); background: rgba(255,255,255,.42); }
@@ -109,7 +110,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--leaf); box-shado
 .brand-row small { margin-top: 2px; color: var(--muted); font-size: 10px; text-transform: uppercase; }
 nav { display: grid; gap: 4px; margin-top: 18px; }
 .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; border-radius: 9px; padding: 9px; background: transparent; color: var(--muted); text-align: left; font-weight: 700; font-size: 12px; }
-.nav-item span { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; border-radius: 8px; background: rgba(255,255,255,.5); color: var(--forest); font-size: 9px; }
+.nav-item span { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; border-radius: 8px; background: rgba(255,255,255,.5); color: var(--forest); font-family: "Segoe UI Symbol", sans-serif; font-size: 16px; }
 .nav-item:hover, .nav-item.active { background: rgba(14,75,45,.11); color: var(--forest-deep); }
 .nav-item.active span { background: var(--forest); color: white; }
 .sidebar-footer { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); }
@@ -161,6 +162,7 @@ td.truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 tr:last-child td { border-bottom: 0; }
 .row-actions { display: flex; gap: 6px; }
 .row-actions button { min-height: 30px; padding: 5px 9px; font-size: 10px; }
+.row-actions .icon-action { width: 32px; min-width: 32px; padding: 0; font-family: "Segoe UI Symbol", sans-serif; font-size: 18px; line-height: 1; }
 .empty-state { padding: 44px 20px; text-align: center; color: var(--muted); }
 .badge { display: inline-block; border-radius: 999px; padding: 4px 8px; background: rgba(63,128,81,.12); color: var(--forest); font-size: 10px; font-weight: 800; }
 .badge.warn { background: rgba(159,52,45,.1); color: var(--danger); }
@@ -311,6 +313,7 @@ tr:last-child td { border-bottom: 0; }
 }
 @media (max-width: 430px) {
   .login-panel { padding: 28px 22px; }
+  .auth-name-fields { grid-template-columns: 1fr; gap: 0; }
   .metric-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .metric-card { min-height: 94px; padding: 12px; }
   .metric-card strong { font-size: 23px; }

@@ -20,6 +20,7 @@
         <h1 id="loginTitle">Administrator access</h1>
         <p class="lede">Secure operations for crop intelligence and account records.</p>
       </div>
+      <p id="authCallbackMessage" class="form-success" role="status"></p>
       <form id="loginForm" autocomplete="on">
         <label for="email">Email address</label>
         <input id="email" name="email" type="email" autocomplete="username" required>
@@ -29,6 +30,16 @@
         <button class="primary-button" type="submit">Sign in securely</button>
       </form>
       <form id="registerForm" class="hidden" autocomplete="on">
+        <div class="auth-name-fields">
+          <div>
+            <label for="registerFirstName">First name</label>
+            <input id="registerFirstName" name="given-name" type="text" autocomplete="given-name" required maxlength="100">
+          </div>
+          <div>
+            <label for="registerLastName">Last name</label>
+            <input id="registerLastName" name="family-name" type="text" autocomplete="family-name" required maxlength="100">
+          </div>
+        </div>
         <label for="registerEmail">Email address</label>
         <input id="registerEmail" name="email" type="email" autocomplete="email" required>
         <label for="registerPassword">Password</label>
@@ -61,13 +72,13 @@
         <div><strong>CropCare AI</strong><small>Administration</small></div>
       </div>
       <nav id="navigation" aria-label="Administrator sections">
-        <button class="nav-item active" data-section="overview"><span>OV</span>Overview</button>
-        <button class="nav-item" data-section="users"><span>US</span>User management</button>
-        <button class="nav-item" data-section="diseases"><span>DL</span>Disease library</button>
-        <button class="nav-item" data-section="treatments"><span>TR</span>Treatments</button>
-        <button class="nav-item" data-section="crops"><span>CR</span>Crop data</button>
-        <button class="nav-item" data-section="analytics"><span>AN</span>Analytics</button>
-        <button class="nav-item" data-section="system"><span>SY</span>System data</button>
+        <button class="nav-item active" data-section="overview"><span aria-hidden="true">⌂</span>Overview</button>
+        <button class="nav-item" data-section="users"><span aria-hidden="true">♟</span>User management</button>
+        <button class="nav-item" data-section="diseases"><span aria-hidden="true">▤</span>Disease library</button>
+        <button class="nav-item" data-section="treatments"><span aria-hidden="true">✚</span>Treatments</button>
+        <button class="nav-item" data-section="crops"><span aria-hidden="true">♧</span>Crop data</button>
+        <button class="nav-item" data-section="analytics"><span aria-hidden="true">▥</span>Analytics</button>
+        <button class="nav-item" data-section="system"><span aria-hidden="true">⚙</span>System data</button>
       </nav>
       <div class="sidebar-footer">
         <button id="adminProfileButton" class="admin-identity" type="button"><span id="adminInitial">A</span><span><strong id="adminEmail">Administrator</strong><small id="adminRole">Verified</small></span></button>

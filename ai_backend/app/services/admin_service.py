@@ -352,8 +352,16 @@ class AdminService:
                     for profile in profile_rows
                     if isinstance(profile, dict) and profile.get("id")
                 }
-        return [
-            {
+        result: list[dict[str, Any]] = []
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            user_id = str(user.get("id"))
+            user_metadata = user.get("user_metadata") or {}
+            if not isinstance(user_metadata, dict):
+                user_metadata = {}
+            profile = profiles.get(user_id, {})
+            result.append({
                 "id": user.get("id"),
                 "email": user.get("email"),
                 "created_at": user.get("created_at"),
@@ -361,17 +369,13 @@ class AdminService:
                 "confirmed_at": user.get("confirmed_at"),
                 "banned_until": user.get("banned_until"),
                 "admin_role": (user.get("app_metadata") or {}).get("admin_role"),
-                "admin_access_requested": (user.get("user_metadata") or {}).get(
-                    "admin_access_requested"
-                ) is True,
+                "admin_access_requested": user_metadata.get("admin_access_requested") is True,
                 "profile": {
-                    field: profiles.get(str(user.get("id")), {}).get(field)
+                    field: profile.get(field) or user_metadata.get(field)
                     for field in PROFILE_FIELDS
                 },
-            }
-            for user in users
-            if isinstance(user, dict)
-        ]
+            })
+        return result
 
     async def _get_auth_user(self, user_id: str) -> dict[str, Any]:
         url = f"{self._settings.supabase_url}/auth/v1/admin/users/{user_id}"
@@ -701,6 +705,9 @@ class AdminService:
         target = lookup.json()
         existing_metadata = target.get("app_metadata") if isinstance(target, dict) else {}
         metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+        existing_user_metadata = target.get("user_metadata") if isinstance(target, dict) else {}
+        user_metadata = dict(existing_user_metadata) if isinstance(existing_user_metadata, dict) else {}
+        requested = user_metadata.get("admin_access_requested") is True
         current_role = str(metadata.get("admin_role") or "").strip().lower()
         if current_role == "superadmin":
             raise HTTPException(
@@ -712,16 +719,20 @@ class AdminService:
             metadata["admin_role"] = "admin"
         else:
             metadata.pop("admin_role", None)
+        update_payload: dict[str, Any] = {"app_metadata": metadata}
+        if requested:
+            user_metadata.pop("admin_access_requested", None)
+            update_payload["user_metadata"] = user_metadata
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.put(
                 url,
                 headers=self._headers(),
-                json={"app_metadata": metadata},
+                json=update_payload,
             )
         self._raise_for_response(response)
         await self._audit(
             actor,
-            "approve" if approved else "revoke",
+            "approve" if approved else "decline" if requested else "revoke",
             "users",
             user_id,
             {"admin_role": "admin" if approved else None},

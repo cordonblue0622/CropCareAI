@@ -1,6 +1,8 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
@@ -177,6 +179,74 @@ def test_user_invitation_allowlist_never_accepts_admin_role_or_password() -> Non
         "email": "ana@example.com",
         "role": "admin",
     }
+
+
+def test_admin_signup_name_falls_back_to_auth_metadata(monkeypatch) -> None:
+    async_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/auth/v1/admin/users" in str(request.url):
+            return httpx.Response(200, json={"users": [{
+                "id": "pending-1",
+                "email": "ana@example.com",
+                "app_metadata": {},
+                "user_metadata": {
+                    "admin_access_requested": True,
+                    "full_name": "Ana Farmer",
+                    "display_name": "Ana",
+                },
+            }]})
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    users = asyncio.run(AdminService(Settings()).list_users())
+
+    assert users[0]["profile"]["full_name"] == "Ana Farmer"
+    assert users[0]["profile"]["display_name"] == "Ana"
+    assert users[0]["admin_access_requested"] is True
+
+
+def test_declining_admin_request_clears_pending_metadata(monkeypatch) -> None:
+    requests: list[httpx.Request] = []
+    async_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={
+                "id": "pending-1",
+                "app_metadata": {},
+                "user_metadata": {
+                    "admin_access_requested": True,
+                    "full_name": "Ana Farmer",
+                },
+            })
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    asyncio.run(AdminService(Settings()).set_user_admin_role(
+        "pending-1",
+        approved=False,
+        actor=AuthenticatedUser(id="owner-1", email="owner@example.com", role="superadmin"),
+    ))
+
+    update = next(request for request in requests if request.method == "PUT")
+    assert json.loads(update.content) == {
+        "app_metadata": {},
+        "user_metadata": {"full_name": "Ana Farmer"},
+    }
+    audit = next(request for request in requests if "/admin_audit_events" in str(request.url))
+    assert json.loads(audit.content)["action"] == "decline"
 
 
 def test_user_invitation_defaults_to_non_admin_role() -> None:

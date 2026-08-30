@@ -48,6 +48,10 @@ const selectOptions = {
 
 const $ = (selector) => document.querySelector(selector);
 const content = $("#content");
+const authCallbackParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+if (window.location.hash) {
+  window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
+}
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -145,8 +149,14 @@ async function registerAccount(event) {
   const submit = event.currentTarget.querySelector("button[type=submit]");
   const passwordInput = $("#registerPassword");
   const confirmInput = $("#confirmPassword");
+  const firstName = $("#registerFirstName").value.trim();
+  const lastName = $("#registerLastName").value.trim();
   error.textContent = "";
   success.textContent = "";
+  if (!firstName || !lastName) {
+    error.textContent = "Enter your first and last name.";
+    return;
+  }
   if (passwordInput.value !== confirmInput.value) {
     error.textContent = "Passwords do not match.";
     return;
@@ -156,13 +166,21 @@ async function registerAccount(event) {
   try {
     if (!state.config) state.config = await fetch("/admin/config", { cache: "no-store" }).then((res) => res.json());
     if (!state.config.supabaseUrl || !state.config.supabaseAnonKey) throw new Error("Account registration is not configured.");
-    const response = await fetch(`${state.config.supabaseUrl}/auth/v1/signup`, {
+    const redirectTo = state.config.adminAuthRedirectUrl || `${window.location.origin}/admin`;
+    const signupUrl = `${state.config.supabaseUrl}/auth/v1/signup?redirect_to=${encodeURIComponent(redirectTo)}`;
+    const response = await fetch(signupUrl, {
       method: "POST",
       headers: { "apikey": state.config.supabaseAnonKey, "Content-Type": "application/json" },
       body: JSON.stringify({
         email: $("#registerEmail").value.trim(),
         password: passwordInput.value,
-        data: { admin_access_requested: true },
+        data: {
+          admin_access_requested: true,
+          first_name: firstName,
+          last_name: lastName,
+          full_name: `${firstName} ${lastName}`,
+          display_name: firstName,
+        },
       }),
       cache: "no-store",
     });
@@ -188,8 +206,45 @@ async function registerAccount(event) {
 }
 
 function invitationToken() {
-  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-  return params.get("type") === "invite" ? params.get("access_token") || "" : "";
+  return authCallbackParams.get("type") === "invite"
+    ? authCallbackParams.get("access_token") || ""
+    : "";
+}
+
+async function initializeAuthCallback() {
+  const callbackType = authCallbackParams.get("type") || "";
+  const callbackError = authCallbackParams.get("error_description") || "";
+  const accessToken = authCallbackParams.get("access_token") || "";
+  const message = $("#authCallbackMessage");
+
+  if (callbackType === "invite" && accessToken) {
+    await initializeInvitation();
+    return;
+  }
+  if (callbackError) {
+    message.className = "form-error";
+    message.textContent = callbackError.replaceAll("+", " ");
+    return;
+  }
+  if (!["signup", "email_change"].includes(callbackType) || !accessToken) return;
+
+  message.textContent = callbackType === "email_change"
+    ? "Email address confirmed. You can now sign in."
+    : "Email confirmed. Ask a superadmin to approve your access, then sign in.";
+
+  try {
+    if (!state.config) state.config = await fetch("/admin/config", { cache: "no-store" }).then((res) => res.json());
+    await fetch(`${state.config.supabaseUrl}/auth/v1/logout`, {
+      method: "POST",
+      headers: {
+        "apikey": state.config.supabaseAnonKey,
+        "Authorization": `Bearer ${accessToken}`,
+      },
+      cache: "no-store",
+    });
+  } catch (_) {
+    // The callback is already confirmed; sign-out cleanup is best effort.
+  }
 }
 
 async function initializeInvitation() {
@@ -1036,8 +1091,18 @@ function renderUserTable(panel) {
     const role = String(row.admin_role || "").toLowerCase();
     if (state.userTab === "admins" && state.admin?.role === "superadmin" && row.id !== state.admin.id && role !== "superadmin") {
       const approved = role === "admin";
-      const roleButton = element("button", approved ? "danger-button" : "secondary-button", approved ? "Revoke admin" : "Approve admin");
+      if (!approved && row.admin_access_requested) {
+        const declineButton = element("button", "icon-action danger-button", "×");
+        declineButton.type = "button";
+        declineButton.title = "Decline administrator request";
+        declineButton.setAttribute("aria-label", `Decline administrator request for ${row.email}`);
+        declineButton.addEventListener("click", () => updateAdminRole(row, false));
+        actions.push(declineButton);
+      }
+      const roleButton = element("button", `icon-action ${approved ? "danger-button" : "secondary-button"}`, approved ? "×" : "✓");
       roleButton.type = "button";
+      roleButton.title = approved ? "Revoke administrator access" : "Approve administrator request";
+      roleButton.setAttribute("aria-label", `${approved ? "Revoke administrator access from" : "Approve administrator request for"} ${row.email}`);
       roleButton.addEventListener("click", () => updateAdminRole(row, !approved));
       actions.push(roleButton);
     }
@@ -1076,14 +1141,19 @@ async function sendPasswordReset(user) {
 }
 
 async function updateAdminRole(user, approved) {
-  const verb = approved ? "approve administrator access for" : "revoke administrator access from";
+  const declining = !approved && user.admin_access_requested && !user.admin_role;
+  const verb = approved
+    ? "approve administrator access for"
+    : declining ? "decline the administrator request from" : "revoke administrator access from";
   if (!window.confirm(`${verb[0].toUpperCase()}${verb.slice(1)} ${user.email}?`)) return;
   try {
     await api(`/v1/admin/users/${encodeURIComponent(user.id)}/admin-role`, {
       method: "PATCH",
       body: JSON.stringify({ approved }),
     });
-    showStatus(approved ? "Administrator access approved." : "Administrator access revoked.");
+    showStatus(approved
+      ? "Administrator access approved."
+      : declining ? "Administrator request declined." : "Administrator access revoked.");
     await renderUsers();
   } catch (failure) { showStatus(failure.message, true); }
 }
@@ -1260,4 +1330,4 @@ $("#cancelDialogButton").addEventListener("click", () => $("#recordDialog").clos
 $("#closeContentDialogButton").addEventListener("click", () => $("#contentDialog").close());
 $("#closeDetailDialogButton").addEventListener("click", () => $("#detailDialog").close());
 window.addEventListener("pagehide", () => { state.token = ""; });
-initializeInvitation();
+initializeAuthCallback();
