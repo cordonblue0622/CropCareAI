@@ -9,8 +9,8 @@ create table if not exists public.admin_audit_events (
   id uuid primary key,
   actor_id uuid not null,
   actor_email text,
-  action text not null check (action in ('create', 'update', 'archive', 'suspend', 'restore', 'approve', 'revoke')),
-  resource text not null check (resource in ('users', 'diseases', 'treatments', 'crops', 'diagnoses')),
+  action text not null check (action in ('create', 'update', 'archive', 'suspend', 'restore', 'approve', 'revoke', 'password_reset')),
+  resource text not null check (resource in ('users', 'user_profiles', 'diseases', 'treatments', 'crops', 'diagnoses')),
   record_id text not null,
   changed_fields text[] not null default '{}',
   created_at timestamptz not null default now()
@@ -20,7 +20,13 @@ alter table public.admin_audit_events
   drop constraint if exists admin_audit_events_action_check;
 alter table public.admin_audit_events
   add constraint admin_audit_events_action_check
-  check (action in ('create', 'update', 'archive', 'suspend', 'restore', 'approve', 'revoke'));
+  check (action in ('create', 'update', 'archive', 'suspend', 'restore', 'approve', 'revoke', 'password_reset'));
+
+alter table public.admin_audit_events
+  drop constraint if exists admin_audit_events_resource_check;
+alter table public.admin_audit_events
+  add constraint admin_audit_events_resource_check
+  check (resource in ('users', 'user_profiles', 'diseases', 'treatments', 'crops', 'diagnoses'));
 
 create index if not exists admin_audit_events_created_at_idx
   on public.admin_audit_events (created_at desc);

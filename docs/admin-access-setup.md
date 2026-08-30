@@ -25,6 +25,8 @@ REQUIRE_AUTH=true
 SUPABASE_URL=https://dyolfgaabpcibwkphxgo.supabase.co
 SUPABASE_ANON_KEY=<the app's publishable key>
 SUPABASE_SERVICE_ROLE_KEY=<set privately from Supabase Project Settings>
+PASSWORD_RESET_REDIRECT_URL=cropcareai://auth/reset-password
+ADMIN_INVITE_REDIRECT_URL=https://cropcareai-nxn4.onrender.com/admin
 ```
 
 In Render, add them under **cropcare-ai-backend > Environment**. Keep
@@ -34,11 +36,21 @@ portal configuration reports only whether privileged access is ready; it never
 returns the service-role key to the browser.
 
 Run `docs/supabase-admin-security.sql` once in the Supabase SQL editor.
+Run `docs/supabase-admin-content-management.sql` once to add the disease
+severity and canonical treatment fields used by the card-based library.
+
+In Supabase **Authentication > URL Configuration**, add
+`https://cropcareai-nxn4.onrender.com/admin` to **Redirect URLs**. In
+**Authentication > Email Templates**, keep the Invite user template enabled
+and ensure it links to `{{ .ConfirmationURL }}`. Configure a custom SMTP
+provider for reliable production delivery; the built-in sender is intended
+for limited testing and is rate-limited.
 
 ## Who can access
 
 - `admin`: can manage users, disease guidance, treatments, crops, and diagnoses.
-  It cannot approve administrators or change a superadmin.
+  It can view the administrator list but cannot approve administrator requests,
+  revoke administrator access, or change a superadmin.
 - `superadmin`: has administrator access and can approve or revoke the `admin`
   role for registered accounts.
 - A superadmin role cannot be created from the portal. Only the Supabase project
@@ -66,7 +78,7 @@ where lower(email) = lower('OWNER_EMAIL@example.com');
 ## Approve an administrator
 
 1. The applicant creates an account and confirms their email.
-2. A superadmin signs in and opens **User management**.
+2. A superadmin signs in, opens **User management**, and selects **Admins**.
 3. Verify the applicant's identity and email, then select **Approve admin**.
 4. The applicant signs out and signs in again. Their account can now access the
    protected administrator API.
@@ -75,3 +87,16 @@ where lower(email) = lower('OWNER_EMAIL@example.com');
 All approval, revocation, suspension, and record mutation events are written to
 the server-only audit table. Changes to app records are visible to users after
 pull-to-refresh, reopening the relevant screen, signing in, or reconnecting.
+
+The **Users** tab contains ordinary app accounts and never offers administrator
+approval. The **Admins** tab contains approved administrators and pending
+requests created from the admin portal. Administrators can edit allowlisted
+profile fields and send Supabase password-recovery email, but cannot set or see
+passwords. Email-address changes are initiated by the account owner from a
+signed-in CropCare app session and take effect only after Supabase confirmation.
+
+The **Add user** action calls Supabase Auth's invitation endpoint. The invitee
+confirms the email through the received link and creates a password on the
+hosted CropCare page. The backend stores the supplied name, farm address, and
+optional phone in the shared `profiles` row; no password is generated or
+visible to an administrator.

@@ -31,6 +31,14 @@ async def admin_summary(
     return await service.summary()
 
 
+@router.get("/analytics")
+async def admin_analytics(
+    _: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return await service.analytics()
+
+
 @router.get("/resources")
 async def resource_catalog(
     _: AuthenticatedUser = Depends(require_admin_user),
@@ -109,6 +117,15 @@ async def list_users(
     return {"items": await service.list_users(page=page, per_page=per_page)}
 
 
+@router.post("/users/invite", status_code=status.HTTP_201_CREATED)
+async def invite_user(
+    payload: dict[str, Any],
+    admin: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return await service.invite_user(payload, admin)
+
+
 @router.patch("/users/{user_id}/suspension", status_code=status.HTTP_204_NO_CONTENT)
 async def set_user_suspension(
     user_id: str,
@@ -137,6 +154,44 @@ async def set_user_admin_role(
         actor=superadmin,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/users/{user_id}/profile")
+async def update_user_profile(
+    user_id: str,
+    payload: dict[str, Any],
+    admin: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return await service.update_user_profile(user_id, payload, admin)
+
+
+@router.post("/users/{user_id}/password-reset", status_code=status.HTTP_204_NO_CONTENT)
+async def send_user_password_reset(
+    user_id: str,
+    admin: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> Response:
+    await service.send_password_reset(user_id, admin)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/treatment-protocols")
+async def list_treatment_protocols(
+    _: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return {"items": await service.list_treatment_protocols()}
+
+
+@router.put("/treatment-protocols/{disease_id}")
+async def save_treatment_protocol(
+    disease_id: str,
+    payload: dict[str, Any],
+    admin: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return await service.save_treatment_protocol(disease_id, payload, admin)
 
 
 @router.get("/audit")

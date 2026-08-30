@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 from fastapi import HTTPException
@@ -136,6 +137,67 @@ def test_admin_payload_allowlist_excludes_sensitive_and_immutable_fields() -> No
     }
 
 
+def test_admin_profile_allowlist_excludes_auth_and_role_fields() -> None:
+    cleaned = AdminService._clean_profile_payload(
+        {
+            "full_name": "  Ana Farmer  ",
+            "barangay": "Poblacion",
+            "email": "attacker@example.com",
+            "password": "do-not-store",
+            "admin_role": "superadmin",
+            "app_metadata": {"admin_role": "superadmin"},
+        }
+    )
+
+    assert cleaned == {
+        "full_name": "Ana Farmer",
+        "barangay": "Poblacion",
+    }
+
+
+def test_user_invitation_allowlist_never_accepts_admin_role_or_password() -> None:
+    cleaned = AdminService._clean_invite_payload(
+        {
+            "first_name": "  Ana ",
+            "last_name": " Farmer ",
+            "farm_address": " Farm Road ",
+            "phone": " 09171234567 ",
+            "email": " ANA@EXAMPLE.COM ",
+            "password": "not-accepted",
+            "admin_role": "superadmin",
+        }
+    )
+
+    assert cleaned == {
+        "first_name": "Ana",
+        "last_name": "Farmer",
+        "farm_address": "Farm Road",
+        "phone": "09171234567",
+        "email": "ana@example.com",
+    }
+
+
+def test_treatment_protocol_rejects_incomplete_daily_steps_before_supabase_call() -> None:
+    service = AdminService(Settings())
+    actor = AuthenticatedUser(id="admin-1", email="admin@example.com", role="admin")
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            service.save_treatment_protocol(
+                "disease-1",
+                {
+                    "treatment_title": "Leaf care",
+                    "treatment_information": "Keep foliage dry.",
+                    "expected_duration_days": 2,
+                    "daily_steps": [{"tasks": ["Inspect leaves"]}],
+                },
+                actor,
+            )
+        )
+
+    assert exc.value.status_code == 422
+
+
 def test_admin_resources_target_flutter_supabase_tables() -> None:
     assert {name: resource.table for name, resource in RESOURCES.items()} == {
         "diseases": "disease_knowledge_base",
@@ -143,3 +205,62 @@ def test_admin_resources_target_flutter_supabase_tables() -> None:
         "crops": "crops",
         "diagnoses": "diagnoses",
     }
+
+
+def test_disease_resource_includes_admin_content_fields() -> None:
+    assert {"severity", "treatment_title", "treatment_information"}.issubset(
+        RESOURCES["diseases"].editable
+    )
+
+
+def test_admin_content_and_invitation_routes_are_registered() -> None:
+    paths = {route.path for route in app.routes}
+
+    assert "/v1/admin/users/invite" in paths
+    assert "/v1/admin/treatment-protocols" in paths
+    assert "/v1/admin/treatment-protocols/{disease_id}" in paths
+    assert "/v1/admin/analytics" in paths
+
+
+def test_admin_analytics_returns_aggregate_research_metrics() -> None:
+    result = AdminService._build_analytics(
+        users=[
+            {"id": "user-1", "last_sign_in_at": "2026-08-29T14:00:00Z"},
+            {"id": "pending-1", "admin_access_requested": True},
+            {"id": "admin-1", "admin_role": "admin"},
+        ],
+        crops=[
+            {
+                "id": "crop-1",
+                "crop_type": "tomato",
+                "latest_progress_status": "improving",
+                "latest_health_score": 82,
+            },
+            {
+                "id": "crop-2",
+                "crop_type": "pepper",
+                "latest_progress_status": "worsening",
+                "latest_health_score": 42,
+            },
+        ],
+        tasks=[
+            {"crop_id": "crop-1", "status": "completed"},
+            {"crop_id": "crop-1", "status": "pending"},
+            {"crop_id": "crop-2", "status": "pending"},
+        ],
+        progress=[{"crop_id": "crop-1", "update_date": "2026-08-29T00:00:00Z"}],
+        diagnoses=[{"crop_id": "crop-1", "diagnosed_at": "2026-08-28T00:00:00Z"}],
+        now=datetime(2026, 8, 30, tzinfo=UTC),
+    )
+
+    assert result["metrics"] == {
+        "ordinary_users": 1,
+        "active_users_30d": 1,
+        "current_crops": 2,
+        "treatment_task_completion_rate": 33.3,
+        "improving_crops": 1,
+        "crops_needing_attention": 1,
+    }
+    assert result["activity_by_day"][-3]["diagnoses"] == 1
+    assert result["activity_by_day"][-2]["check_ins"] == 1
+    assert result["sign_in_hours_utc"][14]["count"] == 1

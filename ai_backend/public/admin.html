@@ -40,6 +40,15 @@
         <p id="registerSuccess" class="form-success" role="status"></p>
         <button class="primary-button" type="submit">Create account</button>
       </form>
+      <form id="inviteForm" class="hidden" autocomplete="new-password">
+        <label for="invitePassword">Create password</label>
+        <input id="invitePassword" name="new-password" type="password" autocomplete="new-password" required minlength="12">
+        <label for="invitePasswordConfirm">Confirm password</label>
+        <input id="invitePasswordConfirm" name="confirm-password" type="password" autocomplete="new-password" required minlength="12">
+        <p id="inviteError" class="form-error" role="alert"></p>
+        <p id="inviteSuccess" class="form-success" role="status"></p>
+        <button class="primary-button" type="submit">Confirm account</button>
+      </form>
       <button id="authModeButton" class="auth-mode-button" type="button">Create an account</button>
       <p class="security-note">Access is restricted to accounts assigned an administrator role.</p>
     </section>
@@ -57,11 +66,11 @@
         <button class="nav-item" data-section="diseases"><span>DL</span>Disease library</button>
         <button class="nav-item" data-section="treatments"><span>TR</span>Treatments</button>
         <button class="nav-item" data-section="crops"><span>CR</span>Crop data</button>
-        <button class="nav-item" data-section="diagnoses"><span>DX</span>Diagnoses</button>
+        <button class="nav-item" data-section="analytics"><span>AN</span>Analytics</button>
         <button class="nav-item" data-section="system"><span>SY</span>System data</button>
       </nav>
       <div class="sidebar-footer">
-        <div class="admin-identity"><span id="adminInitial">A</span><div><strong id="adminEmail">Administrator</strong><small id="adminRole">Verified</small></div></div>
+        <button id="adminProfileButton" class="admin-identity" type="button"><span id="adminInitial">A</span><span><strong id="adminEmail">Administrator</strong><small id="adminRole">Verified</small></span></button>
         <button id="signOutButton" class="quiet-button" type="button">Sign out</button>
       </div>
     </aside>
@@ -85,6 +94,20 @@
       <p id="recordError" class="form-error" role="alert"></p>
       <div class="dialog-actions"><button id="cancelDialogButton" class="secondary-button" type="button">Cancel</button><button class="primary-button" type="submit">Save changes</button></div>
     </form>
+  </dialog>
+
+  <dialog id="contentDialog" class="record-dialog detail-dialog glass">
+    <div class="dialog-shell">
+      <div class="dialog-heading"><div><p class="eyebrow" id="contentDialogEyebrow">Library</p><h3 id="contentDialogTitle">Details</h3></div><button id="closeContentDialogButton" class="icon-button" type="button" aria-label="Close">Close</button></div>
+      <div id="contentDialogBody" class="dialog-body"></div>
+    </div>
+  </dialog>
+
+  <dialog id="detailDialog" class="record-dialog detail-dialog glass">
+    <div class="dialog-shell">
+      <div class="dialog-heading"><div><p class="eyebrow" id="detailDialogEyebrow">Treatment</p><h3 id="detailDialogTitle">Details</h3></div><button id="closeDetailDialogButton" class="icon-button" type="button" aria-label="Close">Close</button></div>
+      <div id="detailDialogBody" class="dialog-body"></div>
+    </div>
   </dialog>
 </body>
 </html>

@@ -6,6 +6,7 @@ const state = {
   config: null,
   catalog: {},
   section: "overview",
+  userTab: "users",
   rows: [],
   editing: null,
 };
@@ -14,27 +15,28 @@ const labels = {
   overview: ["Overview", "System health and managed record totals"],
   users: ["User management", "Registered accounts and access status"],
   diseases: ["Disease library", "Curated disease information and recommendations"],
-  treatments: ["Treatment management", "Treatment plans assigned to monitored crops"],
-  crops: ["Crop data", "Registered crop records and monitoring state"],
-  diagnoses: ["Diagnosis data", "Model assessments and clinical metadata"],
+  treatments: ["Treatment management", "Crop disease protocols and daily treatment steps"],
+  crops: ["Crop data", "Ordinary users and their registered crop status"],
+  analytics: ["Analytics", "Aggregate adoption, treatment, and activity signals"],
+  profile: ["My profile", "Administrator identity and farm information"],
   system: ["System data", "Administrative activity and platform records"],
 };
 
 const displayColumns = {
-  users: ["email", "admin_role", "confirmed_at", "last_sign_in_at", "banned_until"],
+  users: ["email", "name", "farm_location", "confirmed_at", "last_sign_in_at", "banned_until"],
+  admins: ["email", "name", "access_status", "confirmed_at", "last_sign_in_at", "banned_until"],
   diseases: ["disease_name", "crop_type", "estimated_recovery_days", "is_active", "updated_at"],
   treatments: ["treatment_title", "disease_name", "status", "started_at", "updated_at"],
   crops: ["crop_name", "crop_type", "status", "latest_health_score", "updated_at"],
-  diagnoses: ["disease_name", "severity", "confidence_score", "diagnosis_mode", "diagnosed_at"],
 };
 
 const wideFields = new Set([
   "description", "symptoms", "causes", "treatment_steps", "prevention_steps",
-  "severity_notes", "caution_notes", "notes", "summary",
+  "severity_notes", "caution_notes", "notes", "summary", "treatment_information",
 ]);
 const arrayFields = new Set(["symptoms", "causes", "treatment_steps", "prevention_steps"]);
 const booleanFields = new Set(["is_active", "reassessment_required"]);
-const numberFields = new Set(["estimated_recovery_days", "latest_health_score", "confidence_score"]);
+const numberFields = new Set(["estimated_recovery_days", "expected_duration_days", "latest_health_score", "confidence_score"]);
 const dateFields = new Set(["planted_at", "last_checked_at", "started_at", "ended_at", "diagnosed_at"]);
 const selectOptions = {
   crop_type: ["tomato", "pepper", "squash", "eggplant", "pechay"],
@@ -66,9 +68,12 @@ async function api(path, options = {}) {
   headers.set("Authorization", `Bearer ${state.token}`);
   if (options.body) headers.set("Content-Type", "application/json");
   const response = await fetch(path, { ...options, headers, cache: "no-store" });
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     signOut(false);
-    throw new Error(response.status === 403 ? "This account does not have administrator access." : "Your session has expired.");
+    throw new Error("Your session has expired.");
+  }
+  if (response.status === 403) {
+    throw new Error("Your administrator role does not allow this action.");
   }
   if (!response.ok) {
     let message = "The operation could not be completed.";
@@ -154,7 +159,11 @@ async function registerAccount(event) {
     const response = await fetch(`${state.config.supabaseUrl}/auth/v1/signup`, {
       method: "POST",
       headers: { "apikey": state.config.supabaseAnonKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ email: $("#registerEmail").value.trim(), password: passwordInput.value }),
+      body: JSON.stringify({
+        email: $("#registerEmail").value.trim(),
+        password: passwordInput.value,
+        data: { admin_access_requested: true },
+      }),
       cache: "no-store",
     });
     if (!response.ok) {
@@ -170,6 +179,69 @@ async function registerAccount(event) {
     confirmInput.value = "";
     submit.disabled = false;
     submit.textContent = "Create account";
+  }
+}
+
+function invitationToken() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  return params.get("type") === "invite" ? params.get("access_token") || "" : "";
+}
+
+async function initializeInvitation() {
+  if (!invitationToken()) return;
+  $("#loginForm").classList.add("hidden");
+  $("#registerForm").classList.add("hidden");
+  $("#authModeButton").classList.add("hidden");
+  document.querySelector(".security-note").classList.add("hidden");
+  $("#inviteForm").classList.remove("hidden");
+  $("#loginTitle").textContent = "Complete your CropCare account";
+  document.querySelector("#signInHeading .lede").textContent = "Your email is confirmed. Create a password to finish setting up your account.";
+}
+
+async function completeInvitation(event) {
+  event.preventDefault();
+  const error = $("#inviteError");
+  const success = $("#inviteSuccess");
+  const password = $("#invitePassword");
+  const confirmation = $("#invitePasswordConfirm");
+  const submit = event.currentTarget.querySelector("button[type=submit]");
+  error.textContent = "";
+  success.textContent = "";
+  if (password.value !== confirmation.value) {
+    error.textContent = "Passwords do not match.";
+    return;
+  }
+  submit.disabled = true;
+  submit.textContent = "Confirming...";
+  try {
+    if (!state.config) state.config = await fetch("/admin/config", { cache: "no-store" }).then((res) => res.json());
+    const token = invitationToken();
+    if (!token) throw new Error("This invitation link is invalid or has expired.");
+    const response = await fetch(`${state.config.supabaseUrl}/auth/v1/user`, {
+      method: "PUT",
+      headers: {
+        "apikey": state.config.supabaseAnonKey,
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ password: password.value }),
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("The password could not be created. Request a new invitation link.");
+    await fetch(`${state.config.supabaseUrl}/auth/v1/logout`, {
+      method: "POST",
+      headers: { "apikey": state.config.supabaseAnonKey, "Authorization": `Bearer ${token}` },
+    });
+    password.value = "";
+    confirmation.value = "";
+    window.history.replaceState({}, document.title, window.location.pathname);
+    success.textContent = "Account confirmed. You can now sign in to the CropCare app.";
+    submit.classList.add("hidden");
+  } catch (failure) {
+    error.textContent = failure.message;
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Confirm account";
   }
 }
 
@@ -200,8 +272,12 @@ async function selectSection(section) {
   try {
     if (section === "overview") await renderOverview();
     else if (section === "users") await renderUsers();
+    else if (section === "diseases") await renderDiseaseLibrary();
+    else if (section === "treatments") await renderTreatmentLibrary();
+    else if (section === "crops") await renderCropData();
+    else if (section === "analytics") await renderAnalytics();
+    else if (section === "profile") await renderAdminProfile();
     else if (section === "system") await renderSystem();
-    else await renderResource(section);
   } catch (failure) {
     renderFailure(failure.message);
   }
@@ -228,13 +304,125 @@ async function renderOverview() {
   hero.append(copy, date);
 
   const metrics = element("section", "metric-grid");
-  const metricNames = ["users", "crops", "diagnoses", "treatments", "diseases"];
+  const metricNames = ["users", "crops", "treatments", "diseases"];
   metricNames.forEach((name) => {
     const card = element("article", "metric-card glass");
     card.append(element("span", "", labels[name]?.[0] || name), element("strong", "", summary.counts[name] ?? "--"), element("small", "", "Managed records"));
     metrics.append(card);
   });
   content.replaceChildren(hero, metrics);
+}
+
+async function renderAnalytics() {
+  const data = await api("/v1/admin/analytics");
+  const metricLabels = {
+    ordinary_users: "Ordinary users",
+    active_users_30d: "Active in 30 days",
+    current_crops: "Current crops",
+    treatment_task_completion_rate: "Task completion",
+    improving_crops: "Improving crops",
+    crops_needing_attention: "Need attention",
+  };
+  const metricGrid = element("section", "analytics-metrics");
+  Object.entries(metricLabels).forEach(([key, label]) => {
+    const card = element("article", "analytics-metric");
+    const value = data.metrics[key];
+    card.append(
+      element("span", "", label),
+      element("strong", "", value === null || value === undefined ? "--" : `${value}${key.endsWith("rate") ? "%" : ""}`),
+    );
+    metricGrid.append(card);
+  });
+
+  const popular = analyticsPanel("Most added crops", "Current non-archived crops across ordinary users.");
+  popular.append(buildHorizontalBars(data.crop_distribution, "crop_type", "count"));
+
+  const adaptation = analyticsPanel("Treatment adaptation", "Progress, health, and task completion grouped by crop type.");
+  const adaptationList = element("div", "adaptation-list");
+  (data.treatment_adaptation || []).forEach((item) => {
+    const row = element("article", "adaptation-row");
+    const heading = element("div", "adaptation-heading");
+    heading.append(
+      element("strong", "", titleCase(item.crop_type)),
+      element("small", "", `${item.crop_count} crops · ${item.total_tasks} treatment tasks`),
+    );
+    const values = element("div", "adaptation-values");
+    [["Improving", item.improving, "good"], ["Stable", item.stable, "stable"], ["Worsening", item.worsening, "poor"], ["Task completion", item.task_completion_rate === null ? "--" : `${item.task_completion_rate}%`, "completion"], ["Avg health", item.average_health_score === null ? "--" : `${item.average_health_score}%`, "health"]].forEach(([label, value, className]) => {
+      const stat = element("span", className);
+      stat.append(element("small", "", label), element("strong", "", String(value)));
+      values.append(stat);
+    });
+    row.append(heading, values);
+    adaptationList.append(row);
+  });
+  if (!adaptationList.children.length) adaptationList.append(element("div", "empty-state compact", "No crop treatment data yet."));
+  adaptation.append(adaptationList);
+
+  const activity = analyticsPanel("Research activity · 14 days", "Diagnosis and crop check-in volume, aggregated by UTC date.");
+  activity.append(buildActivityChart(data.activity_by_day || []));
+
+  const signIns = analyticsPanel("Recent sign-in hours", "Latest sign-in per ordinary account, grouped by UTC hour. This is not a complete traffic history.");
+  signIns.append(buildHourChart(data.sign_in_hours_utc || []));
+
+  const grid = element("section", "analytics-grid");
+  grid.append(popular, adaptation, activity, signIns);
+  content.replaceChildren(metricGrid, grid);
+}
+
+function analyticsPanel(title, subtitle) {
+  const panel = element("section", "analytics-panel glass");
+  panel.append(panelHeader(title, subtitle));
+  return panel;
+}
+
+function buildHorizontalBars(items, labelField, valueField) {
+  const chart = element("div", "horizontal-chart");
+  const max = Math.max(1, ...(items || []).map((item) => Number(item[valueField]) || 0));
+  (items || []).forEach((item) => {
+    const row = element("div", "horizontal-bar-row");
+    const label = element("strong", "", titleCase(item[labelField]));
+    const track = element("div", "bar-track");
+    const fill = element("span", "bar-fill");
+    fill.style.width = `${(Number(item[valueField]) || 0) * 100 / max}%`;
+    track.append(fill);
+    row.append(label, track, element("span", "bar-value", String(item[valueField] ?? 0)));
+    chart.append(row);
+  });
+  if (!chart.children.length) chart.append(element("div", "empty-state compact", "No crop records yet."));
+  return chart;
+}
+
+function buildActivityChart(items) {
+  const chart = element("div", "activity-chart");
+  const max = Math.max(1, ...items.map((item) => Number(item.diagnoses || 0) + Number(item.check_ins || 0)));
+  items.forEach((item) => {
+    const column = element("div", "activity-column");
+    const bars = element("div", "activity-bars");
+    const diagnosis = element("span", "diagnosis-bar");
+    const checkIn = element("span", "checkin-bar");
+    diagnosis.style.height = `${Number(item.diagnoses || 0) * 100 / max}%`;
+    checkIn.style.height = `${Number(item.check_ins || 0) * 100 / max}%`;
+    bars.append(diagnosis, checkIn);
+    const date = new Date(`${item.date}T00:00:00Z`);
+    column.title = `${item.date}: ${item.diagnoses} diagnoses, ${item.check_ins} check-ins`;
+    column.append(bars, element("small", "", new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" }).format(date)));
+    chart.append(column);
+  });
+  return chart;
+}
+
+function buildHourChart(items) {
+  const chart = element("div", "hour-chart");
+  const max = Math.max(1, ...items.map((item) => Number(item.count) || 0));
+  items.forEach((item) => {
+    const column = element("div", "hour-column");
+    const bar = element("span", "hour-bar");
+    bar.style.height = `${(Number(item.count) || 0) * 100 / max}%`;
+    column.title = `${String(item.hour).padStart(2, "0")}:00 UTC · ${item.count} users`;
+    column.append(bar, element("small", "", Number(item.hour) % 3 === 0 ? String(item.hour).padStart(2, "0") : ""));
+    chart.append(column);
+  });
+  return chart;
 }
 
 function panelHeader(title, subtitle, actions = []) {
@@ -287,6 +475,330 @@ function buildTable(rows, columns, actionBuilder) {
   table.append(head, body);
   wrap.append(table);
   return wrap;
+}
+
+function groupBy(rows, key) {
+  return rows.reduce((groups, row) => {
+    const value = String(row[key] || "Unspecified").trim().toLowerCase();
+    groups[value] ||= [];
+    groups[value].push(row);
+    return groups;
+  }, {});
+}
+
+function titleCase(value) {
+  return String(value || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function buildCropCards(groups, onSelect, emptyMessage) {
+  const grid = element("div", "crop-card-grid");
+  const entries = Object.entries(groups).sort(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) return element("div", "empty-state", emptyMessage);
+  entries.forEach(([crop, rows]) => {
+    const card = element("button", "crop-card");
+    card.type = "button";
+    card.append(
+      element("span", "crop-card-mark", titleCase(crop).slice(0, 2)),
+      element("strong", "", titleCase(crop)),
+      element("small", "", `${rows.length} ${rows.length === 1 ? "record" : "records"}`),
+    );
+    card.addEventListener("click", () => onSelect(crop, rows));
+    grid.append(card);
+  });
+  return grid;
+}
+
+function appendDetail(container, label, value) {
+  if (value === null || value === undefined || value === "") return;
+  const block = element("div", "detail-field");
+  block.append(element("strong", "", titleCase(label)), element("p", "", formatValue(value, label)));
+  container.append(block);
+}
+
+function openContentDialog(eyebrow, title, body) {
+  $("#contentDialogEyebrow").textContent = eyebrow;
+  $("#contentDialogTitle").textContent = title;
+  $("#contentDialogBody").replaceChildren(body);
+  $("#contentDialog").showModal();
+}
+
+function openDetailDialog(eyebrow, title, body) {
+  $("#detailDialogEyebrow").textContent = eyebrow;
+  $("#detailDialogTitle").textContent = title;
+  $("#detailDialogBody").replaceChildren(body);
+  $("#detailDialog").showModal();
+}
+
+async function renderDiseaseLibrary() {
+  const response = await api("/v1/admin/resources/diseases?limit=100");
+  state.rows = response.items;
+  const panel = element("section", "panel glass");
+  const add = element("button", "primary-button", "Add disease");
+  add.type = "button";
+  add.addEventListener("click", () => openDiseaseForm());
+  panel.append(panelHeader(labels.diseases[0], labels.diseases[1], [add]));
+  panel.append(buildCropCards(groupBy(state.rows, "crop_type"), showCropDiseases, "No disease records found."));
+  content.replaceChildren(panel);
+}
+
+function showCropDiseases(crop, diseases) {
+  const list = element("div", "detail-stack");
+  diseases.sort((left, right) => String(left.disease_name).localeCompare(String(right.disease_name))).forEach((disease) => {
+    const section = element("article", "detail-section");
+    const heading = element("div", "detail-section-heading");
+    const title = element("div");
+    title.append(element("h4", "", titleCase(disease.disease_name)), element("small", "", disease.scientific_name || "Crop disease record"));
+    const actions = element("div", "row-actions");
+    const edit = element("button", "secondary-button", "Edit");
+    edit.type = "button";
+    edit.addEventListener("click", () => {
+      $("#contentDialog").close();
+      openRecordDialog("diseases", disease);
+    });
+    const deactivate = element("button", "danger-button", "Deactivate");
+    deactivate.type = "button";
+    deactivate.addEventListener("click", () => archiveRecord("diseases", disease));
+    actions.append(edit, deactivate);
+    heading.append(title, actions);
+    section.append(heading);
+    const details = element("div", "detail-grid");
+    ["label_key", "scientific_name", "severity", "description", "symptoms", "causes", "severity_notes", "estimated_recovery_days", "treatment_title", "treatment_information", "treatment_steps", "prevention_steps", "caution_notes", "is_active", "source_name", "source_url", "created_at", "updated_at"].forEach((field) => appendDetail(details, field, disease[field]));
+    section.append(details);
+    list.append(section);
+  });
+  openContentDialog("Disease library", titleCase(crop), list);
+}
+
+function openDiseaseForm(record = null) {
+  state.editing = { resource: "diseases", record };
+  $("#dialogEyebrow").textContent = "Disease library";
+  $("#dialogTitle").textContent = record ? "Edit disease" : "Add crop disease";
+  $("#recordError").textContent = "";
+  const fields = $("#recordFields");
+  fields.replaceChildren();
+  const fieldNames = record
+    ? state.catalog.diseases.editable
+    : ["crop_type", "disease_name", "description", "severity", "estimated_recovery_days"];
+  fieldNames.forEach((field) => fields.append(buildField(field, record?.[field], ["crop_type", "disease_name", "description", "severity", "estimated_recovery_days"].includes(field))));
+  $("#recordDialog").showModal();
+}
+
+async function renderTreatmentLibrary() {
+  const response = await api("/v1/admin/treatment-protocols");
+  state.rows = response.items;
+  const panel = element("section", "panel glass");
+  const add = element("button", "primary-button", "Add treatment");
+  add.type = "button";
+  add.addEventListener("click", () => openTreatmentForm());
+  panel.append(panelHeader(labels.treatments[0], labels.treatments[1], [add]));
+  panel.append(buildCropCards(groupBy(state.rows, "crop_type"), showCropTreatments, "No treatment protocols found."));
+  content.replaceChildren(panel);
+}
+
+function showCropTreatments(crop, diseases) {
+  const list = element("div", "selection-list");
+  diseases.sort((left, right) => String(left.disease_name).localeCompare(String(right.disease_name))).forEach((disease) => {
+    const button = element("button", "selection-row");
+    button.type = "button";
+    const copy = element("span");
+    copy.append(element("strong", "", titleCase(disease.disease_name)), element("small", "", disease.treatment_title || "Treatment protocol not yet titled"));
+    button.append(copy, element("span", "badge", `${disease.estimated_recovery_days || 0} days`));
+    button.addEventListener("click", () => showTreatmentDetails(disease));
+    list.append(button);
+  });
+  openContentDialog("Treatment management", titleCase(crop), list);
+}
+
+function showTreatmentDetails(disease) {
+  const body = element("div", "detail-stack");
+  const summary = element("section", "detail-section");
+  const actions = element("div", "detail-section-heading");
+  const copy = element("div");
+  copy.append(
+    element("h4", "", disease.treatment_title || `${titleCase(disease.disease_name)} treatment`),
+    element("small", "", `${disease.estimated_recovery_days || 0}-day protocol`),
+  );
+  const edit = element("button", "secondary-button", "Edit treatment");
+  edit.type = "button";
+  edit.addEventListener("click", () => {
+    $("#detailDialog").close();
+    $("#contentDialog").close();
+    openTreatmentForm(disease);
+  });
+  actions.append(copy, edit);
+  summary.append(actions);
+  appendDetail(summary, "treatment_information", disease.treatment_information);
+  body.append(summary);
+  (disease.daily_steps || []).forEach((step) => {
+    const day = element("section", "day-step");
+    day.append(element("span", "day-number", `Day ${step.day_number}`), element("h4", "", step.day_title || `Day ${step.day_number}`));
+    const tasks = element("ul");
+    (step.tasks || []).forEach((task) => tasks.append(element("li", "", task)));
+    day.append(tasks);
+    if (step.notes) day.append(element("p", "day-note", step.notes));
+    body.append(day);
+  });
+  openDetailDialog(titleCase(disease.crop_type), titleCase(disease.disease_name), body);
+}
+
+function openTreatmentForm(disease = null) {
+  state.editing = { resource: "treatment-protocol", record: disease };
+  $("#dialogEyebrow").textContent = "Treatment management";
+  $("#dialogTitle").textContent = disease ? "Edit treatment protocol" : "Add treatment protocol";
+  $("#recordError").textContent = "";
+  const fields = $("#recordFields");
+  fields.replaceChildren();
+
+  const cropField = buildField("crop_type", disease?.crop_type, true);
+  const diseaseWrap = element("div");
+  const diseaseLabel = element("label", "", "Disease *");
+  const diseaseSelect = element("select");
+  diseaseSelect.name = "disease_id";
+  diseaseSelect.required = true;
+  diseaseWrap.append(diseaseLabel, diseaseSelect);
+  const titleField = buildField("treatment_title", disease?.treatment_title, true);
+  const informationField = buildField("treatment_information", disease?.treatment_information, true);
+  const durationField = buildField("expected_duration_days", disease?.estimated_recovery_days, true);
+  const steps = element("div", "field-wide daily-step-editor");
+  fields.append(cropField, diseaseWrap, titleField, informationField, durationField, steps);
+
+  const cropSelect = cropField.querySelector("select");
+  const titleInput = titleField.querySelector("input");
+  const informationInput = informationField.querySelector("textarea");
+  const durationInput = durationField.querySelector("input");
+  durationInput.min = "1";
+  durationInput.max = "90";
+
+  function populateDiseases() {
+    const crop = cropSelect.value;
+    diseaseSelect.replaceChildren(element("option", "", "Select disease"));
+    state.rows.filter((row) => row.crop_type === crop).forEach((row) => {
+      const option = element("option", "", titleCase(row.disease_name));
+      option.value = row.id;
+      option.selected = row.id === state.editing.record?.id;
+      diseaseSelect.append(option);
+    });
+  }
+
+  function renderDays(source = []) {
+    const duration = Math.min(Math.max(Number(durationInput.value) || 0, 0), 90);
+    steps.replaceChildren(element("h4", "", "Daily treatment steps"));
+    for (let dayNumber = 1; dayNumber <= duration; dayNumber += 1) {
+      const existing = source.find((step) => Number(step.day_number) === dayNumber) || {};
+      const day = element("div", "day-editor");
+      day.append(element("span", "day-number", `Day ${dayNumber}`));
+      const dayTitle = element("input");
+      dayTitle.name = `day_${dayNumber}_title`;
+      dayTitle.placeholder = "Daily focus";
+      dayTitle.value = existing.day_title || `Day ${dayNumber}`;
+      const tasks = element("textarea");
+      tasks.name = `day_${dayNumber}_tasks`;
+      tasks.placeholder = "One treatment step per line";
+      tasks.required = true;
+      tasks.value = Array.isArray(existing.tasks) ? existing.tasks.join("\n") : "";
+      const notes = element("textarea");
+      notes.name = `day_${dayNumber}_notes`;
+      notes.placeholder = "Optional notes";
+      notes.value = existing.notes || "";
+      day.append(dayTitle, tasks, notes);
+      steps.append(day);
+    }
+  }
+
+  cropSelect.addEventListener("change", () => {
+    state.editing.record = null;
+    populateDiseases();
+    titleInput.value = "";
+    informationInput.value = "";
+    durationInput.value = "";
+    renderDays();
+  });
+  diseaseSelect.addEventListener("change", () => {
+    const selected = state.rows.find((row) => row.id === diseaseSelect.value) || null;
+    state.editing.record = selected;
+    titleInput.value = selected?.treatment_title || "";
+    informationInput.value = selected?.treatment_information || "";
+    durationInput.value = selected?.estimated_recovery_days || "";
+    renderDays(selected?.daily_steps || []);
+  });
+  durationInput.addEventListener("change", () => renderDays(state.editing.record?.daily_steps || []));
+  populateDiseases();
+  renderDays(disease?.daily_steps || []);
+  $("#recordDialog").showModal();
+}
+
+async function renderCropData() {
+  const [usersResponse, cropsResponse] = await Promise.all([
+    api("/v1/admin/users?per_page=100"),
+    api("/v1/admin/resources/crops?limit=100"),
+  ]);
+  const ordinaryUsers = usersResponse.items.filter((user) => !user.admin_role && !user.admin_access_requested);
+  const cropsByUser = groupBy(cropsResponse.items.filter((crop) => crop.is_deleted !== true), "user_id");
+  const panel = element("section", "panel glass");
+  panel.append(panelHeader(labels.crops[0], labels.crops[1]));
+  const list = element("div", "user-crop-list");
+  if (!ordinaryUsers.length) list.append(element("div", "empty-state", "No ordinary users found."));
+  ordinaryUsers.forEach((user) => {
+    const item = element("article", "user-crop-item");
+    const button = element("button", "user-crop-heading");
+    button.type = "button";
+    const name = user.profile?.display_name || user.profile?.full_name || user.email;
+    const userCrops = cropsByUser[String(user.id).toLowerCase()] || [];
+    const copy = element("span");
+    copy.append(element("strong", "", name), element("small", "", `${user.email} · ${userCrops.length} ${userCrops.length === 1 ? "crop" : "crops"}`));
+    button.append(copy, element("span", "expand-indicator", "+"));
+    const cropList = element("div", "user-crops hidden");
+    if (!userCrops.length) cropList.append(element("div", "empty-state compact", "No crops registered for this user."));
+    userCrops.forEach((crop) => cropList.append(buildUserCropRow(crop)));
+    button.addEventListener("click", () => {
+      cropList.classList.toggle("hidden");
+      button.querySelector(".expand-indicator").textContent = cropList.classList.contains("hidden") ? "+" : "−";
+    });
+    item.append(button, cropList);
+    list.append(item);
+  });
+  panel.append(list);
+  content.replaceChildren(panel);
+}
+
+function buildUserCropRow(crop) {
+  const row = element("article", "user-crop-row");
+  const copy = element("div");
+  copy.append(element("h4", "", crop.crop_name || titleCase(crop.crop_type)), element("small", "", [titleCase(crop.crop_type), crop.plot_code, crop.location_label].filter(Boolean).join(" · ")));
+  const stats = element("div", "crop-stats");
+  [["Health score", formatValue(crop.latest_health_score, "latest_health_score")], ["Status", titleCase(crop.status || "unknown")], ["Progress", titleCase(crop.latest_progress_status || "insufficient data")], ["Last updated", formatValue(crop.updated_at || crop.last_checked_at, "updated_at")]].forEach(([label, value]) => {
+    const stat = element("span");
+    stat.append(element("small", "", label), element("strong", "", String(value)));
+    stats.append(stat);
+  });
+  const actions = element("div", "row-actions");
+  const edit = element("button", "secondary-button", "Edit");
+  edit.type = "button";
+  edit.addEventListener("click", () => openRecordDialog("crops", crop));
+  const archive = element("button", "danger-button", "Archive");
+  archive.type = "button";
+  archive.addEventListener("click", () => archiveRecord("crops", crop));
+  actions.append(edit, archive);
+  row.append(copy, stats, actions);
+  return row;
+}
+
+async function renderAdminProfile() {
+  const response = await api("/v1/admin/users?per_page=100");
+  const admin = response.items.find((user) => user.id === state.admin.id);
+  if (!admin) throw new Error("Your administrator profile could not be loaded.");
+  admin.name = admin.profile?.display_name || admin.profile?.full_name || admin.email;
+  const panel = element("section", "panel glass profile-panel");
+  const edit = element("button", "primary-button", "Edit profile");
+  edit.type = "button";
+  edit.addEventListener("click", () => openUserDialog(admin));
+  panel.append(panelHeader(labels.profile[0], labels.profile[1], [edit]));
+  const details = element("div", "detail-grid");
+  appendDetail(details, "email", admin.email);
+  appendDetail(details, "role", admin.admin_role);
+  Object.entries(admin.profile || {}).forEach(([field, value]) => appendDetail(details, field, value));
+  panel.append(details);
+  content.replaceChildren(panel);
 }
 
 async function renderResource(resource) {
@@ -343,18 +855,98 @@ async function archiveRecord(resource, row) {
 
 async function renderUsers() {
   const response = await api("/v1/admin/users");
-  state.rows = response.items;
+  state.rows = response.items.map((row) => ({
+    ...row,
+    name: row.profile?.display_name || row.profile?.full_name || "--",
+    farm_location: [row.profile?.barangay, row.profile?.municipality, row.profile?.province, row.profile?.country].filter(Boolean).join(", ") || "--",
+    access_status: row.admin_role || (row.admin_access_requested ? "pending approval" : "standard user"),
+  }));
   const panel = element("section", "panel glass");
-  panel.append(panelHeader(labels.users[0], labels.users[1]));
-  panel.append(buildTable(state.rows, displayColumns.users, (row) => {
+  const tabs = element("div", "segmented-control");
+  [["users", "Users"], ["admins", "Admins"]].forEach(([value, label]) => {
+    const tab = element("button", state.userTab === value ? "active" : "", label);
+    tab.type = "button";
+    tab.setAttribute("aria-pressed", String(state.userTab === value));
+    tab.addEventListener("click", () => {
+      state.userTab = value;
+      tabs.querySelectorAll("button").forEach((button) => {
+        const active = button === tab;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      renderUserTable(panel);
+    });
+    tabs.append(tab);
+  });
+  const add = element("button", "primary-button", "Add user");
+  add.type = "button";
+  add.addEventListener("click", openInviteUserDialog);
+  panel.append(panelHeader(labels.users[0], labels.users[1], [tabs, add]));
+  content.replaceChildren(panel);
+  renderUserTable(panel);
+}
+
+function openInviteUserDialog() {
+  state.editing = { resource: "user-invite", record: null };
+  $("#dialogEyebrow").textContent = "User management";
+  $("#dialogTitle").textContent = "Add new user";
+  $("#recordError").textContent = "";
+  const fields = $("#recordFields");
+  fields.replaceChildren();
+  [
+    ["first_name", "First name", "text", true],
+    ["last_name", "Last name", "text", true],
+    ["farm_address", "Farm address", "text", true],
+    ["phone", "Phone number (optional)", "tel", false],
+    ["email", "Email address", "email", true],
+  ].forEach(([name, labelText, type, required]) => {
+    const wrap = element("div", name === "farm_address" ? "field-wide" : "");
+    const label = element("label", "", `${labelText}${required ? " *" : ""}`);
+    const input = element("input");
+    input.name = name;
+    input.type = type;
+    input.required = required;
+    label.htmlFor = `field-${name}`;
+    input.id = `field-${name}`;
+    wrap.append(label, input);
+    fields.append(wrap);
+  });
+  const note = element("p", "field-wide approval-note", "Supabase will email an invitation link. The user confirms the address and creates their own password; administrators never see it.");
+  fields.append(note);
+  $("#recordDialog").showModal();
+}
+
+function renderUserTable(panel) {
+  const oldTable = panel.querySelector(".table-wrap");
+  const rows = state.rows.filter((row) => state.userTab === "users"
+    ? !row.admin_role && !row.admin_access_requested
+    : Boolean(row.admin_role || row.admin_access_requested));
+  const table = buildTable(rows, displayColumns[state.userTab], (row) => {
     const actions = [];
+    const privilegedList = state.userTab === "admins";
+    const isSuperadmin = state.admin?.role === "superadmin";
+    const isSelf = row.id === state.admin?.id;
+    if (!privilegedList || isSuperadmin || isSelf) {
+      const edit = element("button", "secondary-button", "Edit");
+      edit.type = "button";
+      edit.addEventListener("click", () => openUserDialog(row));
+      actions.push(edit);
+    }
+    if (!privilegedList || isSuperadmin) {
+      const reset = element("button", "secondary-button", "Reset password");
+      reset.type = "button";
+      reset.addEventListener("click", () => sendPasswordReset(row));
+      actions.push(reset);
+    }
     const suspended = Boolean(row.banned_until && new Date(row.banned_until) > new Date());
-    const button = element("button", suspended ? "secondary-button" : "danger-button", suspended ? "Restore" : "Suspend");
-    button.type = "button";
-    button.addEventListener("click", () => updateSuspension(row, !suspended));
-    actions.push(button);
+    if (!isSelf && (!privilegedList || isSuperadmin)) {
+      const button = element("button", suspended ? "secondary-button" : "danger-button", suspended ? "Restore" : "Suspend");
+      button.type = "button";
+      button.addEventListener("click", () => updateSuspension(row, !suspended));
+      actions.push(button);
+    }
     const role = String(row.admin_role || "").toLowerCase();
-    if (state.admin?.role === "superadmin" && row.id !== state.admin.id && role !== "superadmin") {
+    if (state.userTab === "admins" && state.admin?.role === "superadmin" && row.id !== state.admin.id && role !== "superadmin") {
       const approved = role === "admin";
       const roleButton = element("button", approved ? "danger-button" : "secondary-button", approved ? "Revoke admin" : "Approve admin");
       roleButton.type = "button";
@@ -362,8 +954,37 @@ async function renderUsers() {
       actions.push(roleButton);
     }
     return actions;
-  }));
-  content.replaceChildren(panel);
+  });
+  if (oldTable) oldTable.replaceWith(table);
+  else panel.append(table);
+}
+
+function openUserDialog(user) {
+  state.editing = { resource: "user-profile", record: user };
+  $("#dialogEyebrow").textContent = user.admin_role ? "Administrator" : "User";
+  $("#dialogTitle").textContent = "Edit profile";
+  $("#recordError").textContent = "";
+  const fields = $("#recordFields");
+  fields.replaceChildren();
+  const emailWrap = element("div", "field-wide readonly-field");
+  const emailLabel = element("label", "", "Email address");
+  const emailInput = element("input");
+  emailInput.value = user.email || "";
+  emailInput.readOnly = true;
+  emailWrap.append(emailLabel, emailInput, element("small", "field-help", "Email changes must be confirmed by the account owner from a signed-in CropCare session."));
+  fields.append(emailWrap);
+  ["full_name", "display_name", "phone", "barangay", "municipality", "province", "country", "preferred_language"].forEach((field) => {
+    fields.append(buildField(field, user.profile?.[field], false));
+  });
+  $("#recordDialog").showModal();
+}
+
+async function sendPasswordReset(user) {
+  if (!window.confirm(`Send a secure password reset email to ${user.email}?`)) return;
+  try {
+    await api(`/v1/admin/users/${encodeURIComponent(user.id)}/password-reset`, { method: "POST" });
+    showStatus("Password reset email sent by Supabase.");
+  } catch (failure) { showStatus(failure.message, true); }
 }
 
 async function updateAdminRole(user, approved) {
@@ -470,12 +1091,59 @@ async function saveRecord(event) {
     else if (dateFields.has(key)) data[key] = value ? new Date(String(value)).toISOString() : null;
     else data[key] = value;
   });
-  booleanFields.forEach((field) => {
-    if (state.catalog[resource].editable.includes(field)) data[field] = event.currentTarget.elements[field]?.checked === true;
-  });
+  if (state.catalog[resource]) {
+    booleanFields.forEach((field) => {
+      const input = event.currentTarget.elements[field];
+      if (state.catalog[resource].editable.includes(field) && input) data[field] = input.checked === true;
+    });
+  }
   const error = $("#recordError");
   error.textContent = "";
   try {
+    if (resource === "user-invite") {
+      await api("/v1/admin/users/invite", { method: "POST", body: JSON.stringify(data) });
+      $("#recordDialog").close();
+      showStatus("Invitation sent. The user must confirm their email and create a password.");
+      state.userTab = "users";
+      await renderUsers();
+      return;
+    }
+    if (resource === "user-profile") {
+      await api(`/v1/admin/users/${encodeURIComponent(record.id)}/profile`, { method: "PATCH", body: JSON.stringify(data) });
+      $("#recordDialog").close();
+      showStatus("Profile updated and audit logged.");
+      if (record.id === state.admin?.id) await renderAdminProfile();
+      else await renderUsers();
+      return;
+    }
+    if (resource === "treatment-protocol") {
+      const diseaseId = data.disease_id || record?.id;
+      if (!diseaseId) throw new Error("Select a disease.");
+      const duration = Number(data.expected_duration_days);
+      const dailySteps = [];
+      for (let dayNumber = 1; dayNumber <= duration; dayNumber += 1) {
+        const tasks = String(data[`day_${dayNumber}_tasks`] || "").split("\n").map((task) => task.trim()).filter(Boolean);
+        dailySteps.push({
+          day_number: dayNumber,
+          day_title: data[`day_${dayNumber}_title`] || `Day ${dayNumber}`,
+          tasks,
+          notes: data[`day_${dayNumber}_notes`] || null,
+        });
+      }
+      await api(`/v1/admin/treatment-protocols/${encodeURIComponent(diseaseId)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          treatment_title: data.treatment_title,
+          treatment_information: data.treatment_information,
+          expected_duration_days: duration,
+          daily_steps: dailySteps,
+        }),
+      });
+      $("#recordDialog").close();
+      showStatus("Treatment protocol and daily steps saved to Supabase.");
+      await selectSection("treatments");
+      return;
+    }
     const path = record ? `/v1/admin/resources/${resource}/${encodeURIComponent(record.id)}` : `/v1/admin/resources/${resource}`;
     await api(path, { method: record ? "PATCH" : "POST", body: JSON.stringify(data) });
     $("#recordDialog").close();
@@ -486,10 +1154,12 @@ async function saveRecord(event) {
 
 $("#loginForm").addEventListener("submit", signIn);
 $("#registerForm").addEventListener("submit", registerAccount);
+$("#inviteForm").addEventListener("submit", completeInvitation);
 $("#authModeButton").addEventListener("click", () => {
   setAuthMode($("#authModeButton").dataset.mode !== "register");
 });
 $("#signOutButton").addEventListener("click", () => signOut(true));
+$("#adminProfileButton").addEventListener("click", () => selectSection("profile"));
 $("#refreshButton").addEventListener("click", () => selectSection(state.section));
 $("#menuButton").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
 $("#navigation").addEventListener("click", (event) => {
@@ -499,4 +1169,7 @@ $("#navigation").addEventListener("click", (event) => {
 $("#recordForm").addEventListener("submit", saveRecord);
 $("#closeDialogButton").addEventListener("click", () => $("#recordDialog").close());
 $("#cancelDialogButton").addEventListener("click", () => $("#recordDialog").close());
+$("#closeContentDialogButton").addEventListener("click", () => $("#contentDialog").close());
+$("#closeDetailDialogButton").addEventListener("click", () => $("#detailDialog").close());
 window.addEventListener("pagehide", () => { state.token = ""; });
+initializeInvitation();

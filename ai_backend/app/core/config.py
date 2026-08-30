@@ -36,6 +36,14 @@ class Settings(BaseSettings):
         default="",
         alias="SUPABASE_SERVICE_ROLE_KEY",
     )
+    password_reset_redirect_url: str = Field(
+        default="cropcareai://auth/reset-password",
+        alias="PASSWORD_RESET_REDIRECT_URL",
+    )
+    admin_invite_redirect_url: str = Field(
+        default="http://127.0.0.1:8765/admin",
+        alias="ADMIN_INVITE_REDIRECT_URL",
+    )
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5.4-mini", alias="OPENAI_MODEL")
