@@ -37,4 +37,18 @@ void main() {
     expect(input, isA<Uint8List>());
     expect((input as Uint8List).toList(), [255, 128, 0]);
   });
+
+  test('selected crop restricts ranking without inflating probabilities', () {
+    final ranked = const TfliteClassifierCore().rankCandidateIndices(
+      scores: const [0.82, 0.11, 0.07],
+      labels: const [
+        'tomato_early_blight',
+        'squash_powdery_mildew',
+        'tomato_healthy',
+      ],
+      cropType: 'squash',
+    );
+
+    expect(ranked, [1]);
+  });
 }

@@ -44,3 +44,5 @@ class ChatResponse(BaseModel):
     model: str
     in_app_crop_scope: bool = True
     show_treatment_ui: bool = False
+    verified_crop: str = ""
+    verified_disease: str = ""

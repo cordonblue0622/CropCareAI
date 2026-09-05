@@ -150,6 +150,29 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  Future<bool> updateAvatar({
+    required List<int> bytes,
+    required String extension,
+    required String contentType,
+  }) async {
+    try {
+      _currentUser = await authRepository.updateAvatar(
+        bytes: bytes,
+        extension: extension,
+        contentType: contentType,
+      );
+      _errorMessage = null;
+      _infoMessage = 'Profile photo updated.';
+      notifyListeners();
+      return true;
+    } catch (_) {
+      _errorMessage = 'Could not upload profile photo.';
+      _infoMessage = null;
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<bool> requestEmailChange(String email) async {
     try {
       await authRepository.requestEmailChange(

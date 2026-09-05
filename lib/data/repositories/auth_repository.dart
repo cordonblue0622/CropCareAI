@@ -287,6 +287,40 @@ class AuthRepository {
     return user;
   }
 
+  Future<UserModel> updateAvatar({
+    required List<int> bytes,
+    required String extension,
+    required String contentType,
+  }) async {
+    final supabaseUser = supabaseService.currentUser;
+    if (supabaseUser == null) {
+      throw Exception('No active session.');
+    }
+
+    final avatarUrl = await supabaseService.uploadProfileImage(
+      userId: supabaseUser.id,
+      bytes: bytes,
+      extension: extension,
+      contentType: contentType,
+    );
+    final existingProfile = await supabaseService.getProfile(supabaseUser.id);
+    final mergedProfile = <String, dynamic>{
+      if (existingProfile != null) ...existingProfile,
+      'id': supabaseUser.id,
+      'email':
+          supabaseUser.email ?? _cleanString(existingProfile?['email']) ?? '',
+      'avatar_url': avatarUrl,
+      'updated_at': DateTime.now().toIso8601String(),
+    };
+
+    await supabaseService.upsertProfile(mergedProfile);
+    await supabaseService.updateUserMetadata({'avatar_url': avatarUrl});
+
+    final user = _buildUserModel(supabaseUser, profile: mergedProfile);
+    await dbHelper.upsertUser(user.toMap());
+    return user;
+  }
+
   Future<void> requestEmailChange(
     String email, {
     required String emailRedirectTo,

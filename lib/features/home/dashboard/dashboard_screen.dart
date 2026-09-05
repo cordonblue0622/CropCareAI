@@ -194,30 +194,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }).toList(growable: false);
   }
 
-  String _diseaseRiskLabel(DiseaseKnowledgeModel disease) {
-    final severity = disease.severityNotes?.trim();
-    if (severity != null && severity.isNotEmpty) {
-      return severity;
-    }
-    return disease.cropType.name.toUpperCase();
+  String _diseaseCropLabel(DiseaseKnowledgeModel disease) {
+    final crop = disease.cropType.name;
+    return '${crop[0].toUpperCase()}${crop.substring(1)} disease guide';
   }
 
-  Color _diseaseAccentColor(DiseaseKnowledgeModel disease) {
-    final details =
-        '${disease.severityNotes ?? ''} ${disease.cautionNotes ?? ''}'
-            .toLowerCase();
-    if (details.contains('critical') ||
-        details.contains('severe') ||
-        details.contains('high')) {
-      return Colors.redAccent;
+  IconData _weatherIcon(FarmWeatherSnapshot? weather) {
+    if (_isLoadingWeather) return Icons.sync_rounded;
+    if (weather == null) return Icons.cloud_off_outlined;
+    final condition = weather.conditionLabel.toLowerCase();
+    if (condition.contains('thunder')) return Icons.thunderstorm_rounded;
+    if (weather.isWet) return Icons.water_drop_rounded;
+    if (condition.contains('cloud') || condition.contains('overcast')) {
+      return Icons.cloud_rounded;
     }
-    if (details.contains('moderate')) {
-      return Colors.orange;
-    }
-    if (details.contains('low') || details.contains('mild')) {
-      return Colors.amber.shade700;
-    }
-    return AppColors.primaryLight;
+    return Icons.wb_sunny_rounded;
   }
 
   _SmartTipContent _buildSmartTipContent({
@@ -404,7 +395,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     builder: (ctx) => GestureDetector(
                       onTap: () => Scaffold.of(ctx).openDrawer(),
                       child: CircleAvatar(
-                        radius: 20,
+                        radius: 18,
                         backgroundColor: AppColors.surfaceLime,
                         backgroundImage: user?.avatarUrl != null
                             ? CachedNetworkImageProvider(user!.avatarUrl!)
@@ -457,6 +448,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                     ),
                   ),
+                  Tooltip(
+                    message: _weather == null
+                        ? _isLoadingWeather
+                            ? 'Loading farm weather'
+                            : 'Farm weather unavailable'
+                        : '${_weather!.conditionLabel}, ${_weather!.temperatureC.toStringAsFixed(0)}°C',
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        _weatherIcon(_weather),
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 2),
                   Stack(children: [
                     IconButton(
                       icon: const Icon(Icons.notifications_outlined,
@@ -599,17 +611,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (activeCrops.isEmpty) {
       return _emptyState(Icons.energy_savings_leaf_outlined, 'No crops yet.');
     }
-    return SizedBox(
-      height: 130,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: activeCrops.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (_, i) => _VitalityCard(
-          crop: activeCrops[i],
-          onTap: () => _openCropProgress(context, activeCrops[i]),
-        ),
-      ),
+    return _FarmVitalityChart(
+      crops: activeCrops,
+      onCropTap: (crop) => _openCropProgress(context, crop),
     );
   }
 
@@ -723,32 +727,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (activeCrops.isEmpty) {
       return _emptyState(Icons.grass, 'No active crops.');
     }
-    return SizedBox(
-      height: 128,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: activeCrops.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (_, i) {
-          final crop = activeCrops[i];
-          return GestureDetector(
-            onTap: () async {
-              await Navigator.push(
-                ctx,
-                MaterialPageRoute(builder: (_) => CropDetailScreen(crop: crop)),
-              );
-              if (!mounted) return;
-              final user = context.read<AuthProvider>().currentUser;
-              if (user != null) {
-                await context.read<CropsProvider>().fetchCrops(user.id);
-              }
-            },
-            child: _ActiveCropCard(
-              crop: crop,
-              previewImageFuture: _previewImageFor(crop.id),
-            ),
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primaryDark.withValues(alpha: 0.08),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        children: activeCrops.asMap().entries.map((entry) {
+          final crop = entry.value;
+          return Column(
+            children: [
+              _ActiveCropCard(
+                crop: crop,
+                previewImageFuture: _previewImageFor(crop.id),
+                onTap: () async {
+                  await Navigator.push(
+                    ctx,
+                    MaterialPageRoute(
+                      builder: (_) => CropDetailScreen(crop: crop),
+                    ),
+                  );
+                  if (!mounted) return;
+                  final user = context.read<AuthProvider>().currentUser;
+                  if (user != null) {
+                    await context.read<CropsProvider>().fetchCrops(user.id);
+                  }
+                },
+              ),
+              if (entry.key < activeCrops.length - 1)
+                const Divider(height: 1, indent: 82),
+            ],
           );
-        },
+        }).toList(growable: false),
       ),
     );
   }
@@ -810,18 +828,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       );
     }
-    return SizedBox(
-      height: 136,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: items.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (_, i) => _DiseaseCard(
-          name: humanizeDiseaseLabel(items[i].diseaseName),
-          risk: _diseaseRiskLabel(items[i]),
-          color: _diseaseAccentColor(items[i]),
-          onTap: () => _pushLibrary(ctx),
-        ),
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.backgroundWhite,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.borderGreen),
+      ),
+      child: Column(
+        children: items.asMap().entries.map((entry) {
+          final disease = entry.value;
+          return Column(
+            children: [
+              _DiseaseCard(
+                name: humanizeDiseaseLabel(disease.diseaseName),
+                cropLabel: _diseaseCropLabel(disease),
+                onTap: () => _pushLibrary(ctx),
+              ),
+              if (entry.key < items.length - 1)
+                const Divider(height: 1, indent: 62),
+            ],
+          );
+        }).toList(growable: false),
       ),
     );
   }
@@ -925,134 +952,122 @@ class _SearchBar extends StatelessWidget {
   }
 }
 
-class _VitalityCard extends StatelessWidget {
-  final CropModel crop;
-  final VoidCallback onTap;
-  const _VitalityCard({required this.crop, required this.onTap});
+class _FarmVitalityChart extends StatelessWidget {
+  final List<CropModel> crops;
+  final ValueChanged<CropModel> onCropTap;
+
+  const _FarmVitalityChart({required this.crops, required this.onCropTap});
+
+  static const _barColors = [
+    Color(0xFF24A148),
+    Color(0xFF0F91A3),
+    Color(0xFFE76F51),
+    Color(0xFFF2B134),
+    Color(0xFF3D6FB4),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    final score = crop.latestHealthScore ?? 0;
-    String trendLabel = 'Stable';
-    Color trendColor = AppColors.textGray;
-    IconData trendIcon = Icons.trending_flat_rounded;
-    if (crop.latestProgressStatus == ProgressStatus.improving) {
-      trendLabel = 'Improving';
-      trendColor = AppColors.primary;
-      trendIcon = Icons.trending_up_rounded;
-    } else if (crop.latestProgressStatus == ProgressStatus.worsening) {
-      trendLabel = 'Needs attention';
-      trendColor = Colors.red;
-      trendIcon = Icons.trending_down_rounded;
-    }
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 150,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: AppColors.backgroundWhite,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.borderGreen),
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 16, 14, 10),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Colors.white.withValues(alpha: 0.84),
+            AppColors.surfaceMint.withValues(alpha: 0.42),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(crop.cropType.name.toUpperCase(),
-              style: const TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textGray,
-                  letterSpacing: 0.5)),
-          const SizedBox(height: 4),
-          Text(
-            crop.cropName,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textDark,
-            ),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primaryDark.withValues(alpha: 0.10),
+            blurRadius: 22,
+            offset: const Offset(0, 10),
           ),
-          const SizedBox(height: 6),
-          Text('${score.toStringAsFixed(0)}%',
-              style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.textDark)),
-          const Spacer(),
-          SizedBox(
-            height: 24,
-            child: CustomPaint(
-              painter: _SparklinePainter(score: score),
-              size: Size.infinite,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(trendIcon, size: 13, color: trendColor),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  trendLabel,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: trendColor,
-                    fontWeight: FontWeight.w600,
+        ],
+      ),
+      child: Column(
+        children: crops.asMap().entries.map((entry) {
+          final crop = entry.value;
+          final score = (crop.latestHealthScore ?? 0).clamp(0, 100).toDouble();
+          final color = _barColors[entry.key % _barColors.length];
+          final status = switch (crop.latestProgressStatus) {
+            ProgressStatus.improving => 'Improving',
+            ProgressStatus.worsening => 'Needs attention',
+            ProgressStatus.stable => 'Stable',
+            _ => 'Awaiting check-in',
+          };
+          return InkWell(
+            onTap: () => onCropTap(crop),
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 7),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          crop.cropName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                      ),
+                      Text(status,
+                          style: const TextStyle(
+                              fontSize: 11, color: AppColors.textGray)),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 38,
+                        child: Text(
+                          '${score.toStringAsFixed(0)}%',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            color: color,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
+                  const SizedBox(height: 6),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      minHeight: 9,
+                      value: score / 100,
+                      backgroundColor: Colors.white.withValues(alpha: 0.72),
+                      valueColor: AlwaysStoppedAnimation<Color>(color),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
-        ]),
+            ),
+          );
+        }).toList(growable: false),
       ),
     );
   }
 }
 
-class _SparklinePainter extends CustomPainter {
-  final double score;
-  const _SparklinePainter({required this.score});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = AppColors.primary
-      ..strokeWidth = 1.5
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-    final s = score.clamp(1.0, 99.0);
-    final pts = [
-      Offset(0, size.height * (1 - (s - 10) / 100).clamp(0.0, 1.0)),
-      Offset(
-          size.width * 0.25, size.height * (1 - (s + 5) / 100).clamp(0.0, 1.0)),
-      Offset(
-          size.width * 0.5, size.height * (1 - (s - 5) / 100).clamp(0.0, 1.0)),
-      Offset(
-          size.width * 0.75, size.height * (1 - (s + 3) / 100).clamp(0.0, 1.0)),
-      Offset(size.width, size.height * (1 - s / 100).clamp(0.0, 1.0)),
-    ];
-    final path = Path()..moveTo(pts[0].dx, pts[0].dy);
-    for (var i = 1; i < pts.length; i++) {
-      path.lineTo(pts[i].dx, pts[i].dy);
-    }
-    canvas.drawPath(path, paint);
-  }
-
-  @override
-  bool shouldRepaint(_SparklinePainter o) => o.score != score;
-}
-
 class _ActiveCropCard extends StatelessWidget {
   final CropModel crop;
   final Future<String?> previewImageFuture;
+  final VoidCallback onTap;
 
   const _ActiveCropCard({
     required this.crop,
     required this.previewImageFuture,
+    required this.onTap,
   });
 
   Color _color(CropStatus s) {
@@ -1070,22 +1085,18 @@ class _ActiveCropCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 128,
-      decoration: BoxDecoration(
-        color: AppColors.backgroundWhite,
-        borderRadius: BorderRadius.circular(10),
-        border: crop.status == CropStatus.recovering
-            ? Border.all(color: Colors.orange, width: 2)
-            : Border.all(color: AppColors.borderGreen),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Stack(children: [
+    final score = crop.latestHealthScore;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Row(children: [
           ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
+            borderRadius: BorderRadius.circular(8),
             child: SizedBox(
-              height: 80,
-              width: double.infinity,
+              height: 54,
+              width: 54,
               child: FutureBuilder<String?>(
                 future: previewImageFuture,
                 builder: (context, snapshot) {
@@ -1103,42 +1114,55 @@ class _ActiveCropCard extends StatelessWidget {
               ),
             ),
           ),
-          Positioned(
-            top: 8,
-            right: 8,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                  color: _color(crop.status),
-                  borderRadius: BorderRadius.circular(8)),
-              child: Text(crop.status.name.toUpperCase(),
-                  style: const TextStyle(
-                      fontSize: 9,
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold)),
-            ),
-          ),
-        ]),
-        Padding(
-          padding: const EdgeInsets.all(8),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(crop.cropName,
-                style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textDark),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis),
-            if (crop.plotCode != null)
-              Text(crop.plotCode!,
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(crop.cropName,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textDark),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 3),
+                Text(
+                  [crop.cropType.name, crop.locationLabel]
+                      .whereType<String>()
+                      .where((value) => value.trim().isNotEmpty)
+                      .join(' • '),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style:
-                      const TextStyle(fontSize: 11, color: AppColors.textGray)),
-          ]),
-        ),
-      ]),
+                      const TextStyle(fontSize: 11, color: AppColors.textGray),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  crop.status.name.toUpperCase(),
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: _color(crop.status),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (score != null)
+            Text(
+              '${score.toStringAsFixed(0)}%',
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+                color: AppColors.textDark,
+              ),
+            ),
+          const SizedBox(width: 4),
+          const Icon(Icons.chevron_right_rounded,
+              size: 20, color: AppColors.textGray),
+        ]),
+      ),
     );
   }
 }
@@ -1277,11 +1301,36 @@ class _TodayTasksCardState extends State<_TodayTasksCard> {
         ]),
         const SizedBox(height: 8),
 
+        if (totalCount > 0) ...[
+          Row(
+            children: [
+              Expanded(
+                child: _TaskMetric(
+                  label: 'Due today',
+                  value: todayTasks.length,
+                  color: AppColors.primary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _TaskMetric(
+                  label: 'Overdue',
+                  value: missedTasks.length,
+                  color: missedTasks.isEmpty
+                      ? AppColors.textGray
+                      : const Color(0xFFD94841),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
+
         // ─── Empty state ──────────────────────────────────────────────────
         if (totalCount == 0)
           const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text('No pending tasks for today. Great job! 🎉',
+              child: Text('No pending tasks for today.',
                   style: TextStyle(color: AppColors.textGray)))
         else ...[
           // ─── Missed tasks ──────────────────────────────────────────────
@@ -1412,21 +1461,17 @@ class _DashboardTaskRow extends StatelessWidget {
           ]),
         ),
         const SizedBox(width: 8),
-        GestureDetector(
-          onTap: onDone,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            decoration: BoxDecoration(
-                color: isMissed ? Colors.orange : AppColors.primary,
-                borderRadius: BorderRadius.circular(8)),
-            child: const Text(
-              'OPEN',
-              style: TextStyle(
-                  fontSize: 11,
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700),
-            ),
+        IconButton.filled(
+          onPressed: onDone,
+          tooltip: 'Open task',
+          style: IconButton.styleFrom(
+            backgroundColor: isMissed ? Colors.orange : AppColors.primary,
+            minimumSize: const Size(34, 34),
+            maximumSize: const Size(34, 34),
+            padding: EdgeInsets.zero,
           ),
+          icon: const Icon(Icons.chevron_right_rounded,
+              size: 20, color: Colors.white),
         ),
       ]),
     );
@@ -1454,6 +1499,44 @@ class _DashboardTaskRow extends StatelessWidget {
       'Dec'
     ];
     return '${months[dt.month - 1]} ${dt.day}';
+  }
+}
+
+class _TaskMetric extends StatelessWidget {
+  final String label;
+  final int value;
+  final Color color;
+
+  const _TaskMetric({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.09),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Text('$value',
+              style: TextStyle(
+                  fontSize: 20, fontWeight: FontWeight.w800, color: color)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(label,
+                style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textGray)),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -1533,50 +1616,53 @@ class _SmartTipContent {
 
 class _DiseaseCard extends StatelessWidget {
   final String name;
-  final String risk;
-  final Color color;
+  final String cropLabel;
   final VoidCallback onTap;
   const _DiseaseCard(
-      {required this.name,
-      required this.risk,
-      required this.color,
-      required this.onTap});
+      {required this.name, required this.cropLabel, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return InkWell(
       onTap: onTap,
-      child: Container(
-        width: 140,
-        decoration: BoxDecoration(
-          color: AppColors.backgroundWhite,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.borderGreen),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-              mainAxisAlignment: MainAxisAlignment.end,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.bug_report_outlined,
-                    color: AppColors.primary, size: 32),
-                const Spacer(),
-                Text(name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: AppColors.textDark,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 14)),
-                Text(risk,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        color: color,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ]),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: AppColors.backgroundGreenLight,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.biotech_outlined,
+                  color: AppColors.primary, size: 21),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: AppColors.textDark,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13)),
+                  const SizedBox(height: 2),
+                  Text(cropLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: AppColors.textGray, fontSize: 11)),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded,
+                color: AppColors.textGray, size: 20),
+          ],
         ),
       ),
     );

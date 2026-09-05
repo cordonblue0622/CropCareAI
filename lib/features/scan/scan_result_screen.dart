@@ -845,29 +845,10 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     required CropType? selectedCropType,
     required DiagnosisModel? diagnosis,
   }) {
-    if (diagnosis != null) {
-      final fromDx =
-          ChatProvider.resolveHintCropType(attachedDiagnosis: diagnosis);
-      // Only use the diagnosis-derived type if it resolved to a non-null value.
-      // Otherwise fall through to the selectedCropType / detection fallbacks
-      // so that crops like pechay (no on-device label) still get a hint.
-      if (fromDx != null) return fromDx;
-    }
-
     if (selectedCropType != null) {
       return selectedCropType.value;
     }
-
-    final primary = _detection?.primaryDetection;
-    if (primary == null) {
-      return null;
-    }
-
-    if (_detection?.status.toLowerCase() != 'ok') {
-      return null;
-    }
-
-    return _tryParseCropType(_detection?.cropType)?.value;
+    return null;
   }
 
   /// User message when the on-device scan did not attach a confident diagnosis.

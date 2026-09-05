@@ -71,8 +71,11 @@ class TfliteClassifierCore {
       throw Exception('The TFLite model returned no predictions.');
     }
 
-    final ranked = List.generate(scores.length, (index) => index)
-      ..sort((a, b) => scores[b].compareTo(scores[a]));
+    final ranked = rankCandidateIndices(
+      scores: scores,
+      labels: labels,
+      cropType: cropType,
+    );
 
     final primaryIndex = ranked.first;
     final rawLabel = labels[primaryIndex];
@@ -206,6 +209,25 @@ class TfliteClassifierCore {
       ),
       notes: notes,
     );
+  }
+
+  List<int> rankCandidateIndices({
+    required List<double> scores,
+    required List<String> labels,
+    String? cropType,
+  }) {
+    final allIndices = List.generate(scores.length, (index) => index);
+    final requestedCrop = cropType?.trim().toLowerCase();
+    final candidates = requestedCrop == null || requestedCrop.isEmpty
+        ? allIndices
+        : allIndices.where((index) {
+            if (index >= labels.length) return false;
+            return _labelSpecFor(labels[index]).cropType?.value ==
+                requestedCrop;
+          }).toList(growable: false);
+    final ranked = candidates.isEmpty ? allIndices : [...candidates];
+    ranked.sort((a, b) => scores[b].compareTo(scores[a]));
+    return ranked;
   }
 
   /// Build the per-image input tensor for EfficientNetB0.

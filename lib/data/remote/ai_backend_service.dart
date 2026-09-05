@@ -512,6 +512,8 @@ class AiBackendChatResponse {
   final String model;
   final bool inAppCropScope;
   final bool showTreatmentUi;
+  final String verifiedCrop;
+  final String verifiedDisease;
 
   const AiBackendChatResponse({
     required this.answer,
@@ -521,6 +523,8 @@ class AiBackendChatResponse {
     required this.model,
     this.inAppCropScope = true,
     this.showTreatmentUi = false,
+    this.verifiedCrop = '',
+    this.verifiedDisease = '',
   });
 
   factory AiBackendChatResponse.fromMap(Map<String, dynamic> map) {
@@ -543,6 +547,8 @@ class AiBackendChatResponse {
       model: (map['model'] as String? ?? 'backend').trim(),
       inAppCropScope: scopeRaw is bool ? scopeRaw : true,
       showTreatmentUi: showRaw is bool ? showRaw : false,
+      verifiedCrop: (map['verified_crop'] as String? ?? '').trim(),
+      verifiedDisease: (map['verified_disease'] as String? ?? '').trim(),
     );
   }
 }

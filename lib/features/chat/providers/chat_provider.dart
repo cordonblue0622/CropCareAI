@@ -384,12 +384,17 @@ class ChatProvider extends ChangeNotifier {
           conversationHistory: conversationHistory,
           hintCropType: resolvedHintCropType,
         );
-        final backendDiseaseName = _inferDiseaseName(backendResponse.answer);
-        final inferredDiseaseName = backendDiseaseName.isNotEmpty
-            ? backendDiseaseName
-            : (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
-                ? attachedDiagnosis!.diseaseName.trim()
-                : '';
+        final parsedDiseaseName = _inferDiseaseName(backendResponse.answer);
+        final backendDiseaseName = backendResponse.verifiedDisease.isNotEmpty
+            ? backendResponse.verifiedDisease
+            : parsedDiseaseName;
+        final inferredDiseaseName = !backendResponse.inAppCropScope
+            ? ''
+            : backendDiseaseName.isNotEmpty
+                ? backendDiseaseName
+                : (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
+                    ? attachedDiagnosis!.diseaseName.trim()
+                    : '';
         final inferredCropType = _inferCropType(
           labelKey: backendDiseaseName.isNotEmpty
               ? null
@@ -397,9 +402,11 @@ class ChatProvider extends ChangeNotifier {
           diseaseName: inferredDiseaseName,
           aiContent: backendResponse.answer,
         );
-        final effectiveCropType = inferredCropType.isNotEmpty
-            ? inferredCropType
-            : (resolvedHintCropType ?? '');
+        final effectiveCropType = backendResponse.verifiedCrop.isNotEmpty
+            ? backendResponse.verifiedCrop
+            : inferredCropType.isNotEmpty
+                ? inferredCropType
+                : (resolvedHintCropType ?? '');
         final inferredLabelKey = backendDiseaseName.isNotEmpty
             ? _inferLabelKey(
                 diseaseName: inferredDiseaseName,
@@ -469,8 +476,7 @@ class ChatProvider extends ChangeNotifier {
             inferredDiseaseName: inferredDiseaseName,
             aiContent: backendResponse.answer,
           ).value,
-          'in_app_crop_scope':
-              backendResponse.inAppCropScope || attachedDiagnosis != null,
+          'in_app_crop_scope': backendResponse.inAppCropScope,
           'show_treatment_card': showTreatmentCard,
           if (showTreatmentCard) 'plan_title': planTitle,
         };
@@ -740,6 +746,13 @@ class ChatProvider extends ChangeNotifier {
     final effectiveHint =
         normalizedHint.isNotEmpty ? normalizedHint : inferredHint;
 
+    if (hasAttachedImage) {
+      return _buildUncertainImageResponse(
+        userMessage,
+        hintCropType: effectiveHint,
+      );
+    }
+
     // If there's an attached diagnosis, provide treatment advice
     if (attachedDiagnosis != null) {
       final kb = _knowledgeBase.firstWhere(
@@ -802,10 +815,7 @@ class ChatProvider extends ChangeNotifier {
       return _buildImageRequiredResponse();
     }
 
-    return _buildUncertainImageResponse(
-      userMessage,
-      hintCropType: effectiveHint,
-    );
+    return _buildImageRequiredResponse();
   }
 
   String _formatKbResponse(DiseaseKnowledgeModel kb) {

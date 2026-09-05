@@ -1,5 +1,7 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:country_picker/country_picker.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../data/models/user_model.dart';
@@ -18,6 +20,40 @@ import '../../../shared/widgets/custom_text_field.dart';
 
 class AccountScreen extends StatelessWidget {
   const AccountScreen({super.key});
+
+  Future<void> _pickProfilePhoto(BuildContext context) async {
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1200,
+      imageQuality: 88,
+    );
+    if (picked == null || !context.mounted) return;
+
+    final bytes = await picked.readAsBytes();
+    if (!context.mounted) return;
+    final extension = picked.name.contains('.')
+        ? picked.name.split('.').last.toLowerCase()
+        : 'jpg';
+    final contentType = switch (extension) {
+      'png' => 'image/png',
+      'webp' => 'image/webp',
+      _ => 'image/jpeg',
+    };
+    final auth = context.read<AuthProvider>();
+    final updated = await auth.updateAvatar(
+      bytes: bytes,
+      extension: extension,
+      contentType: contentType,
+    );
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(updated
+            ? 'Profile photo updated.'
+            : auth.errorMessage ?? 'Could not upload profile photo.'),
+      ),
+    );
+  }
 
   Future<void> _signOut(BuildContext context) async {
     final auth = context.read<AuthProvider>();
@@ -159,21 +195,41 @@ class AccountScreen extends StatelessWidget {
             ),
             child: Row(children: [
               // Avatar
-              Container(
-                width: 80,
-                height: 80,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.primary,
-                  border:
-                      Border.all(color: AppColors.backgroundWhite, width: 3),
-                ),
-                child: Center(
-                  child: Text(initials,
-                      style: const TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white)),
+              GestureDetector(
+                onTap: () => _pickProfilePhoto(context),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    CircleAvatar(
+                      radius: 34,
+                      backgroundColor: AppColors.primary,
+                      backgroundImage: user?.avatarUrl != null
+                          ? CachedNetworkImageProvider(user!.avatarUrl!)
+                          : null,
+                      child: user?.avatarUrl == null
+                          ? Text(initials,
+                              style: const TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white))
+                          : null,
+                    ),
+                    Positioned(
+                      right: -2,
+                      bottom: -2,
+                      child: Container(
+                        width: 25,
+                        height: 25,
+                        decoration: BoxDecoration(
+                          color: AppColors.primaryDark,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: const Icon(Icons.camera_alt_rounded,
+                            size: 13, color: Colors.white),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(width: 16),
@@ -202,7 +258,7 @@ class AccountScreen extends StatelessWidget {
                       ),
                     ),
                     if (formattedLocation != null &&
-                      formattedLocation.isNotEmpty) ...[
+                        formattedLocation.isNotEmpty) ...[
                       const SizedBox(height: 8),
                       Row(
                         children: [

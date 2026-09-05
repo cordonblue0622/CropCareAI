@@ -51,9 +51,9 @@ class AppConstants {
   static const double temporaryScannerMinConfidence = 0.45;
   static const double temporaryScannerProvisionalConfidence = 0.35;
   static const double temporaryScannerProvisionalCropFamilyConfidence = 0.55;
-  static const double temporaryScannerAcceptedConfidence = 0.60;
-  static const double temporaryScannerHintedAcceptedConfidence = 0.30;
-  static const double temporaryScannerAcceptedMargin = 0.15;
+  static const double temporaryScannerAcceptedConfidence = 0.70;
+  static const double temporaryScannerHintedAcceptedConfidence = 0.70;
+  static const double temporaryScannerAcceptedMargin = 0.20;
 
   // ─── Local Database ───────────────────────────────────────────────────────
   static const String dbName = 'cropcare_ai.db';

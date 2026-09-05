@@ -110,6 +110,28 @@ class SupabaseService {
     await _client.from('profiles').upsert(profile);
   }
 
+  Future<void> updateUserMetadata(Map<String, dynamic> data) async {
+    await _client.auth.updateUser(UserAttributes(data: data));
+  }
+
+  Future<String> uploadProfileImage({
+    required String userId,
+    required List<int> bytes,
+    required String extension,
+    required String contentType,
+  }) async {
+    const bucket = 'chat-images';
+    final safeExtension = extension.toLowerCase().replaceAll('.', '');
+    final path =
+        '$userId/profile/avatar-${DateTime.now().millisecondsSinceEpoch}.${safeExtension.isEmpty ? 'jpg' : safeExtension}';
+    await _client.storage.from(bucket).uploadBinary(
+          path,
+          Uint8List.fromList(bytes),
+          fileOptions: FileOptions(contentType: contentType, upsert: false),
+        );
+    return _client.storage.from(bucket).getPublicUrl(path);
+  }
+
   // ─── Generic CRUD (used by SyncService) ───────────────────────────────────
 
   Future<void> upsertRecord({

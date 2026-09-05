@@ -13,6 +13,41 @@ class AppTheme {
         surface: AppColors.backgroundWhite,
         secondary: AppColors.accentOrange,
       ),
+      textTheme: const TextTheme(
+        headlineSmall: TextStyle(
+          fontSize: 20,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0,
+        ),
+        titleLarge: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0,
+        ),
+        titleMedium: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+        titleSmall: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+        bodyLarge: TextStyle(fontSize: 14, height: 1.4, letterSpacing: 0),
+        bodyMedium: TextStyle(fontSize: 13, height: 1.4, letterSpacing: 0),
+        bodySmall: TextStyle(fontSize: 12, height: 1.35, letterSpacing: 0),
+        labelLarge: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+        labelMedium: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0,
+        ),
+      ),
       scaffoldBackgroundColor: AppColors.backgroundCream,
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.transparent,

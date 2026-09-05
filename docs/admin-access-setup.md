@@ -27,6 +27,7 @@ SUPABASE_ANON_KEY=<the app's publishable key>
 SUPABASE_SERVICE_ROLE_KEY=<set privately from Supabase Project Settings>
 PASSWORD_RESET_REDIRECT_URL=cropcareai://auth/reset-password
 ADMIN_INVITE_REDIRECT_URL=https://cropcareai-nxn4.onrender.com/admin
+ADMIN_AUTH_REDIRECT_URL=https://cropcareai-nxn4.onrender.com/admin
 ```
 
 In Render, add them under **cropcare-ai-backend > Environment**. Keep
@@ -39,12 +40,12 @@ Run `docs/supabase-admin-security.sql` once in the Supabase SQL editor.
 Run `docs/supabase-admin-content-management.sql` once to add the disease
 severity and canonical treatment fields used by the card-based library.
 
-In Supabase **Authentication > URL Configuration**, add
-`https://cropcareai-nxn4.onrender.com/admin` to **Redirect URLs**. In
-**Authentication > Email Templates**, keep the Invite user template enabled
-and ensure it links to `{{ .ConfirmationURL }}`. Configure a custom SMTP
-provider for reliable production delivery; the built-in sender is intended
-for limited testing and is rate-limited.
+In Supabase **Authentication > URL Configuration**, set the Site URL to
+`https://cropcareai-nxn4.onrender.com/admin` and add these exact redirect URLs:
+`cropcareai://auth/callback`, `cropcareai://auth/reset-password`, and
+`https://cropcareai-nxn4.onrender.com/admin`.
+The built-in Supabase sender is suitable for limited testing but is rate-limited;
+custom SMTP remains preferable for production delivery.
 
 ## Who can access
 

@@ -62,7 +62,7 @@ Prevention tip:
 5. For a clearly healthy crop, keep the answer practical and brief. In treatment_actions, give 3 to 5 concrete daily care actions rooted in the knowledge excerpts. Do NOT include "upload another photo" as a treatment action.
 6. Prefer organic/IPM first; if you mention chemicals, add brief safety cautions in the answer body.
 7. Keep under 220 words unless the farmer explicitly asks for more detail.
-8. If scanner confidence is below 60%, say the result is uncertain and suggest a clearer photo.
+8. If scanner confidence is below 70%, say the result is uncertain and suggest a clearer photo.
 
 After your answer, output exactly one extra final line and nothing after it. That line must start with CCAI_JSON: followed by compact JSON (no line breaks inside the JSON) with these keys:
 in_app_crop_scope (boolean), show_treatment_ui (boolean), verified_crop (string: tomato, pepper, squash, eggplant, pechay, or empty), verified_disease (string or empty), treatment_actions (array of 3-7 short imperative steps, or empty array).
@@ -103,6 +103,10 @@ _CROP_ALIASES: dict[str, tuple[str, ...]] = {
     "squash": ("squash", "kalabasa"),
     "eggplant": ("eggplant", "talong"),
     "pechay": ("pechay", "bok choy", "bokchoy"),
+}
+
+_CROP_SPECIFIC_PROBLEMS: dict[str, tuple[str, ...]] = {
+    "squash": ("powdery mildew",),
 }
 
 _PRODUCT_QUERY_HINTS = (
@@ -213,6 +217,7 @@ class LlmService:
             is_follow_up=is_follow_up,
             active_crop=active_crop,
             is_product_query=is_product_query,
+            has_image=bool(payload.image_data_url or payload.image_data_urls),
         )
 
         knowledge_text = self._format_knowledge_records(knowledge_records)
@@ -224,9 +229,14 @@ class LlmService:
             user_context_lines.append(f"Recent conversation:\n{conversation_text}")
 
         if active_crop:
-            user_context_lines.append(
-                f"AUTHORITATIVE ACTIVE CROP: {active_crop}. Answer only for {active_crop}; do not default to tomato or another crop unless the farmer explicitly changes crops."
-            )
+            if payload.image_data_url or payload.image_data_urls:
+                user_context_lines.append(
+                    f"FARMER-SELECTED CROP: {active_crop}. Use this to narrow likely conditions, but verify that the photo actually shows this crop. Reject unrelated or non-plant photos instead of forcing a {active_crop} diagnosis."
+                )
+            else:
+                user_context_lines.append(
+                    f"AUTHORITATIVE ACTIVE CROP: {active_crop}. Answer only for {active_crop}; do not default to tomato or another crop unless the farmer explicitly changes crops."
+                )
 
         user_context_lines.append(f"Farmer's latest message: {payload.user_message}")
 
@@ -299,12 +309,15 @@ class LlmService:
             )
             answer_body, meta = self._split_ccai_json(raw_answer)
 
-            if self._has_verified_crop_mismatch(active_crop, meta):
+            selected_crop = self._normalize_verified_crop(
+                payload.hint_crop_type or ""
+            )
+            if self._has_verified_crop_mismatch(selected_crop, meta):
                 return ChatResponse(
                     answer=(
-                        f"I cannot safely give {active_crop} treatment from this result because "
+                        f"I cannot safely give {selected_crop} treatment from this result because "
                         "the crop identification conflicts with the active crop. Please send a clear, "
-                        f"close-up photo of the affected {active_crop} leaf so I can verify it first."
+                        f"close-up photo of the affected {selected_crop} leaf so I can verify it first."
                     ),
                     recommended_actions=[],
                     warnings=[],
@@ -347,6 +360,10 @@ class LlmService:
                 model=self._settings.openai_model,
                 in_app_crop_scope=in_scope,
                 show_treatment_ui=show_ui and bool(recommended_actions),
+                verified_crop=self._normalize_verified_crop(
+                    str(meta.get("verified_crop") or "")
+                ),
+                verified_disease=str(meta.get("verified_disease") or "").strip(),
             )
         except Exception:
             logger.exception("OpenAI chat response failed. Falling back to diagnosis-grounded guidance.")
@@ -358,14 +375,20 @@ class LlmService:
         is_follow_up: bool,
         active_crop: str,
         is_product_query: bool,
+        has_image: bool,
     ) -> str:
         base = _CONVERSATIONAL_PROMPT if is_follow_up else _SYSTEM_PROMPT
 
         extra_rules: list[str] = []
         if active_crop:
-            extra_rules.append(
-                f"AUTHORITATIVE ACTIVE CROP: {active_crop}. Every recommendation must apply to {active_crop}. Never default to tomato or substitute another crop unless the farmer explicitly changes crops."
-            )
+            if has_image:
+                extra_rules.append(
+                    f"EXPECTED CROP FROM USER SELECTION: {active_crop}. This is a strong hint, not visual proof. First verify the image is a real plant and is consistent with {active_crop}. If it is unrelated, non-plant, or clearly another crop, reject the scan and do not provide a diagnosis or treatment."
+                )
+            else:
+                extra_rules.append(
+                    f"AUTHORITATIVE ACTIVE CROP: {active_crop}. Every recommendation must apply to {active_crop}. Never default to tomato or substitute another crop unless the farmer explicitly changes crops."
+                )
         if is_product_query:
             extra_rules.append(
                 "The farmer is asking for product guidance. Prefer product-fit reasoning: identify the active ingredient or product type, explain whether it fits the active crop and likely problem, and do not claim label approval unless you can support it."
@@ -421,6 +444,14 @@ class LlmService:
         payload: ChatRequest,
         knowledge_records: list[dict[str, Any]],
     ) -> str:
+        latest_crop = self._infer_crop_from_text(payload.user_message)
+        if latest_crop:
+            return latest_crop
+
+        latest_problem_crop = self._infer_crop_from_problem(payload.user_message)
+        if latest_problem_crop:
+            return latest_problem_crop
+
         hint_crop = self._normalize_verified_crop(payload.hint_crop_type or "")
         if hint_crop in _SUPPORTED_TREATMENT_CARD_CROPS:
             return hint_crop
@@ -438,6 +469,18 @@ class LlmService:
             + [turn.content for turn in payload.conversation_history[-6:]]
         )
         return self._infer_crop_from_text(recent_text)
+
+    def _infer_crop_from_problem(self, text: str) -> str:
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return ""
+
+        matches = [
+            crop
+            for crop, problems in _CROP_SPECIFIC_PROBLEMS.items()
+            if any(problem in normalized for problem in problems)
+        ]
+        return matches[0] if len(matches) == 1 else ""
 
     def _has_verified_crop_mismatch(
         self,
@@ -688,7 +731,48 @@ class LlmService:
         knowledge_records: list[dict[str, Any]],
     ) -> ChatResponse:
         active_crop = self._resolve_active_crop(payload, knowledge_records)
+        has_image = bool(payload.image_data_url or payload.image_data_urls)
+        if has_image:
+            crop_label = active_crop or "selected crop"
+            return ChatResponse(
+                answer=(
+                    "I cannot verify this photo while online image analysis is unavailable. "
+                    f"The on-device scan is only a preliminary match, so I will not diagnose or recommend treatment for the {crop_label} from it alone. "
+                    "Please try again when connected, or send a clear close-up of the affected leaf from the front and back."
+                ),
+                recommended_actions=[],
+                warnings=[],
+                sources=self._response_sources(
+                    payload,
+                    knowledge_records,
+                    include_openai=False,
+                ),
+                model="knowledge-fallback",
+                in_app_crop_scope=bool(active_crop),
+                show_treatment_ui=False,
+            )
+
         if not self._should_use_diagnosis_template(payload):
+            if knowledge_records and not self._is_greeting(payload.user_message):
+                record = knowledge_records[0]
+                title = str(record.get("title") or "this crop problem").replace("_", " ").strip()
+                summary = str(record.get("summary") or "").strip()
+                answer = f"For {title}: {summary}" if summary else f"I found guidance for {title}."
+                return ChatResponse(
+                    answer=answer,
+                    recommended_actions=[],
+                    warnings=[],
+                    sources=self._response_sources(
+                        payload,
+                        knowledge_records,
+                        include_openai=False,
+                    ),
+                    model="knowledge-fallback",
+                    in_app_crop_scope=bool(active_crop),
+                    show_treatment_ui=False,
+                    verified_crop=active_crop,
+                )
+
             return ChatResponse(
                 answer=self._intro_response(payload.user_message, active_crop),
                 recommended_actions=[],

@@ -4,6 +4,15 @@ from app.core.config import Settings
 from app.schemas.chat import ChatRequest
 from app.services.supabase_service import SupabaseService
 
+
+_CROP_ALIASES: dict[str, tuple[str, ...]] = {
+    "tomato": ("tomato", "kamatis"),
+    "pepper": ("pepper", "bell pepper", "capsicum"),
+    "squash": ("squash", "kalabasa"),
+    "eggplant": ("eggplant", "talong"),
+    "pechay": ("pechay", "bok choy", "bokchoy"),
+}
+
 # Inline fallback knowledge for every label the trained model recognises.
 # Used when Supabase is unavailable or not yet populated.
 # Source: FAO crop-protection guidelines and PCAARRD Philippines recommendations.
@@ -292,6 +301,20 @@ class KnowledgeService:
         label_key = payload.diagnosis.label_key if payload.diagnosis else None
         hint = (payload.hint_crop_type or "").strip().lower() or None
 
+        latest_crop = self._infer_crop_from_text(payload.user_message)
+        latest_matches = self._matching_inline_records(payload.user_message)
+        if latest_crop:
+            crop_type = latest_crop
+            hint = latest_crop
+            disease_name = None
+            label_key = None
+        elif len(latest_matches) == 1:
+            matched_key, matched_record = latest_matches[0]
+            crop_type = matched_key.split("_", 1)[0]
+            hint = crop_type
+            disease_name = str(matched_record.get("title") or "") or None
+            label_key = matched_key
+
         if (crop_type or "").strip() == "" and hint:
             crop_type = hint
 
@@ -325,3 +348,26 @@ class KnowledgeService:
                 return matches[:2]
 
         return []
+
+    def _infer_crop_from_text(self, text: str) -> str | None:
+        normalized = (text or "").strip().lower()
+        for crop, aliases in _CROP_ALIASES.items():
+            if any(alias in normalized for alias in aliases):
+                return crop
+        return None
+
+    def _matching_inline_records(
+        self,
+        text: str,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return []
+
+        matches: list[tuple[str, dict[str, Any]]] = []
+        for label_key, record in _INLINE_KNOWLEDGE.items():
+            title = str(record.get("title") or "").lower()
+            disease_words = label_key.split("_", 1)[-1].replace("_", " ")
+            if disease_words in normalized or disease_words in title and disease_words in normalized:
+                matches.append((label_key, record))
+        return matches

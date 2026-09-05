@@ -22,7 +22,6 @@ import '../../auth/providers/auth_provider.dart';
 import '../../crops/providers/crops_provider.dart';
 import '../providers/chat_provider.dart';
 import '../../../services/text_to_speech_service.dart';
-import '../../home/home_screen.dart';
 import '../widgets/audio_message_player.dart';
 import '../widgets/video_player_view.dart';
 
@@ -197,12 +196,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
 
-    final d = widget.initialDiagnosis;
-    if (d == null) return null;
-    return ChatProvider.resolveHintCropType(
-      attachedDiagnosis: d,
-      explicitHint: null,
-    );
+    return null;
   }
 
   Future<bool> _sendMessage(
@@ -356,7 +350,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
-      bottomNavigationBar: const AppPushedScreenBottomNav(currentIndex: -1),
       appBar: AppBar(
         backgroundColor: AppColors.primaryDark,
         foregroundColor: Colors.white,
