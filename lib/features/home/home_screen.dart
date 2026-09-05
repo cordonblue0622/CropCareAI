@@ -124,14 +124,21 @@ class _BottomNav extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
       decoration: BoxDecoration(
-        color: AppColors.backgroundWhite,
-        border: Border.all(color: AppColors.borderGreen),
+        gradient: LinearGradient(
+          colors: [
+            Colors.white.withValues(alpha: 0.94),
+            AppColors.surfaceMint.withValues(alpha: 0.86),
+          ],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.92)),
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: AppColors.primaryDark.withValues(alpha: 0.12),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
+            color: AppColors.primaryDark.withValues(alpha: 0.16),
+            blurRadius: 24,
+            offset: const Offset(0, 9),
           ),
         ],
       ),
@@ -330,14 +337,21 @@ class AppPushedScreenBottomNav extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
       decoration: BoxDecoration(
-        color: AppColors.backgroundWhite,
-        border: Border.all(color: AppColors.borderGreen),
+        gradient: LinearGradient(
+          colors: [
+            Colors.white.withValues(alpha: 0.94),
+            AppColors.surfaceMint.withValues(alpha: 0.86),
+          ],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.92)),
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: AppColors.primaryDark.withValues(alpha: 0.12),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
+            color: AppColors.primaryDark.withValues(alpha: 0.16),
+            blurRadius: 24,
+            offset: const Offset(0, 9),
           ),
         ],
       ),

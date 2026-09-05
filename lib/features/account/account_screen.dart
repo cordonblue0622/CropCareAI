@@ -2,7 +2,9 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:country_picker/country_picker.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/remote/ai_backend_service.dart';
@@ -10,16 +12,55 @@ import '../auth/providers/auth_provider.dart';
 import '../auth/screens/login_screen.dart';
 import '../auth/widgets/legal_document_sheet.dart';
 import '../chat/providers/chat_provider.dart';
-import '../chat/screens/chat_screen.dart';
 import '../crops/providers/crops_provider.dart';
 import '../notifications/providers/notifications_provider.dart';
-import 'nav_drawer.dart';
 import '../../../features/scan/diagnostic_history_screen.dart';
 import '../../../features/library/library_screen.dart';
 import '../../../shared/widgets/custom_text_field.dart';
+import 'help_faq_screen.dart';
 
 class AccountScreen extends StatelessWidget {
   const AccountScreen({super.key});
+
+  static const String _supportEmail = 'cropcareai.team@gmail.com';
+
+  Future<void> _openDeviceSettings(BuildContext context) async {
+    final opened = await openAppSettings();
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not open Android settings for CropCare AI.'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _emailSupport(
+    BuildContext context, {
+    required String subject,
+    required String body,
+  }) async {
+    final uri = Uri(
+      scheme: 'mailto',
+      path: _supportEmail,
+      queryParameters: {'subject': subject, 'body': body},
+    );
+    var launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      launched = false;
+    }
+    if (!launched && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No email app is available. Email cropcareai.team@gmail.com directly.',
+          ),
+        ),
+      );
+    }
+  }
 
   Future<void> _pickProfilePhoto(BuildContext context) async {
     final picked = await ImagePicker().pickImage(
@@ -160,16 +201,10 @@ class AccountScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
-      drawer: const NavDrawer(),
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
-        leading: Builder(
-          builder: (ctx) => IconButton(
-            icon: const Icon(Icons.menu, color: Colors.white),
-            onPressed: () => Scaffold.of(ctx).openDrawer(),
-          ),
-        ),
+        automaticallyImplyLeading: false,
         title: const Text('My Account',
             style: TextStyle(
                 color: Colors.white,
@@ -185,16 +220,28 @@ class AccountScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(18, 18, 18, 112),
         children: [
-          // Profile header
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
-              color: AppColors.surfaceMint,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.borderGreen),
+              gradient: LinearGradient(
+                colors: [
+                  Colors.white.withValues(alpha: 0.88),
+                  AppColors.surfaceMint.withValues(alpha: 0.68),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.primaryDark.withValues(alpha: 0.07),
+                  blurRadius: 18,
+                  offset: const Offset(0, 7),
+                ),
+              ],
             ),
             child: Row(children: [
-              // Avatar
               GestureDetector(
                 onTap: () => _pickProfilePhoto(context),
                 child: Stack(
@@ -288,8 +335,6 @@ class AccountScreen extends StatelessWidget {
             ]),
           ),
           const SizedBox(height: 20),
-
-          // Farm details card
           _SectionCard(
             title: 'Farm Details',
             children: [
@@ -319,14 +364,31 @@ class AccountScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
-
-          // Management section
+          _SectionCard(
+            title: 'Settings & Preferences',
+            children: [
+              _NavItem(
+                icon: Icons.manage_accounts_outlined,
+                label: 'Edit profile & farm details',
+                subtitle: 'Name, email, phone, and farm location',
+                onTap: () => _showEditProfile(context, user),
+              ),
+              _NavItem(
+                icon: Icons.notifications_active_outlined,
+                label: 'Notification & device permissions',
+                subtitle: 'Manage access in Android Settings',
+                onTap: () => _openDeviceSettings(context),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
           _SectionCard(
             title: 'Crop Management',
             children: [
               _NavItem(
                 icon: Icons.history,
                 label: 'Diagnostic History',
+                subtitle: 'Review previous crop scan results',
                 onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -335,66 +397,83 @@ class AccountScreen extends StatelessWidget {
               _NavItem(
                 icon: Icons.menu_book,
                 label: 'Disease Library',
+                subtitle: 'Browse crop conditions and guidance',
                 onTap: () => Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const LibraryScreen())),
               ),
             ],
           ),
           const SizedBox(height: 16),
-
-          // Support section
           _SectionCard(
             title: 'Support',
             children: [
               _NavItem(
                 icon: Icons.help_outline,
                 label: 'Help & FAQ',
+                subtitle: 'Step-by-step guides and troubleshooting',
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => const ChatScreen(
-                      startFreshSession: true,
-                      initialQuery:
-                          'I need help using CropCare AI. Explain what you can help with in the app, including scans, daily check-ins, treatment plans, crop syncing, and the five supported crops.',
-                    ),
+                    builder: (_) => const HelpFaqScreen(),
                   ),
+                ),
+              ),
+              _NavItem(
+                icon: Icons.mail_outline,
+                label: 'Contact support',
+                subtitle: 'Ask the CropCare AI team for help',
+                onTap: () => _emailSupport(
+                  context,
+                  subject: 'CropCare AI support request',
+                  body: _supportEmailBody,
+                ),
+              ),
+              _NavItem(
+                icon: Icons.bug_report_outlined,
+                label: 'Report a problem',
+                subtitle: 'Send steps and device details by email',
+                onTap: () => _emailSupport(
+                  context,
+                  subject: 'CropCare AI problem report',
+                  body: _problemReportBody,
                 ),
               ),
               _NavItem(
                 icon: Icons.info_outline,
                 label: 'About CropCare AI',
+                subtitle: 'App purpose and version',
                 onTap: () => _showAbout(context),
               ),
             ],
           ),
           const SizedBox(height: 16),
-
           _SectionCard(
             title: 'Legal & Privacy',
             children: [
               _NavItem(
                 icon: Icons.description_outlined,
                 label: 'Terms of Service',
+                subtitle: 'Rules for using CropCare AI',
                 onTap: () =>
                     _showLegalDocument(context, LegalDocument.termsOfService),
               ),
               _NavItem(
                 icon: Icons.privacy_tip_outlined,
                 label: 'Privacy Policy & Your Rights',
+                subtitle: 'Data use, controls, and privacy rights',
                 onTap: () =>
                     _showLegalDocument(context, LegalDocument.privacyPolicy),
               ),
               _NavItem(
                 icon: Icons.health_and_safety_outlined,
                 label: 'AI & Crop Safety Notice',
+                subtitle: 'Important guidance before treatment',
                 onTap: () =>
                     _showLegalDocument(context, LegalDocument.aiSafetyNotice),
               ),
             ],
           ),
           const SizedBox(height: 24),
-
-          // Sign out
           OutlinedButton.icon(
             onPressed: () => _confirmSignOut(context),
             style: OutlinedButton.styleFrom(
@@ -449,21 +528,166 @@ class AccountScreen extends StatelessWidget {
   }
 
   void _showAbout(BuildContext context) {
-    showAboutDialog(
+    showModalBottomSheet<void>(
       context: context,
-      applicationName: 'CropCare AI',
-      applicationVersion: '1.0.1',
-      applicationLegalese: '© 2026 CropCare AI. All rights reserved.',
-      children: const [
-        Padding(
-          padding: EdgeInsets.only(top: 12),
-          child: Text(
-            'AI-powered crop disease diagnosis for vegetable farmers.',
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Material(
+            color: AppColors.backgroundCream,
+            borderRadius: BorderRadius.circular(16),
+            clipBehavior: Clip.antiAlias,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 18, 14, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: AppColors.backgroundGreenLight,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(
+                          Icons.eco_outlined,
+                          color: AppColors.primary,
+                          size: 27,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'CropCare AI',
+                              style: TextStyle(
+                                color: AppColors.textDark,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            Text(
+                              'Version 1.0.4',
+                              style: TextStyle(
+                                color: AppColors.textGray,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(sheetContext).pop(),
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'CropCare AI helps vegetable farmers document crop conditions, organize treatment tasks, and review AI-assisted crop-health guidance.',
+                    style: TextStyle(
+                      color: AppColors.textMedium,
+                      fontSize: 14,
+                      height: 1.55,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(13),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.72),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.borderGreen),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          Icons.health_and_safety_outlined,
+                          color: AppColors.primary,
+                          size: 20,
+                        ),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'AI results are informational estimates. Confirm uncertain diagnoses and treatment decisions with a qualified agricultural professional.',
+                            style: TextStyle(
+                              color: AppColors.textGray,
+                              fontSize: 12,
+                              height: 1.45,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
-      ],
+      ),
     );
   }
+
+  static const String _supportEmailBody = '''Hello CropCare AI Support,
+
+What I need help with:
+[Describe your question]
+
+What I have already tried:
+1. [First step]
+2. [Second step]
+
+Account email:
+[Enter the email used for CropCare AI]
+
+Device and Android version:
+[Enter device details]
+
+App version:
+1.0.4''';
+
+  static const String _problemReportBody = '''Hello CropCare AI Support,
+
+Problem summary:
+[Briefly describe the problem]
+
+Steps to reproduce:
+1. [First step]
+2. [Second step]
+3. [What happened]
+
+Expected result:
+[What you expected]
+
+Exact error message:
+[Enter the message or "None"]
+
+Affected crop or feature:
+[Enter crop name or feature]
+
+Connection type:
+[Wi-Fi, mobile data, or offline]
+
+Date and time observed:
+[Enter date and time]
+
+Account email:
+[Enter the email used for CropCare AI]
+
+Device and Android version:
+[Enter device details]
+
+App version:
+1.0.4''';
 
   void _showEditProfile(BuildContext context, UserModel? user) {
     showModalBottomSheet<void>(
@@ -811,11 +1035,26 @@ class _SectionCard extends StatelessWidget {
       const SizedBox(height: 8),
       Container(
         decoration: BoxDecoration(
-          color: AppColors.backgroundWhite,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.borderGreen),
+          color: Colors.white.withValues(alpha: 0.78),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.92)),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.primaryDark.withValues(alpha: 0.055),
+              blurRadius: 14,
+              offset: const Offset(0, 5),
+            ),
+          ],
         ),
-        child: Column(children: children),
+        child: Column(
+          children: [
+            for (var index = 0; index < children.length; index++) ...[
+              children[index],
+              if (index < children.length - 1)
+                const Divider(height: 1, indent: 54, endIndent: 14),
+            ],
+          ],
+        ),
       ),
     ]);
   }
@@ -833,17 +1072,30 @@ class _RowItem extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
       child: Row(children: [
-        Icon(icon, size: 20, color: AppColors.primary),
+        Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            color: AppColors.backgroundGreenLight,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, size: 18, color: AppColors.primary),
+        ),
         const SizedBox(width: 14),
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label,
-              style: const TextStyle(fontSize: 11, color: AppColors.textGray)),
-          Text(value,
-              style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
-        ]),
+        Expanded(
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label,
+                style:
+                    const TextStyle(fontSize: 11, color: AppColors.textGray)),
+            const SizedBox(height: 2),
+            Text(value,
+                style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textDark)),
+          ]),
+        ),
       ]),
     );
   }
@@ -852,15 +1104,45 @@ class _RowItem extends StatelessWidget {
 class _NavItem extends StatelessWidget {
   final IconData icon;
   final String label;
+  final String? subtitle;
   final VoidCallback onTap;
   const _NavItem(
-      {required this.icon, required this.label, required this.onTap});
+      {required this.icon,
+      required this.label,
+      this.subtitle,
+      required this.onTap});
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: Icon(icon, color: AppColors.primary, size: 22),
-      title: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+      leading: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: AppColors.backgroundGreenLight,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(icon, color: AppColors.primary, size: 20),
+      ),
+      title: Text(
+        label,
+        style: const TextStyle(
+          color: AppColors.textDark,
+          fontSize: 14,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+      subtitle: subtitle == null
+          ? null
+          : Text(
+              subtitle!,
+              style: const TextStyle(
+                color: AppColors.textGray,
+                fontSize: 11,
+                height: 1.35,
+              ),
+            ),
       trailing: const Icon(Icons.chevron_right, color: AppColors.textLightGray),
       onTap: onTap,
     );

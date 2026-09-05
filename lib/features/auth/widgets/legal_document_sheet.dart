@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../core/constants/app_constants.dart';
+import '../../../core/theme/app_colors.dart';
 
 enum LegalDocument { termsOfService, privacyPolicy, aiSafetyNotice }
 
@@ -13,6 +14,51 @@ class LegalDocumentSheet extends StatelessWidget {
         LegalDocument.privacyPolicy => 'Privacy Policy',
         LegalDocument.aiSafetyNotice => 'AI & Crop Safety Notice',
       };
+
+  IconData get _documentIcon => switch (document) {
+        LegalDocument.termsOfService => Icons.description_outlined,
+        LegalDocument.privacyPolicy => Icons.privacy_tip_outlined,
+        LegalDocument.aiSafetyNotice => Icons.health_and_safety_outlined,
+      };
+
+  Color get _documentColor => switch (document) {
+        LegalDocument.termsOfService => AppColors.primary,
+        LegalDocument.privacyPolicy => const Color(0xFF256A72),
+        LegalDocument.aiSafetyNotice => const Color(0xFFB85C18),
+      };
+
+  IconData _sectionIcon(int index) {
+    final icons = switch (document) {
+      LegalDocument.termsOfService => const [
+          Icons.eco_outlined,
+          Icons.account_circle_outlined,
+          Icons.psychology_outlined,
+          Icons.cloud_outlined,
+          Icons.verified_user_outlined,
+          Icons.person_off_outlined,
+          Icons.update_outlined,
+          Icons.mail_outline,
+        ],
+      LegalDocument.privacyPolicy => const [
+          Icons.inventory_2_outlined,
+          Icons.manage_search_outlined,
+          Icons.hub_outlined,
+          Icons.handshake_outlined,
+          Icons.lock_outline,
+          Icons.gavel_outlined,
+          Icons.tune_outlined,
+          Icons.child_care_outlined,
+          Icons.contact_support_outlined,
+        ],
+      LegalDocument.aiSafetyNotice => const [
+          Icons.info_outline,
+          Icons.fact_check_outlined,
+          Icons.perm_media_outlined,
+          Icons.emergency_outlined,
+        ],
+    };
+    return icons[index];
+  }
 
   List<_LegalSection> get _sections => switch (document) {
         LegalDocument.termsOfService => const [
@@ -130,34 +176,193 @@ class LegalDocumentSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return AlertDialog(
-      title: Text(_title),
-      content: SizedBox(
-        width: 480,
-        child: SingleChildScrollView(
+    final size = MediaQuery.sizeOf(context);
+    final horizontalInset = size.width < 600 ? 14.0 : 40.0;
+
+    return Dialog(
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: horizontalInset,
+        vertical: 24,
+      ),
+      backgroundColor: Colors.transparent,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: 620,
+          maxHeight: size.height * 0.86,
+        ),
+        child: Material(
+          color: AppColors.backgroundCream,
+          borderRadius: BorderRadius.circular(16),
+          clipBehavior: Clip.antiAlias,
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Effective date: August 30, 2026',
-                  style: theme.textTheme.bodySmall),
-              const SizedBox(height: 16),
-              for (final section in _sections) ...[
-                Text(section.heading, style: theme.textTheme.titleSmall),
-                const SizedBox(height: 6),
-                Text(section.body),
-                const SizedBox(height: 16),
-              ],
+              Container(
+                padding: const EdgeInsets.fromLTRB(20, 18, 10, 18),
+                decoration: BoxDecoration(
+                  color: _documentColor,
+                  border: Border(
+                    bottom: BorderSide(
+                      color: Colors.black.withValues(alpha: 0.08),
+                    ),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 46,
+                      height: 46,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.16),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.22),
+                        ),
+                      ),
+                      child: Icon(_documentIcon, color: Colors.white, size: 25),
+                    ),
+                    const SizedBox(width: 13),
+                    Expanded(
+                      child: Text(
+                        _title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 19,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon:
+                          const Icon(Icons.close_rounded, color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 22),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: _documentColor.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(7),
+                          border: Border.all(
+                            color: _documentColor.withValues(alpha: 0.2),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.calendar_today_outlined,
+                              size: 14,
+                              color: _documentColor,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Effective August 30, 2026',
+                              style: TextStyle(
+                                color: _documentColor,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      for (var index = 0;
+                          index < _sections.length;
+                          index++) ...[
+                        _LegalSectionCard(
+                          section: _sections[index],
+                          icon: _sectionIcon(index),
+                          color: _documentColor,
+                        ),
+                        if (index < _sections.length - 1)
+                          const SizedBox(height: 10),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
-        ),
-      ],
+    );
+  }
+}
+
+class _LegalSectionCard extends StatelessWidget {
+  final _LegalSection section;
+  final IconData icon;
+  final Color color;
+
+  const _LegalSectionCard({
+    required this.section,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.82),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.borderGreen),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: color, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  section.heading,
+                  style: const TextStyle(
+                    color: AppColors.textDark,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  section.body,
+                  style: const TextStyle(
+                    color: AppColors.textMedium,
+                    fontSize: 13,
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

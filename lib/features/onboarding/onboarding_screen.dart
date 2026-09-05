@@ -1,6 +1,9 @@
+import 'dart:math' as math;
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_colors.dart';
 import '../auth/screens/register_screen.dart';
@@ -12,47 +15,147 @@ class OnboardingScreen extends StatefulWidget {
   State<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
-class _OnboardingScreenState extends State<OnboardingScreen> {
+class _OnboardingScreenState extends State<OnboardingScreen>
+    with SingleTickerProviderStateMixin {
+  static const _pages = [
+    _OnboardingPageData(
+      step: '01',
+      eyebrow: 'SCAN WITH CONFIDENCE',
+      title: 'See crop problems\nmore clearly.',
+      description:
+          'Capture a focused photo of tomato, pechay, pepper, eggplant, or squash and review an AI-assisted crop health assessment.',
+      icon: Icons.document_scanner_rounded,
+      accent: Color(0xFFE4B63E),
+      features: [
+        (Icons.center_focus_strong_rounded, 'Guided crop scanning'),
+        (Icons.health_and_safety_outlined, 'Safety-first recommendations'),
+      ],
+    ),
+    _OnboardingPageData(
+      step: '02',
+      eyebrow: 'ASK NATURALLY',
+      title: 'Your crop assistant,\nready in the field.',
+      description:
+          'Ask by text or voice, attach a crop photo, and get guidance grounded in the crop and symptoms you provide.',
+      icon: Icons.graphic_eq_rounded,
+      accent: Color(0xFF68C990),
+      features: [
+        (Icons.mic_none_rounded, 'Hands-free voice support'),
+        (Icons.chat_bubble_outline_rounded, 'Conversation history'),
+      ],
+    ),
+    _OnboardingPageData(
+      step: '03',
+      eyebrow: 'CARE WITH CONTEXT',
+      title: 'Turn guidance into\nsteady recovery.',
+      description:
+          'Track real crop health scores, complete scheduled care tasks, and review progress from one organized workspace.',
+      icon: Icons.monitor_heart_outlined,
+      accent: Color(0xFFF08A42),
+      features: [
+        (Icons.task_alt_rounded, 'Daily treatment tasks'),
+        (Icons.insights_rounded, 'Health and recovery trends'),
+      ],
+    ),
+  ];
+
   final PageController _controller = PageController();
+  late final AnimationController _liquidController;
   int _page = 0;
+  bool _isFinishing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _liquidController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    )..repeat();
+  }
 
   @override
   void dispose() {
     _controller.dispose();
+    _liquidController.dispose();
     super.dispose();
   }
 
   Future<void> _finish() async {
+    if (_isFinishing) return;
+    setState(() => _isFinishing = true);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(AppConstants.keyOnboardingDone, true);
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const RegisterScreen()));
-    }
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const RegisterScreen()),
+    );
   }
 
-  void _next() {
-    if (_page < 2) {
-      _controller.nextPage(
-          duration: const Duration(milliseconds: 380), curve: Curves.easeInOut);
-    } else {
-      _finish();
+  Future<void> _next() async {
+    if (_page == _pages.length - 1) {
+      await _finish();
+      return;
     }
+    await _controller.nextPage(
+      duration: const Duration(milliseconds: 520),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: AppColors.primaryDark,
       body: Stack(
+        fit: StackFit.expand,
         children: [
-          PageView(
-            controller: _controller,
-            onPageChanged: (i) => setState(() => _page = i),
-            children: [
-              _Page1(onNext: _next),
-              _Page2(onNext: _next),
-              _Page3(onFinish: _finish),
-            ],
+          const _Atmosphere(),
+          SafeArea(
+            child: Column(
+              children: [
+                _TopBar(onSkip: _finish),
+                Expanded(
+                  child: PageView.builder(
+                    controller: _controller,
+                    itemCount: _pages.length,
+                    onPageChanged: (page) => setState(() => _page = page),
+                    itemBuilder: (_, index) => _OnboardingPage(
+                      data: _pages[index],
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                  child: _GlassPanel(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: _LiquidProgress(
+                            page: _page,
+                            pageCount: _pages.length,
+                            animation: _liquidController,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        _LiquidActionButton(
+                          key: const ValueKey('onboarding_next_button'),
+                          label: _page == _pages.length - 1
+                              ? 'Start growing'
+                              : 'Continue',
+                          icon: _page == _pages.length - 1
+                              ? Icons.eco_rounded
+                              : Icons.arrow_forward_rounded,
+                          isLoading: _isFinishing,
+                          animation: _liquidController,
+                          onPressed: _isFinishing ? null : _next,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -60,446 +163,194 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  PAGE 1 — Identify Crop Diseases Instantly
-// ═══════════════════════════════════════════════════════════════════════════
+class _TopBar extends StatelessWidget {
+  final VoidCallback onSkip;
 
-class _Page1 extends StatelessWidget {
-  final VoidCallback onNext;
-  const _Page1({required this.onNext});
+  const _TopBar({required this.onSkip});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // ── Image section (60 % height) ─────────────────────────────────
-        Expanded(
-          flex: 60,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Color(0xFF1B5E20), Color(0xFF2E7D32)],
-                  ),
-                ),
-              ),
-
-              // Simulated photo overlay
-              Opacity(
-                opacity: 0.35,
-                child: Container(color: const Color(0xFF0A3D1F)),
-              ),
-
-              // "CropCare AI" white italic top-left
-              const SafeArea(
-                child: Padding(
-                  padding: EdgeInsets.all(20),
-                  child: Align(
-                    alignment: Alignment.topLeft,
-                    child: Text(
-                      'CropCare AI',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-              // Orange camera card (bottom-right of image)
-              Positioned(
-                right: 28,
-                bottom: 28,
-                child: Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    color: AppColors.buttonOrange,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.buttonOrange.withValues(alpha: 0.4),
-                        blurRadius: 16,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
-                  ),
-                  child: const Icon(Icons.camera_alt_rounded,
-                      color: Colors.white, size: 38),
-                ),
-              ),
-            ],
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 12, 4),
+      child: Row(
+        children: [
+          Image.asset(
+            'assets/images/cropcare_logo.png',
+            width: 42,
+            height: 42,
+            filterQuality: FilterQuality.high,
           ),
-        ),
+          const SizedBox(width: 10),
+          const Text(
+            'CropCare AI',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const Spacer(),
+          TextButton(
+            onPressed: onSkip,
+            style: TextButton.styleFrom(foregroundColor: Colors.white70),
+            child: const Text('Skip'),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
-        // ── White bottom section ─────────────────────────────────────────
-        Expanded(
-          flex: 40,
-          child: Container(
-            color: AppColors.backgroundCream,
-            padding: const EdgeInsets.fromLTRB(28, 26, 28, 24),
+class _OnboardingPage extends StatelessWidget {
+  final _OnboardingPageData data;
+
+  const _OnboardingPage({required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxHeight < 620;
+        return SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          padding: EdgeInsets.fromLTRB(20, compact ? 8 : 20, 20, 12),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight - 20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Title
-                RichText(
-                  text: const TextSpan(
-                    style: TextStyle(
-                        fontSize: 32,
-                        fontWeight: FontWeight.w900,
-                        height: 1.15),
-                    children: [
-                      TextSpan(
-                          text: 'Identify Crop\n',
-                          style: TextStyle(color: Color(0xFF1A4D2E))),
-                      TextSpan(
-                          text: 'Diseases ',
-                          style: TextStyle(color: AppColors.accentOrange)),
-                      TextSpan(
-                          text: 'Instantly',
-                          style: TextStyle(color: Color(0xFF1A4D2E))),
-                    ],
+                _FeatureVisual(data: data, compact: compact),
+                SizedBox(height: compact ? 22 : 32),
+                Row(
+                  children: [
+                    Container(width: 34, height: 2, color: data.accent),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '${data.eyebrow}  /  ${data.step}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: data.accent,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  data.title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 32,
+                    height: 1.08,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0,
                   ),
                 ),
-                const SizedBox(height: 10),
-
-                // Description
-                RichText(
-                  text: const TextSpan(
-                    style: TextStyle(
-                        fontSize: 14, color: AppColors.textGray, height: 1.55),
-                    children: [
-                      TextSpan(
-                          text:
-                              'Snap a photo or record a short video of your '),
-                      TextSpan(
-                          text: 'tomato, pechay, pepper, eggplant,',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF1A4D2E))),
-                      TextSpan(text: ' or '),
-                      TextSpan(
-                          text: 'squash',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF1A4D2E))),
-                      TextSpan(text: '.'),
-                    ],
+                const SizedBox(height: 13),
+                Text(
+                  data.description,
+                  style: const TextStyle(
+                    color: Color(0xFFDCEAE1),
+                    fontSize: 14,
+                    height: 1.55,
                   ),
                 ),
-
-                const Spacer(),
-                _BottomRow(page: 0, onNext: onNext, label: 'Get Started'),
+                const SizedBox(height: 18),
+                Wrap(
+                  spacing: 9,
+                  runSpacing: 9,
+                  children: data.features
+                      .map(
+                        (feature) => _FeatureChip(
+                          icon: feature.$1,
+                          label: feature.$2,
+                          accent: data.accent,
+                        ),
+                      )
+                      .toList(),
+                ),
               ],
             ),
           ),
-        ),
-      ],
+        );
+      },
     );
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  PAGE 2 — Talk to Your Vegetable Doctor
-// ═══════════════════════════════════════════════════════════════════════════
+class _FeatureVisual extends StatelessWidget {
+  final _OnboardingPageData data;
+  final bool compact;
 
-class _Page2 extends StatelessWidget {
-  final VoidCallback onNext;
-  const _Page2({required this.onNext});
+  const _FeatureVisual({required this.data, required this.compact});
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(28, 20, 28, 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return _GlassPanel(
+      padding: EdgeInsets.all(compact ? 20 : 26),
+      child: SizedBox(
+        height: compact ? 150 : 205,
+        width: double.infinity,
+        child: Stack(
+          alignment: Alignment.center,
           children: [
-            // Step badge
-            const _StepBadge(label: 'STEP 02'),
-            const SizedBox(height: 18),
-
-            // Title
-            RichText(
-              text: const TextSpan(
-                style: TextStyle(height: 1.2),
-                children: [
-                  TextSpan(
-                      text: 'Talk to Your\n',
-                      style: TextStyle(
-                          fontSize: 30,
-                          fontWeight: FontWeight.w900,
-                          color: AppColors.textDark)),
-                  TextSpan(
-                      text: 'Vegetable ',
-                      style: TextStyle(
-                          fontSize: 30,
-                          fontWeight: FontWeight.w900,
-                          color: AppColors.textDark)),
-                  TextSpan(
-                      text: 'Doctor',
-                      style: TextStyle(
-                          fontSize: 30,
-                          fontWeight: FontWeight.w900,
-                          fontStyle: FontStyle.italic,
-                          color: AppColors.accentOrange)),
-                ],
-              ),
+            CustomPaint(
+              size: Size.infinite,
+              painter: _ContourPainter(color: data.accent),
             ),
-            const SizedBox(height: 12),
-
-            // Description
-            RichText(
-              text: const TextSpan(
-                style: TextStyle(
-                    fontSize: 14, color: AppColors.textGray, height: 1.6),
-                children: [
-                  TextSpan(text: 'Use voice commands like '),
-                  TextSpan(
-                      text: '"Start Diagnosis"',
-                      style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF1A5C2E))),
-                  TextSpan(text: ' or '),
-                  TextSpan(
-                      text: '"Show Treatment"',
-                      style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF1A5C2E))),
-                  TextSpan(
-                      text: ' to get instant help while working in the field.'),
-                ],
-              ),
-            ),
-            const SizedBox(height: 22),
-
-            // Voice UI card
             Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+              width: compact ? 106 : 136,
+              height: compact ? 106 : 136,
               decoration: BoxDecoration(
-                color: const Color(0xFFF0F0EE),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Column(
-                children: [
-                  // Mic button
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.primary.withValues(alpha: 0.35),
-                          blurRadius: 14,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: const Icon(Icons.mic_rounded,
-                        color: Colors.white, size: 28),
-                  ),
-                  const SizedBox(height: 14),
-
-                  // Waveform
-                  _Waveform(),
-                  const SizedBox(height: 10),
-
-                  Text(
-                    'LISTENING...',
-                    style: TextStyle(
-                        fontSize: 11,
-                        letterSpacing: 1.4,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.grey.shade500),
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    '"Is my corn healthy?"',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textDark,
-                    ),
+                shape: BoxShape.circle,
+                color: data.accent.withValues(alpha: 0.14),
+                border: Border.all(
+                  color: data.accent.withValues(alpha: 0.7),
+                  width: 1.5,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: data.accent.withValues(alpha: 0.2),
+                    blurRadius: 34,
+                    spreadRadius: 5,
                   ),
                 ],
               ),
+              child: Icon(
+                data.icon,
+                color: Colors.white,
+                size: compact ? 50 : 62,
+              ),
             ),
-            const SizedBox(height: 14),
-
-            // Voice command chips
-            const _VoiceChip(
-                icon: Icons.person_outlined, text: '"Identify this pest"'),
-            const SizedBox(height: 8),
-            const _VoiceChip(
-                icon: Icons.history_rounded, text: '"Read last treatment"'),
-
-            const Spacer(),
-            _BottomRow(page: 1, onNext: onNext, label: 'Next'),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  PAGE 3 — Track Recovery & Get Reminders
-// ═══════════════════════════════════════════════════════════════════════════
-
-class _Page3 extends StatelessWidget {
-  final VoidCallback onFinish;
-  const _Page3({required this.onFinish});
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(28, 20, 28, 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: SingleChildScrollView(
-                physics: const BouncingScrollPhysics(),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Step row
-                    Row(
-                      children: [
-                        Row(
-                          children: List.generate(
-                              3,
-                              (i) => Container(
-                                    width: i == 2 ? 28 : 22,
-                                    height: 4,
-                                    margin: const EdgeInsets.only(right: 4),
-                                    decoration: BoxDecoration(
-                                      color: i == 2
-                                          ? AppColors.primary
-                                          : Colors.grey.shade300,
-                                      borderRadius: BorderRadius.circular(2),
-                                    ),
-                                  )),
-                        ),
-                        const Spacer(),
-                        const Text(
-                          'STEP 3/3',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textGray,
-                            letterSpacing: 0.8,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 18),
-
-                    // Title
-                    RichText(
-                      text: const TextSpan(
-                        style: TextStyle(height: 1.2),
-                        children: [
-                          TextSpan(
-                              text: 'Track Recovery &\n',
-                              style: TextStyle(
-                                  fontSize: 28,
-                                  fontWeight: FontWeight.w900,
-                                  color: AppColors.textDark)),
-                          TextSpan(
-                              text: 'Get Reminders',
-                              style: TextStyle(
-                                  fontSize: 28,
-                                  fontWeight: FontWeight.w900,
-                                  color: AppColors.primary)),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    const Text(
-                      'Follow your personalized treatment plan, mark tasks on your calendar, and see your crops get healthy again.',
-                      style: TextStyle(
-                          fontSize: 14,
-                          color: AppColors.textGray,
-                          height: 1.55),
-                    ),
-                    const SizedBox(height: 18),
-
-                    // Mini calendar
-                    _MiniCalendar(),
-                    const SizedBox(height: 10),
-
-                    // Task card
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(14),
-                        boxShadow: [
-                          BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.06),
-                              blurRadius: 10,
-                              offset: const Offset(0, 3)),
-                        ],
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 40,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFFFF0E0),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Icon(Icons.water_drop_outlined,
-                                color: AppColors.buttonOrange, size: 22),
-                          ),
-                          const SizedBox(width: 12),
-                          const Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('Apply Fungicide',
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      fontSize: 14,
-                                      color: AppColors.textDark)),
-                              Text('Scheduled for 08:30 AM',
-                                  style: TextStyle(
-                                      fontSize: 12, color: AppColors.textGray)),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    // Vitality Index card
-                    _VitalityCard(),
-                    const SizedBox(height: 16),
-                  ],
+            Positioned(
+              right: 4,
+              top: 4,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: Text(
+                  '${data.step} / 03',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
             ),
-            const SizedBox(height: 12),
-            _BottomRow(
-              page: 2,
-              onNext: onFinish,
-              label: 'Finish',
-              trailingIcon: const Icon(Icons.check_circle_outline,
-                  size: 20, color: Colors.white),
-            ),
           ],
         ),
       ),
@@ -507,395 +358,327 @@ class _Page3 extends StatelessWidget {
   }
 }
 
-// ─── Shared sub-widgets ───────────────────────────────────────────────────────
-
-class _BottomRow extends StatelessWidget {
-  final int page;
-  final VoidCallback onNext;
+class _FeatureChip extends StatelessWidget {
+  final IconData icon;
   final String label;
-  final Widget? trailingIcon;
+  final Color accent;
 
-  const _BottomRow({
-    required this.page,
-    required this.onNext,
+  const _FeatureChip({
+    required this.icon,
     required this.label,
-    this.trailingIcon,
+    required this.accent,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Dots
-        Center(
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: List.generate(3, (i) {
-              final active = i == page;
-              return AnimatedContainer(
-                duration: const Duration(milliseconds: 250),
-                margin: const EdgeInsets.symmetric(horizontal: 4),
-                width: active ? 28 : 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: active ? AppColors.primary : Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              );
-            }),
-          ),
-        ),
-        const SizedBox(height: 16),
-
-        // Button
-        SizedBox(
-          width: double.infinity,
-          height: 56,
-          child: ElevatedButton(
-            onPressed: onNext,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(30)),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(label,
-                    style: const TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.w700)),
-                const SizedBox(width: 8),
-                trailingIcon ??
-                    const Icon(Icons.arrow_forward,
-                        size: 18, color: Colors.white),
-              ],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: accent, size: 17),
+          const SizedBox(width: 7),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
 
-class _StepBadge extends StatelessWidget {
+class _GlassPanel extends StatelessWidget {
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+
+  const _GlassPanel({required this.child, required this.padding});
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Container(
+          padding: padding,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.11),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _LiquidProgress extends StatelessWidget {
+  final int page;
+  final int pageCount;
+  final Animation<double> animation;
+
+  const _LiquidProgress({
+    required this.page,
+    required this.pageCount,
+    required this.animation,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Onboarding step ${page + 1} of $pageCount',
+      child: SizedBox(
+        height: 34,
+        child: AnimatedBuilder(
+          animation: animation,
+          builder: (_, __) => CustomPaint(
+            painter: _LiquidProgressPainter(
+              progress: (page + 1) / pageCount,
+              phase: animation.value,
+              activeStep: page,
+              pageCount: pageCount,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LiquidActionButton extends StatelessWidget {
   final String label;
-  const _StepBadge({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-      decoration: BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(
-            color: Colors.white,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.8),
-      ),
-    );
-  }
-}
-
-class _Waveform extends StatelessWidget {
-  final List<double> bars = const [
-    0.4,
-    0.7,
-    1.0,
-    0.6,
-    0.9,
-    0.5,
-    0.8,
-    1.0,
-    0.6,
-    0.4
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 36,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: bars
-            .map((h) => Container(
-                  width: 4,
-                  height: 36 * h,
-                  margin: const EdgeInsets.symmetric(horizontal: 2),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ))
-            .toList(),
-      ),
-    );
-  }
-}
-
-class _VoiceChip extends StatelessWidget {
   final IconData icon;
-  final String text;
-  const _VoiceChip({required this.icon, required this.text});
+  final bool isLoading;
+  final Animation<double> animation;
+  final VoidCallback? onPressed;
+
+  const _LiquidActionButton({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.isLoading,
+    required this.animation,
+    required this.onPressed,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF0F0EE),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: AppColors.textGray),
-          const SizedBox(width: 10),
-          Text(text,
-              style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textMedium)),
-        ],
-      ),
-    );
-  }
-}
-
-class _MiniCalendar extends StatelessWidget {
-  final List<String> days = const ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-
-  bool _isSameDay(DateTime a, DateTime b) {
-    return a.year == b.year && a.month == b.month && a.day == b.day;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final monthLabel = DateFormat('MMMM yyyy').format(now);
-    final weekStart = now.subtract(Duration(days: now.weekday - 1));
-    final visibleDays = List.generate(
-      7,
-      (i) => DateTime(weekStart.year, weekStart.month, weekStart.day + i),
-    );
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withValues(alpha: 0.06),
-              blurRadius: 10,
-              offset: const Offset(0, 3)),
-        ],
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Text(monthLabel,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w800, fontSize: 15)),
-              const Spacer(),
-              Icon(Icons.chevron_left, color: Colors.grey.shade500),
-              Icon(Icons.chevron_right, color: Colors.grey.shade500),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: days
-                .map((d) => SizedBox(
-                      width: 32,
-                      child: Center(
-                        child: Text(d,
-                            style: const TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.textGray)),
-                      ),
-                    ))
-                .toList(),
-          ),
-          const SizedBox(height: 6),
-          // Week row — simplified for demo
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: visibleDays.map((day) {
-              final active = _isSameDay(day, now);
-              final isOutsideCurrentMonth = day.month != now.month;
-              return Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: active ? AppColors.primary : Colors.transparent,
-                  shape: BoxShape.circle,
-                ),
-                child: Center(
-                  child: Text(
-                    '${day.day}',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: active
-                          ? Colors.white
-                          : (isOutsideCurrentMonth
-                              ? Colors.grey.shade400
-                              : AppColors.textDark),
-                    ),
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _VitalityCard extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.bar_chart_rounded,
-                  color: Colors.white70, size: 20),
-              const SizedBox(width: 8),
-              const Text('Vitality Index',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600)),
-              const Spacer(),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Text('+24% Weekly',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600)),
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (_, child) {
+        final glow =
+            0.18 + (math.sin(animation.value * math.pi * 2) + 1) * 0.06;
+        return Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.primaryLight.withValues(alpha: glow),
+                blurRadius: 18,
+                spreadRadius: 1,
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          // Simple line chart mockup
-          CustomPaint(
-            size: const Size(double.infinity, 50),
-            painter: _ChartPainter(),
+          child: child,
+        );
+      },
+      child: FilledButton.icon(
+        onPressed: onPressed,
+        style: FilledButton.styleFrom(
+          minimumSize: const Size(148, 52),
+          backgroundColor: AppColors.primaryLight,
+          foregroundColor: AppColors.primaryDark,
+          disabledBackgroundColor:
+              AppColors.primaryLight.withValues(alpha: 0.6),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
           ),
-          const SizedBox(height: 12),
-          const Row(
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('ESTIMATED RECOVERY',
-                      style: TextStyle(
-                          color: Colors.white60,
-                          fontSize: 10,
-                          letterSpacing: 0.8)),
-                  SizedBox(height: 2),
-                  Text('4 Days Left',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800)),
-                ],
-              ),
-              Spacer(),
-              Icon(Icons.monitor_heart_outlined,
-                  color: Colors.white60, size: 26),
-            ],
-          ),
-        ],
+        ),
+        icon: isLoading
+            ? const SizedBox.square(
+                dimension: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(icon, size: 20),
+        label: Text(
+          label,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+        ),
       ),
     );
   }
 }
 
-class _ChartPainter extends CustomPainter {
+class _LiquidProgressPainter extends CustomPainter {
+  final double progress;
+  final double phase;
+  final int activeStep;
+  final int pageCount;
+
+  const _LiquidProgressPainter({
+    required this.progress,
+    required this.phase,
+    required this.activeStep,
+    required this.pageCount,
+  });
+
   @override
   void paint(Canvas canvas, Size size) {
-    final path = Path();
-    final points = [
-      Offset(0, size.height * 0.8),
-      Offset(size.width * 0.2, size.height * 0.75),
-      Offset(size.width * 0.4, size.height * 0.6),
-      Offset(size.width * 0.55, size.height * 0.55),
-      Offset(size.width * 0.7, size.height * 0.35),
-      Offset(size.width * 0.85, size.height * 0.2),
-      Offset(size.width, size.height * 0.1),
-    ];
+    const railHeight = 10.0;
+    final railTop = (size.height - railHeight) / 2;
+    final rail = RRect.fromRectAndRadius(
+      Rect.fromLTWH(0, railTop, size.width, railHeight),
+      const Radius.circular(5),
+    );
+    canvas.drawRRect(
+      rail,
+      Paint()..color = Colors.white.withValues(alpha: 0.14),
+    );
 
-    path.moveTo(points.first.dx, points.first.dy);
-    for (int i = 1; i < points.length; i++) {
-      final prev = points[i - 1];
-      final curr = points[i];
-      final cpX = (prev.dx + curr.dx) / 2;
-      path.cubicTo(cpX, prev.dy, cpX, curr.dy, curr.dx, curr.dy);
+    final fillWidth = math.max(railHeight, size.width * progress);
+    canvas.save();
+    canvas.clipRRect(rail);
+    final liquidPath = Path()..moveTo(0, size.height);
+    final waveTop = railTop + 1.5;
+    for (double x = 0; x <= fillWidth; x += 2) {
+      final wave = math.sin((x / 16) + phase * math.pi * 2) * 1.5;
+      liquidPath.lineTo(x, waveTop + wave);
     }
-
-    // Fill
-    final fillPath = Path.from(path)
-      ..lineTo(size.width, size.height)
-      ..lineTo(0, size.height)
+    liquidPath
+      ..lineTo(fillWidth, size.height)
       ..close();
-
     canvas.drawPath(
-      fillPath,
+      liquidPath,
       Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Colors.white.withValues(alpha: 0.25),
-            Colors.white.withValues(alpha: 0.02),
-          ],
+        ..shader = const LinearGradient(
+          colors: [Color(0xFFE4B63E), Color(0xFF68C990)],
         ).createShader(Rect.fromLTWH(0, 0, size.width, size.height)),
     );
+    canvas.restore();
 
-    // Line
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = Colors.white
-        ..strokeWidth = 2.5
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // Dot at end
-    canvas.drawCircle(
-      points.last,
-      5,
-      Paint()..color = AppColors.buttonOrange,
-    );
+    for (var index = 0; index < pageCount; index++) {
+      final x = pageCount == 1 ? 0.0 : size.width * index / (pageCount - 1);
+      canvas.drawCircle(
+        Offset(x.clamp(5, size.width - 5), size.height / 2),
+        4,
+        Paint()
+          ..color = index <= activeStep
+              ? Colors.white
+              : Colors.white.withValues(alpha: 0.32),
+      );
+    }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter old) => false;
+  bool shouldRepaint(covariant _LiquidProgressPainter oldDelegate) =>
+      oldDelegate.progress != progress ||
+      oldDelegate.phase != phase ||
+      oldDelegate.activeStep != activeStep;
+}
+
+class _ContourPainter extends CustomPainter {
+  final Color color;
+
+  const _ContourPainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color.withValues(alpha: 0.16)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    for (var ring = 0; ring < 4; ring++) {
+      final inset = 18.0 + ring * 17;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(
+            inset,
+            inset * 0.55,
+            math.max(0, size.width - inset * 2),
+            math.max(0, size.height - inset * 1.1),
+          ),
+          Radius.circular(28 + ring * 9),
+        ),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ContourPainter oldDelegate) =>
+      oldDelegate.color != color;
+}
+
+class _Atmosphere extends StatelessWidget {
+  const _Atmosphere();
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF102F21), Color(0xFF1D5A39), Color(0xFF173D30)],
+          stops: [0, 0.55, 1],
+        ),
+      ),
+      child: CustomPaint(painter: _FieldLinesPainter()),
+    );
+  }
+}
+
+class _FieldLinesPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.045)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    for (var index = -2; index < 12; index++) {
+      final path = Path()
+        ..moveTo(index * 70.0, size.height)
+        ..quadraticBezierTo(
+          size.width * 0.5,
+          size.height * 0.48,
+          size.width * 0.58,
+          0,
+        );
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _OnboardingPageData {
+  final String step;
+  final String eyebrow;
+  final String title;
+  final String description;
+  final IconData icon;
+  final Color accent;
+  final List<(IconData, String)> features;
+
+  const _OnboardingPageData({
+    required this.step,
+    required this.eyebrow,
+    required this.title,
+    required this.description,
+    required this.icon,
+    required this.accent,
+    required this.features,
+  });
 }

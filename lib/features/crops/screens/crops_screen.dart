@@ -199,7 +199,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
                             padding: const EdgeInsets.fromLTRB(18, 0, 18, 112),
                             itemCount: activeCrops.length,
                             separatorBuilder: (_, __) =>
-                                const SizedBox(height: 12),
+                                const SizedBox(height: 8),
                             itemBuilder: (_, i) => GestureDetector(
                               onTap: () async {
                                 await Navigator.push(
@@ -244,7 +244,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
                                 const SizedBox(height: 12),
                                 ...healedCrops.map(
                                   (crop) => Padding(
-                                    padding: const EdgeInsets.only(bottom: 16),
+                                    padding: const EdgeInsets.only(bottom: 10),
                                     child: GestureDetector(
                                       onTap: () async {
                                         await Navigator.push(
@@ -279,7 +279,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
                                 const SizedBox(height: 12),
                                 ...needsHelpCrops.map(
                                   (crop) => Padding(
-                                    padding: const EdgeInsets.only(bottom: 16),
+                                    padding: const EdgeInsets.only(bottom: 10),
                                     child: GestureDetector(
                                       onTap: () async {
                                         await Navigator.push(
@@ -636,24 +636,33 @@ class _CropCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final score = crop.latestHealthScore ?? 0;
+    final score = crop.latestHealthScore?.clamp(0, 100).toDouble();
     final badgeColor = statusColor ?? _statusColor(crop.status);
     final badgeLabel = statusLabel ?? crop.status.name.toUpperCase();
 
     return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.backgroundWhite,
+        color: Colors.white.withValues(alpha: 0.82),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppColors.borderGreen),
+        border: Border.all(color: Colors.white),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primaryDark.withValues(alpha: 0.07),
+            blurRadius: 16,
+            offset: const Offset(0, 7),
+          ),
+        ],
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Image
-        Stack(children: [
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
+            borderRadius: BorderRadius.circular(8),
             child: SizedBox(
-              height: 160,
-              width: double.infinity,
+              width: 88,
+              height: 108,
               child: FutureBuilder<String?>(
                 future: previewImageFuture,
                 builder: (context, snapshot) {
@@ -671,99 +680,152 @@ class _CropCard extends StatelessWidget {
               ),
             ),
           ),
-          Positioned(
-            top: 12,
-            right: 12,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                  color: badgeColor.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(8)),
-              child: Text(badgeLabel,
-                  style: const TextStyle(
-                      fontSize: 10,
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            crop.cropName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textDark,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            [
+                              crop.cropType.name,
+                              if (crop.plotCode?.trim().isNotEmpty ?? false)
+                                'Plot ${crop.plotCode}',
+                            ].join(' • '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppColors.textGray,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Crop options',
+                      icon: const Icon(
+                        Icons.more_vert_rounded,
+                        size: 19,
+                        color: AppColors.textGray,
+                      ),
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                      onPressed: () => _showOptions(context),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: badgeColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                      child: Text(
+                        badgeLabel,
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: badgeColor,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      score == null
+                          ? 'Awaiting check-in'
+                          : '${score.toStringAsFixed(0)}%',
+                      style: TextStyle(
+                        fontSize: score == null ? 10 : 13,
+                        fontWeight: FontWeight.w800,
+                        color: score == null
+                            ? AppColors.textGray
+                            : _progressColor(score),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: (score ?? 0) / 100,
+                    minHeight: 5,
+                    backgroundColor: Colors.grey.shade200,
+                    valueColor: AlwaysStoppedAnimation(
+                      score == null
+                          ? AppColors.textLightGray.withValues(alpha: 0.35)
+                          : _progressColor(score),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.access_time_rounded,
+                      size: 12,
+                      color: AppColors.textLightGray,
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        'Updated ${_timeAgo(crop.updatedAt)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: AppColors.textLightGray,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (completionSummary != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    completionSummary!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      height: 1.25,
+                      color: AppColors.textGray,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
-        ]),
-
-        Padding(
-          padding: const EdgeInsets.all(14),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              if (crop.plotCode != null)
-                Text(
-                  'PLOT ${crop.plotCode}',
-                  style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textGray,
-                      letterSpacing: 0.5),
-                ),
-              const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.more_vert,
-                    size: 20, color: AppColors.textGray),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-                onPressed: () => _showOptions(context),
-              ),
-            ]),
-            Text(crop.cropName,
-                style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.textDark)),
-            const SizedBox(height: 10),
-            Row(children: [
-              const Text('Growth Index',
-                  style: TextStyle(fontSize: 13, color: AppColors.textGray)),
-              const Spacer(),
-              Text(
-                '${score.toStringAsFixed(0)}%',
-                style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: _progressColor(score)),
-              ),
-            ]),
-            const SizedBox(height: 6),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: score / 100,
-                minHeight: 6,
-                backgroundColor: Colors.grey.shade200,
-                valueColor: AlwaysStoppedAnimation(_progressColor(score)),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(children: [
-              const Icon(Icons.access_time,
-                  size: 13, color: AppColors.textLightGray),
-              const SizedBox(width: 4),
-              Text(
-                'Updated ${_timeAgo(crop.updatedAt)}',
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.textLightGray),
-              ),
-            ]),
-            if (completionSummary != null) ...[
-              const SizedBox(height: 10),
-              Text(
-                completionSummary!,
-                style: const TextStyle(
-                  fontSize: 12,
-                  height: 1.4,
-                  color: AppColors.textGray,
-                ),
-              ),
-            ],
-          ]),
-        ),
-      ]),
+        ],
+      ),
     );
   }
 
@@ -821,17 +883,26 @@ class _CropImagePlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final (icon, color) = switch (crop.cropType) {
+      CropType.tomato => (Icons.circle_rounded, const Color(0xFFD94B3D)),
+      CropType.pechay => (Icons.grass_rounded, const Color(0xFF3A8F55)),
+      CropType.pepper => (Icons.spa_rounded, const Color(0xFFDC7A2D)),
+      CropType.eggplant => (Icons.egg_rounded, const Color(0xFF72518A)),
+      CropType.squash => (Icons.eco_rounded, const Color(0xFFD6942B)),
+    };
     return Container(
-      color: AppColors.primaryLight.withOpacity(0.2),
-      child: Center(
-        child: Text(
-          crop.cropType.name[0].toUpperCase(),
-          style: TextStyle(
-            fontSize: 60,
-            fontWeight: FontWeight.bold,
-            color: AppColors.primary.withOpacity(0.3),
-          ),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Colors.white.withValues(alpha: 0.4),
+            color.withValues(alpha: 0.2),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
+      ),
+      child: Center(
+        child: Icon(icon, size: 44, color: color),
       ),
     );
   }

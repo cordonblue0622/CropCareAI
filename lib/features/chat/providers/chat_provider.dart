@@ -295,12 +295,17 @@ class ChatProvider extends ChangeNotifier {
     final uploadedImageUrls = <String>[];
     if (online && hasAttachedImage) {
       for (var index = 0; index < imageAttachments.length; index++) {
-        final uploadedImageUrl = await _supabase.uploadChatImage(
-          userId: userId,
-          messageId: '$msgId-$index',
-          bytes: imageAttachments[index],
-        );
-        if (uploadedImageUrl != null) uploadedImageUrls.add(uploadedImageUrl);
+        try {
+          final uploadedImageUrl = await _supabase.uploadChatImage(
+            userId: userId,
+            messageId: '$msgId-$index',
+            bytes: imageAttachments[index],
+          );
+          if (uploadedImageUrl != null) uploadedImageUrls.add(uploadedImageUrl);
+        } catch (error, stackTrace) {
+          debugPrint('Chat image upload failed; using local image: $error');
+          debugPrintStack(stackTrace: stackTrace);
+        }
       }
     }
     final localImageReferences =
@@ -482,79 +487,26 @@ class ChatProvider extends ChangeNotifier {
         };
       } catch (error) {
         await Future.delayed(const Duration(milliseconds: 500));
-        final fallbackDiseaseName =
-            (attachedDiagnosis?.diseaseName ?? '').trim();
-        final fallbackCropType = (resolvedHintCropType ?? '').isNotEmpty
-            ? resolvedHintCropType!
-            : attachedDiagnosis != null
-                ? _inferCropType(
-                    labelKey: attachedDiagnosis.labelKey,
-                    diseaseName: fallbackDiseaseName,
-                    aiContent: '',
-                  )
-                : '';
-        final fallbackLabelKey =
-            (attachedDiagnosis?.labelKey ?? '').trim().isNotEmpty
-                ? attachedDiagnosis!.labelKey!.trim()
-                : (fallbackDiseaseName.isNotEmpty && fallbackCropType.isNotEmpty
-                    ? _inferLabelKey(
-                        diseaseName: fallbackDiseaseName,
-                        cropType: fallbackCropType,
-                      )
-                    : '');
-        final fallbackActions = _fallbackRecommendedActions(
-          attachedDiagnosis: attachedDiagnosis,
-          inferredDiseaseName: fallbackDiseaseName,
-          inferredCropType: fallbackCropType,
-        );
-        // Assign aiContent first so downstream checks can safely read it.
         aiContent = _buildBackendUnavailableResponse(
-          content,
-          attachedDiagnosis: attachedDiagnosis,
           hasAttachedImage: hasAttachedImage,
-          hintCropType: resolvedHintCropType,
           error: error,
         );
-        final requiresMoreInput = _needsAdditionalInputResponse(aiContent);
-        final effectiveFallbackActions = _resolveRecommendedActions(
-          recommendedActions: requiresMoreInput ? const [] : fallbackActions,
-          inferredDiseaseName: fallbackDiseaseName,
-          inferredCropType: fallbackCropType,
-          allowHealthyFallback: !requiresMoreInput,
-        );
-        final showTreatmentCard = !requiresMoreInput &&
-            !hasShownAddCropSuggestion &&
-            _shouldShowTreatmentCard(
-              attachedDiagnosis: attachedDiagnosis,
-              recommendedActions: effectiveFallbackActions,
-              inferredDiseaseName: fallbackDiseaseName,
-              inferredCropType: fallbackCropType,
-              aiContent: aiContent,
-            );
         aiMetadata = {
           'model': 'local-fallback',
           'sources': const <String>[],
-          'recommended_actions':
-              showTreatmentCard ? effectiveFallbackActions : const <String>[],
+          'recommended_actions': const <String>[],
           'warnings': [
             hasAttachedImage
-                ? 'Online AI backend unavailable; limited offline guidance was used for this image.'
-                : 'Upload a crop photo to get a diagnosis when online AI is unavailable.'
+                ? 'Online AI is unavailable, so the attached image was not diagnosed.'
+                : 'Online AI is unavailable; only general crop-care guidance is shown.'
           ],
           'backend_error': error.toString(),
           'backend_base_url': _aiBackend.baseUrl,
-          'disease_name': fallbackDiseaseName,
-          'crop_type': fallbackCropType,
-          'label_key': fallbackLabelKey,
-          'severity': _resolveConversationSeverity(
-            attachedDiagnosis: attachedDiagnosis,
-            inferredDiseaseName: fallbackDiseaseName,
-            aiContent: aiContent,
-          ).value,
-          'in_app_crop_scope': attachedDiagnosis != null || hasAttachedImage,
-          'show_treatment_card': showTreatmentCard,
-          if (showTreatmentCard)
-            'plan_title': _planTitleForDiagnosis(fallbackDiseaseName),
+          'disease_name': '',
+          'crop_type': '',
+          'label_key': '',
+          'in_app_crop_scope': false,
+          'show_treatment_card': false,
         };
       }
     }
@@ -851,29 +803,28 @@ class ChatProvider extends ChangeNotifier {
         : 'I could not generate a response right now.';
   }
 
-  String _buildBackendUnavailableResponse(
-    String userMessage, {
-    DiagnosisModel? attachedDiagnosis,
+  String _buildBackendUnavailableResponse({
     required bool hasAttachedImage,
-    String? hintCropType,
     Object? error,
   }) {
-    final fallback = _buildAIResponse(
-      userMessage,
-      attachedDiagnosis: attachedDiagnosis,
-      hasAttachedImage: hasAttachedImage,
-      hintCropType: hintCropType,
-    );
     final requiresSignIn = error is AiBackendHttpException &&
         (error.statusCode == 401 || error.statusCode == 403);
     final detail = kDebugMode && error != null
         ? '\n\nDebug: ${_aiBackend.baseUrl} failed with $error'
         : '';
     final intro = requiresSignIn
-        ? 'Online AI requires a signed-in account right now, so I am using offline crop guidance only.'
-        : 'Online AI is unavailable right now, so I am using offline crop guidance only.';
-    return '$intro\n\n'
-        '$fallback$detail';
+        ? 'You are using the offline model because online AI could not verify your account.'
+        : 'You are using the offline model because CropCare AI cannot reach the online service right now.';
+    final imageNote = hasAttachedImage
+        ? '\n\nI saved your photo locally, but I cannot safely identify a crop or disease from it while online analysis is unavailable.'
+        : '';
+    return '$intro$imageNote\n\n'
+        '**General crop-care tips:**\n'
+        '1. Check soil moisture before watering and avoid waterlogged roots.\n'
+        '2. Inspect both sides of leaves for spots, pests, wilting, or spreading damage.\n'
+        '3. Keep foliage dry, improve airflow, and isolate severely affected plants when practical.\n'
+        '4. Avoid applying pesticides or fungicides until the crop and problem are confirmed.\n\n'
+        'Please go online and try again for a crop-specific diagnosis and safer treatment guidance.$detail';
   }
 
   bool _looksLikeGreeting(String text) {

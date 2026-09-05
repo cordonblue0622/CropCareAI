@@ -201,7 +201,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   IconData _weatherIcon(FarmWeatherSnapshot? weather) {
     if (_isLoadingWeather) return Icons.sync_rounded;
-    if (weather == null) return Icons.cloud_off_outlined;
+    if (weather == null) return Icons.cloud_queue_rounded;
     final condition = weather.conditionLabel.toLowerCase();
     if (condition.contains('thunder')) return Icons.thunderstorm_rounded;
     if (weather.isWet) return Icons.water_drop_rounded;
@@ -357,7 +357,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
-      drawer: const NavDrawer(),
       body: RefreshIndicator(
         color: AppColors.primary,
         onRefresh: () async {
@@ -391,9 +390,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               title: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(children: [
-                  Builder(
-                    builder: (ctx) => GestureDetector(
-                      onTap: () => Scaffold.of(ctx).openDrawer(),
+                  Tooltip(
+                    message: 'Open farm management menu',
+                    child: InkWell(
+                      onTap: () => showFarmManagementMenu(context),
+                      customBorder: const CircleBorder(),
                       child: CircleAvatar(
                         radius: 18,
                         backgroundColor: AppColors.surfaceLime,
@@ -635,90 +636,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
     BuildContext context,
     List<CropModel> crops,
   ) async {
-    await showDialog<void>(
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (dialogContext) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'All Active Crop Vitality',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.textDark,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              const Text(
-                'Tap any crop to open its tracked progress.',
-                style: TextStyle(fontSize: 12, color: AppColors.textGray),
-              ),
-              const SizedBox(height: 16),
-              Flexible(
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: crops.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (_, index) {
-                    final crop = crops[index];
-                    final score = crop.latestHealthScore ?? 0;
-                    final trend = switch (crop.latestProgressStatus) {
-                      ProgressStatus.improving => 'Improving',
-                      ProgressStatus.worsening => 'Needs attention',
-                      ProgressStatus.stable => 'Stable',
-                      _ => 'Tracking',
-                    };
-                    return ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text(
-                        crop.cropName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.textDark,
-                        ),
-                      ),
-                      subtitle: Text(
-                        '${crop.cropType.name.toUpperCase()} • $trend',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textGray,
-                        ),
-                      ),
-                      trailing: Text(
-                        '${score.toStringAsFixed(0)}%',
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textDark,
-                        ),
-                      ),
-                      onTap: () async {
-                        Navigator.of(dialogContext).pop();
-                        await _openCropProgress(context, crop);
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: AppColors.primaryDark.withValues(alpha: 0.36),
+      builder: (sheetContext) => _VitalitySheet(
+        crops: crops,
+        onCropTap: (crop) {
+          Navigator.of(sheetContext).pop();
+          _openCropProgress(context, crop);
+        },
       ),
     );
   }
@@ -952,6 +880,327 @@ class _SearchBar extends StatelessWidget {
   }
 }
 
+class _VitalitySheet extends StatelessWidget {
+  final List<CropModel> crops;
+  final ValueChanged<CropModel> onCropTap;
+
+  const _VitalitySheet({required this.crops, required this.onCropTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final measuredScores = crops
+        .map((crop) => crop.latestHealthScore)
+        .whereType<double>()
+        .map((score) => score.clamp(0, 100).toDouble())
+        .toList(growable: false);
+    final averageScore = measuredScores.isEmpty
+        ? null
+        : measuredScores.reduce((total, score) => total + score) /
+            measuredScores.length;
+
+    return FractionallySizedBox(
+      heightFactor: 0.86,
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Colors.white.withValues(alpha: 0.97),
+              AppColors.surfaceMint.withValues(alpha: 0.9),
+            ],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              Center(
+                child: Container(
+                  width: 42,
+                  height: 4,
+                  margin: const EdgeInsets.only(top: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.textGray.withValues(alpha: 0.28),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.66),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.92),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primaryDark.withValues(alpha: 0.08),
+                        blurRadius: 20,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      _VitalityRing(score: averageScore, size: 72),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Farm Vitality',
+                              style: TextStyle(
+                                fontSize: 19,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.textDark,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              averageScore == null
+                                  ? 'No crop health scores recorded yet'
+                                  : 'Average across ${measuredScores.length} of ${crops.length} active crops',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                height: 1.35,
+                                color: AppColors.textGray,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(Icons.close_rounded),
+                        color: AppColors.textGray,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(18, 0, 18, 20),
+                  itemCount: crops.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 9),
+                  itemBuilder: (_, index) => _VitalityCropRow(
+                    crop: crops[index],
+                    onTap: () => onCropTap(crops[index]),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VitalityCropRow extends StatelessWidget {
+  final CropModel crop;
+  final VoidCallback onTap;
+
+  const _VitalityCropRow({required this.crop, required this.onTap});
+
+  String get _trendLabel => switch (crop.latestProgressStatus) {
+        ProgressStatus.improving => 'Improving',
+        ProgressStatus.worsening => 'Needs attention',
+        ProgressStatus.stable => 'Stable',
+        ProgressStatus.insufficientData => 'Awaiting trend',
+        null => 'Awaiting trend',
+      };
+
+  IconData get _trendIcon => switch (crop.latestProgressStatus) {
+        ProgressStatus.improving => Icons.trending_up_rounded,
+        ProgressStatus.worsening => Icons.trending_down_rounded,
+        ProgressStatus.stable => Icons.trending_flat_rounded,
+        ProgressStatus.insufficientData => Icons.more_horiz_rounded,
+        null => Icons.more_horiz_rounded,
+      };
+
+  Color get _statusColor => switch (crop.status) {
+        CropStatus.healthy => AppColors.primary,
+        CropStatus.recovering => Colors.orange,
+        CropStatus.critical => Colors.red,
+        CropStatus.monitoring => const Color(0xFF3D6FB4),
+        CropStatus.archived => AppColors.textGray,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final statusLabel = crop.status.name[0].toUpperCase() +
+        crop.status.name.substring(1).toLowerCase();
+
+    return Material(
+      color: Colors.white.withValues(alpha: 0.7),
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          child: Row(
+            children: [
+              _VitalityRing(score: crop.latestHealthScore, size: 56),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      crop.cropName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      crop.cropType.name.toUpperCase(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textGray,
+                      ),
+                    ),
+                    const SizedBox(height: 7),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 5,
+                      children: [
+                        _VitalityLabel(
+                          icon: Icons.circle,
+                          label: statusLabel,
+                          color: _statusColor,
+                        ),
+                        _VitalityLabel(
+                          icon: _trendIcon,
+                          label: _trendLabel,
+                          color: AppColors.textMedium,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textGray,
+                size: 22,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VitalityRing extends StatelessWidget {
+  final double? score;
+  final double size;
+
+  const _VitalityRing({required this.score, required this.size});
+
+  Color _scoreColor(double value) {
+    if (value >= 70) return AppColors.primary;
+    if (value >= 40) return Colors.orange;
+    return Colors.red;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final normalized = score?.clamp(0, 100).toDouble();
+    final color =
+        normalized == null ? AppColors.textLightGray : _scoreColor(normalized);
+
+    return Semantics(
+      label: normalized == null
+          ? 'Health score not recorded'
+          : 'Health score ${normalized.toStringAsFixed(0)} percent',
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            SizedBox.expand(
+              child: CircularProgressIndicator(
+                value: normalized == null ? 0 : normalized / 100,
+                strokeWidth: size >= 70 ? 7 : 6,
+                strokeCap: StrokeCap.round,
+                backgroundColor: color.withValues(alpha: 0.14),
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+              ),
+            ),
+            Text(
+              normalized == null ? '--' : '${normalized.toStringAsFixed(0)}%',
+              style: TextStyle(
+                fontSize: size >= 70 ? 15 : 12,
+                fontWeight: FontWeight.w900,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VitalityLabel extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  const _VitalityLabel({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 11, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _FarmVitalityChart extends StatelessWidget {
   final List<CropModel> crops;
   final ValueChanged<CropModel> onCropTap;
@@ -992,7 +1241,8 @@ class _FarmVitalityChart extends StatelessWidget {
       child: Column(
         children: crops.asMap().entries.map((entry) {
           final crop = entry.value;
-          final score = (crop.latestHealthScore ?? 0).clamp(0, 100).toDouble();
+          final rawScore = crop.latestHealthScore;
+          final score = rawScore?.clamp(0, 100).toDouble();
           final color = _barColors[entry.key % _barColors.length];
           final status = switch (crop.latestProgressStatus) {
             ProgressStatus.improving => 'Improving',
@@ -1026,14 +1276,16 @@ class _FarmVitalityChart extends StatelessWidget {
                               fontSize: 11, color: AppColors.textGray)),
                       const SizedBox(width: 8),
                       SizedBox(
-                        width: 38,
+                        width: 72,
                         child: Text(
-                          '${score.toStringAsFixed(0)}%',
+                          score == null
+                              ? 'Not scored'
+                              : '${score.toStringAsFixed(0)}%',
                           textAlign: TextAlign.right,
                           style: TextStyle(
-                            fontSize: 13,
+                            fontSize: score == null ? 10 : 13,
                             fontWeight: FontWeight.w800,
-                            color: color,
+                            color: score == null ? AppColors.textGray : color,
                           ),
                         ),
                       ),
@@ -1044,9 +1296,13 @@ class _FarmVitalityChart extends StatelessWidget {
                     borderRadius: BorderRadius.circular(4),
                     child: LinearProgressIndicator(
                       minHeight: 9,
-                      value: score / 100,
+                      value: (score ?? 0) / 100,
                       backgroundColor: Colors.white.withValues(alpha: 0.72),
-                      valueColor: AlwaysStoppedAnimation<Color>(color),
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        score == null
+                            ? AppColors.textLightGray.withValues(alpha: 0.35)
+                            : color,
+                      ),
                     ),
                   ),
                 ],
@@ -1174,14 +1430,27 @@ class _DashboardCropPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final (icon, color) = switch (crop.cropType) {
+      CropType.tomato => (Icons.circle_rounded, const Color(0xFFD94B3D)),
+      CropType.pechay => (Icons.grass_rounded, const Color(0xFF3A8F55)),
+      CropType.pepper => (Icons.spa_rounded, const Color(0xFFDC7A2D)),
+      CropType.eggplant => (Icons.egg_rounded, const Color(0xFF72518A)),
+      CropType.squash => (Icons.eco_rounded, const Color(0xFFD6942B)),
+    };
     return Container(
-      color: AppColors.primaryLight.withOpacity(0.3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        gradient: LinearGradient(
+          colors: [
+            Colors.white.withValues(alpha: 0.38),
+            color.withValues(alpha: 0.18),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
       child: Center(
-        child: Text(crop.cropType.name[0].toUpperCase(),
-            style: TextStyle(
-                fontSize: 36,
-                fontWeight: FontWeight.bold,
-                color: AppColors.primary.withOpacity(0.5))),
+        child: Icon(icon, size: 31, color: color),
       ),
     );
   }
