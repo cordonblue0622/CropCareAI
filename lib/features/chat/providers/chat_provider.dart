@@ -270,7 +270,7 @@ class ChatProvider extends ChangeNotifier {
     final imageAttachments = attachedImageBytesList
         .where((bytes) => bytes.isNotEmpty)
         .map(Uint8List.fromList)
-        .toList(growable: false);
+      .toList();
     if (imageAttachments.isEmpty &&
         attachedImageBytes != null &&
         attachedImageBytes.isNotEmpty) {
@@ -736,7 +736,7 @@ class ChatProvider extends ChangeNotifier {
 
     if (!hasAttachedImage) {
       if (_looksLikeGreeting(lower) || _looksLikeGeneralHelpQuestion(lower)) {
-        return _buildGreetingResponse(effectiveHint);
+        return _buildGreetingResponse(inferredHint);
       }
 
       if (effectiveHint.isNotEmpty) {
@@ -842,9 +842,12 @@ class ChatProvider extends ChangeNotifier {
       'good evening',
     ];
 
-    return greetingPhrases.any(
-      (phrase) => normalized == phrase || normalized.startsWith('$phrase '),
-    );
+    return greetingPhrases.any((phrase) {
+      if (normalized == phrase) return true;
+      if (!normalized.startsWith(phrase)) return false;
+      final suffix = normalized.substring(phrase.length);
+      return suffix.startsWith(RegExp(r'[\s,.!?]'));
+    });
   }
 
   bool _looksLikeGeneralHelpQuestion(String text) {

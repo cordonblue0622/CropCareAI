@@ -195,7 +195,7 @@ class LlmService:
             and len(payload.conversation_history) < 2
             and self._is_greeting(payload.user_message)
         ):
-            active_crop = self._resolve_active_crop(payload, knowledge_records)
+            active_crop = self._infer_crop_from_text(payload.user_message)
             return ChatResponse(
                 answer=self._intro_response(payload.user_message, active_crop),
                 recommended_actions=[],
@@ -538,7 +538,8 @@ class LlmService:
             "good evening",
         )
         return any(
-            normalized == greeting or normalized.startswith(f"{greeting} ")
+            re.match(rf"^{re.escape(greeting)}(?:$|[\s,.!?])", normalized)
+            is not None
             for greeting in greetings
         )
 
@@ -753,6 +754,19 @@ class LlmService:
             )
 
         if not self._should_use_diagnosis_template(payload):
+            if self._is_greeting(payload.user_message):
+                explicit_crop = self._infer_crop_from_text(payload.user_message)
+                return ChatResponse(
+                    answer=self._intro_response(payload.user_message, explicit_crop),
+                    recommended_actions=[],
+                    warnings=[],
+                    sources=[],
+                    model="knowledge-fallback",
+                    in_app_crop_scope=bool(explicit_crop),
+                    show_treatment_ui=False,
+                    verified_crop=explicit_crop,
+                )
+
             if knowledge_records and not self._is_greeting(payload.user_message):
                 record = knowledge_records[0]
                 title = str(record.get("title") or "this crop problem").replace("_", " ").strip()

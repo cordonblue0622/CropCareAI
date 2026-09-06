@@ -214,7 +214,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final trimmed = text.trim();
     final imageAttachments = attachedImageBytesList
         .where((bytes) => bytes.isNotEmpty)
-        .toList(growable: false);
+      .toList();
     if (imageAttachments.isEmpty &&
         attachedImageBytes != null &&
         attachedImageBytes.isNotEmpty) {

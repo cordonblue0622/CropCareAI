@@ -1,7 +1,28 @@
+import asyncio
+
 from app.core.config import Settings
 from app.schemas.chat import ChatRequest, DiagnosisContext
 from app.services.llm_service import LlmService
 from app.services.knowledge_service import KnowledgeService
+
+
+class _TrackingKnowledgeSupabase:
+    def __init__(self) -> None:
+        self.fetch_calls = 0
+
+    async def fetch_knowledge(
+        self,
+        crop_type: str | None,
+        disease_name: str | None,
+        label_key: str | None = None,
+    ) -> list[dict[str, object]]:
+        self.fetch_calls += 1
+        return [
+            {
+                "title": "Tomato Early Blight",
+                "crop_type": "tomato",
+            }
+        ]
 
 
 def test_explicit_crop_hint_overrides_scanner_crop_and_rejects_conflict() -> None:
@@ -101,3 +122,63 @@ def test_text_fallback_answers_matching_disease_instead_of_tomato_intro() -> Non
     assert "squash powdery mildew" in response.answer.lower()
     assert "I can help with your tomato" not in response.answer
     assert response.verified_crop == "squash"
+
+
+def test_generic_greeting_ignores_stale_crop_hint_and_knowledge() -> None:
+    service = LlmService(Settings())
+    payload = ChatRequest(
+        user_message="Hi",
+        hint_crop_type="tomato",
+    )
+
+    response = service._fallback_response(
+        payload,
+        [
+            {
+                "title": "Tomato Early Blight",
+                "crop_type": "tomato",
+                "summary": "A common fungal disease.",
+            }
+        ],
+    )
+
+    assert response.answer == (
+        "Hi. I'm CropCare AI. Tell me the crop and the problem you need help with, "
+        "or send a close leaf photo if you want a diagnosis."
+    )
+    assert response.verified_crop == ""
+    assert response.in_app_crop_scope is False
+
+
+def test_greeting_with_explicit_crop_keeps_that_crop() -> None:
+    service = LlmService(Settings())
+    payload = ChatRequest(
+        user_message="Hello, can you help with my eggplant crop?",
+        hint_crop_type="tomato",
+    )
+
+    response = service._fallback_response(payload, [])
+
+    assert "your eggplant crop" in response.answer
+    assert "your tomato crop" not in response.answer
+    assert response.verified_crop == "eggplant"
+
+
+def test_unrelated_text_does_not_fetch_unfiltered_crop_knowledge() -> None:
+    service = KnowledgeService(
+        Settings(
+            supabase_url="https://example.supabase.co",
+            supabase_service_role_key="test-key",
+        )
+    )
+    tracking_supabase = _TrackingKnowledgeSupabase()
+    service._supabase = tracking_supabase
+
+    records = asyncio.run(
+        service.fetch_relevant_records(
+            ChatRequest(user_message="Please remind me about tomorrow's meeting."),
+        )
+    )
+
+    assert records == []
+    assert tracking_supabase.fetch_calls == 0

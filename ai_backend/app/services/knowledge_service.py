@@ -319,7 +319,12 @@ class KnowledgeService:
             crop_type = hint
 
         # 1. Try Supabase first (authoritative source when populated)
-        if self._settings.supabase_url and self._settings.supabase_service_role_key:
+        has_knowledge_filter = bool(crop_type or disease_name or label_key)
+        if (
+            has_knowledge_filter
+            and self._settings.supabase_url
+            and self._settings.supabase_service_role_key
+        ):
             rows = await self._supabase.fetch_knowledge(
                 crop_type=crop_type,
                 disease_name=disease_name,
