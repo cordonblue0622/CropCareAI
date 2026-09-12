@@ -41,7 +41,7 @@ class AppConstants {
     defaultValue: 'https://cropcareai-nxn4.onrender.com',
   );
 
-  // Shipped on-device classifier (PlantVillage EfficientNetV2S, 38 labels).
+  // Shipped on-device classifier (PlantVillage EfficientNetV2S, 24 labels).
   // The accepted crop types are inferred from the bundled label file at runtime.
   static const String temporaryScannerModelAsset =
       'assets/models/plant_disease_efficientnetv2s.tflite';

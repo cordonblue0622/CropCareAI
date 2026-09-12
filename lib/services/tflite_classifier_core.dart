@@ -32,6 +32,11 @@ class TfliteClassifierCore {
     final inputTensor = interpreter.getInputTensor(0);
     final outputTensor = interpreter.getOutputTensor(0);
     final inputShape = inputTensor.shape;
+    validateModelContract(
+      inputShape: inputShape,
+      outputShape: outputTensor.shape,
+      labelCount: labels.length,
+    );
     final inputHeight = inputShape[1];
     final inputWidth = inputShape[2];
     final isUint8Input =
@@ -209,6 +214,32 @@ class TfliteClassifierCore {
       ),
       notes: notes,
     );
+  }
+
+  void validateModelContract({
+    required List<int> inputShape,
+    required List<int> outputShape,
+    required int labelCount,
+  }) {
+    if (inputShape.length != 4 ||
+        inputShape.first != 1 ||
+        inputShape[1] <= 0 ||
+        inputShape[2] <= 0 ||
+        inputShape[3] != 3) {
+      throw StateError(
+        'Unsupported TFLite input shape $inputShape; expected [1, height, width, 3].',
+      );
+    }
+    if (labelCount <= 0) {
+      throw StateError('The TFLite label file is empty.');
+    }
+    if (outputShape.length != 2 ||
+        outputShape.first != 1 ||
+        outputShape.last != labelCount) {
+      throw StateError(
+        'TFLite model output shape $outputShape does not match $labelCount labels.',
+      );
+    }
   }
 
   List<int> rankCandidateIndices({

@@ -60,6 +60,9 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _textCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
+  AuthProvider? _authProvider;
+  bool _initializationStarted = false;
+  bool _initializationComplete = false;
   bool _sending = false;
   String? _sendErrorMessage;
   Future<void> Function()? _retryFailedSend;
@@ -67,25 +70,65 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        await _init();
-      } catch (error, stackTrace) {
-        debugPrint('Conversation initialization failed: $error');
-        debugPrintStack(stackTrace: stackTrace);
-        if (mounted) {
-          setState(() {
-            _sendErrorMessage =
-                'Conversation could not start. Check your connection and retry.';
-          });
-        }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final auth = context.read<AuthProvider>();
+    if (!identical(_authProvider, auth)) {
+      _authProvider?.removeListener(_handleAuthChanged);
+      _authProvider = auth;
+      auth.addListener(_handleAuthChanged);
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _handleAuthChanged());
+  }
+
+  void _handleAuthChanged() {
+    if (!mounted || _initializationStarted) return;
+    final auth = _authProvider;
+    if (auth == null) return;
+
+    if (auth.currentUser != null) {
+      _initializationStarted = true;
+      setState(() {});
+      unawaited(_initializeConversation());
+      return;
+    }
+
+    if (auth.status == AuthStatus.unauthenticated) {
+      setState(() {
+        _initializationComplete = true;
+        _sendErrorMessage =
+            'Your session has ended. Sign in again to analyze this photo.';
+      });
+    }
+  }
+
+  Future<void> _initializeConversation() async {
+    try {
+      await _init();
+    } catch (error, stackTrace) {
+      debugPrint('Conversation initialization failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      if (mounted) {
+        setState(() {
+          _sendErrorMessage =
+              'Conversation could not start. Check your connection and retry.';
+        });
       }
-    });
+    } finally {
+      if (mounted) {
+        setState(() => _initializationComplete = true);
+      }
+    }
   }
 
   Future<void> _init() async {
     final user = context.read<AuthProvider>().currentUser;
-    if (user == null) return;
+    if (user == null) {
+      throw StateError('Authentication resolved without a current user.');
+    }
     final chat = context.read<ChatProvider>();
     if (widget.startFreshSession) {
       await chat.startNewSession(user.id, cropId: widget.cropId);
@@ -212,9 +255,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_sending) return false;
 
     final trimmed = text.trim();
-    final imageAttachments = attachedImageBytesList
-        .where((bytes) => bytes.isNotEmpty)
-      .toList();
+    final imageAttachments =
+        attachedImageBytesList.where((bytes) => bytes.isNotEmpty).toList();
     if (imageAttachments.isEmpty &&
         attachedImageBytes != null &&
         attachedImageBytes.isNotEmpty) {
@@ -336,6 +378,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _authProvider?.removeListener(_handleAuthChanged);
     _textCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -345,8 +388,15 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     final chat = context.watch<ChatProvider>();
     final messages = chat.currentMessages;
-    final waitingForInitialResponse =
-        messages.isEmpty && (chat.isLoading || chat.isTyping || _sending);
+    final hasInitialScanContext = widget.initialDiagnosis != null ||
+        widget.initialImageBytes?.isNotEmpty == true ||
+        widget.initialIsVideoFrame ||
+        (widget.initialVideoPath?.isNotEmpty ?? false);
+    final waitingForInitialResponse = messages.isEmpty &&
+        (chat.isLoading ||
+            chat.isTyping ||
+            _sending ||
+            (hasInitialScanContext && !_initializationComplete));
 
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,

@@ -573,7 +573,7 @@ class AccountScreen extends StatelessWidget {
                               ),
                             ),
                             Text(
-                              'Version 1.0.5',
+                              'Version 1.0.6',
                               style: TextStyle(
                                 color: AppColors.textGray,
                                 fontSize: 12,
@@ -653,7 +653,7 @@ Device and Android version:
 [Enter device details]
 
 App version:
-1.0.5''';
+1.0.6''';
 
   static const String _problemReportBody = '''Hello CropCare AI Support,
 
@@ -687,7 +687,7 @@ Device and Android version:
 [Enter device details]
 
 App version:
-1.0.5''';
+1.0.6''';
 
   void _showEditProfile(BuildContext context, UserModel? user) {
     showModalBottomSheet<void>(

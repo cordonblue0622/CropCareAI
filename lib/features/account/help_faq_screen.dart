@@ -289,7 +289,7 @@ Device and Android version:
 [Enter device details]
 
 App version:
-1.0.5''';
+1.0.6''';
 
   static const String _problemBody = '''Hello CropCare AI Support,
 
@@ -323,7 +323,7 @@ Device and Android version:
 [Enter device details]
 
 App version:
-1.0.5''';
+1.0.6''';
 }
 
 class _GroupLabel extends StatelessWidget {
