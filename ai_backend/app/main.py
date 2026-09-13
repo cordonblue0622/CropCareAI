@@ -28,7 +28,7 @@ settings = get_settings()
 
 app = FastAPI(
     title="CropCare AI Backend",
-    description="AI orchestration API for v2 TFLite detection, Whisper, and GPT-5.4 mini.",
+    description="AI orchestration API for TFLite detection, Whisper, and OpenAI vision.",
     version=settings.api_version,
     lifespan=lifespan,
 )

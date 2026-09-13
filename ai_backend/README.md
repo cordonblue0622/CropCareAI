@@ -155,7 +155,7 @@ Use Render only for the online augmentation endpoints.
 - `SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `OPENAI_API_KEY`
-- `OPENAI_MODEL=gpt-5.4-mini`
+- `OPENAI_MODEL=gpt-5.6-luna`
 - `ENABLE_MOCK_SERVICES=false`
 - `REQUIRE_AUTH=true`
 - `APP_ENV=production`

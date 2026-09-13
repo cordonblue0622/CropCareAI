@@ -13,6 +13,8 @@ def test_health() -> None:
     assert "models" in payload
     assert sorted(payload["models"].keys()) == [
         "openaiConfigured",
+        "openaiModel",
         "tfliteConfigured",
         "whisperConfigured",
     ]
+    assert payload["models"]["openaiModel"]

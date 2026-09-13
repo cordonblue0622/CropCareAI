@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -50,7 +50,14 @@ class Settings(BaseSettings):
     )
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-5.4-mini", alias="OPENAI_MODEL")
+    openai_model: str = Field(default="gpt-5.6-luna", alias="OPENAI_MODEL")
+
+    @field_validator("openai_model", mode="before")
+    @classmethod
+    def normalize_openai_model(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() == "gpt-5.6 luna":
+            return "gpt-5.6-luna"
+        return value
 
     flutter_command: str = Field(default="flutter", alias="FLUTTER_COMMAND")
     tflite_model_path: str = Field(

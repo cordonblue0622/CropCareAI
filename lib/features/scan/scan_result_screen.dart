@@ -1010,11 +1010,19 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     final isConnected = await connectivity.isConnected;
 
     if (isConnected) {
-      return await aiBackend.detectImage(
-        imageBytes: imageBytes,
-        filename: widget.imageFile.name,
-        cropType: cropType,
-      );
+      try {
+        return await aiBackend.detectImage(
+          imageBytes: imageBytes,
+          filename: widget.imageFile.name,
+          cropType: cropType,
+        );
+      } catch (_) {
+        return localClassifier.classifyImage(
+          imageBytes: imageBytes,
+          filename: widget.imageFile.name,
+          cropType: cropType,
+        );
+      }
     }
 
     return localClassifier.classifyImage(

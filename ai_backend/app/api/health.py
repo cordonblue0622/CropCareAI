@@ -22,5 +22,6 @@ async def health() -> dict[str, object]:
             ),
             "whisperConfigured": bool(settings.whisper_model_size),
             "openaiConfigured": bool(settings.openai_api_key),
+            "openaiModel": settings.openai_model,
         },
     }
