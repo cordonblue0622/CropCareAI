@@ -586,7 +586,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   bool _hasTreatmentCheckIn(String treatmentId) {
     return _progress.any(
       (update) =>
-          !update.isDeleted && update.treatmentId != null && update.treatmentId == treatmentId,
+          !update.isDeleted &&
+          update.treatmentId != null &&
+          update.treatmentId == treatmentId,
     );
   }
 
@@ -1577,7 +1579,7 @@ class _DailyPlanTab extends StatelessWidget {
           )
         else ...[
           _PlanDayHeader(
-            date: DateTime.now(),
+            date: activeDay,
             dayNumber: activeDayNumber,
           ),
           const SizedBox(height: 8),
@@ -2303,6 +2305,8 @@ class _DiagnosesTab extends StatelessWidget {
                         MaterialPageRoute(
                           builder: (_) => ChatScreen(
                             cropId: crop.id,
+                            cropName: crop.cropName,
+                            initialDiagnosis: d,
                             startFreshSession: false,
                           ),
                         ),

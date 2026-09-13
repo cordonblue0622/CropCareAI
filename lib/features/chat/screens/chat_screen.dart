@@ -130,6 +130,7 @@ class _ChatScreenState extends State<ChatScreen> {
       throw StateError('Authentication resolved without a current user.');
     }
     final chat = context.read<ChatProvider>();
+    var loadedExistingSession = false;
     if (widget.startFreshSession) {
       await chat.startNewSession(user.id, cropId: widget.cropId);
     } else if ((widget.initialDiagnosis?.chatSessionId ?? '').isNotEmpty) {
@@ -142,11 +143,11 @@ class _ChatScreenState extends State<ChatScreen> {
           .firstOrNull;
       if (diagnosisSession != null) {
         await chat.loadSession(diagnosisSession);
+        loadedExistingSession = true;
       } else {
         await chat.startNewSession(user.id, cropId: widget.cropId);
       }
-    } else if (widget.cropId != null &&
-        chat.currentSession?.cropId != widget.cropId) {
+    } else if (widget.cropId != null) {
       await chat.fetchSessions(user.id);
       // Load latest session for this crop if one exists
       final existing = chat.sessions
@@ -166,11 +167,15 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       if (existing.isNotEmpty) {
         await chat.loadSession(existing.first);
+        loadedExistingSession = true;
       } else {
         await chat.startNewSession(user.id, cropId: widget.cropId);
       }
     } else if (chat.currentSession == null) {
       await chat.startNewSession(user.id, cropId: widget.cropId);
+    }
+    if (loadedExistingSession) {
+      return;
     }
     if (widget.initialQuery != null && widget.initialQuery!.isNotEmpty) {
       await _sendMessage(
@@ -931,6 +936,9 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 // ── Image bubble (above text, like Messenger) ──
                 if (hasImage)
                   Container(
+                    width: imageBytesList.length == 1
+                        ? 200
+                        : MediaQuery.of(context).size.width * 0.72,
                     height: 200,
                     constraints: BoxConstraints(
                       maxWidth: MediaQuery.of(context).size.width * 0.72,

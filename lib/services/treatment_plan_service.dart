@@ -44,9 +44,7 @@ class TreatmentPlanService {
 
     final occurrences = <TreatmentPlanTask>[];
     for (final action in actions) {
-      for (var day = 1;
-          day <= durationDays;
-          day += action.intervalDays) {
+      for (var day = 1; day <= durationDays; day += action.intervalDays) {
         occurrences.add(
           TreatmentPlanTask(
             day: day,
@@ -178,6 +176,9 @@ class TreatmentPlanService {
   }
 
   static DateTime _dateForDay(DateTime startDate, int day) {
+    if (day <= 1) {
+      return startDate;
+    }
     final startOfDay = DateTime(
       startDate.year,
       startDate.month,

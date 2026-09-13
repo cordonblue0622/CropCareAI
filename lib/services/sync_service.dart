@@ -95,6 +95,12 @@ class SyncService {
               await supabaseService.deleteRecord(
                   table: table, id: payload['id'] as String);
               break;
+            case 'SOFT_DELETE':
+              await supabaseService.softDeleteRecord(
+                table: table,
+                id: payload['id'] as String,
+              );
+              break;
           }
           await dbHelper.markSyncItemDone(itemId);
         } catch (e) {
@@ -340,7 +346,11 @@ class SyncService {
     required String userId,
     required List<Map<String, dynamic>> remoteRows,
   }) async {
-    final localRows = await dbHelper.queryByUserId(table, userId);
+    final localRows = await dbHelper.queryByUserId(
+      table,
+      userId,
+      includeDeleted: true,
+    );
     final localUpdatedAt = <String, String>{
       for (final row in localRows)
         if ((row['id'] as String?)?.trim().isNotEmpty ?? false)
@@ -476,6 +486,18 @@ class SyncService {
       tableName: tableName,
       recordId: recordId,
       operation: 'DELETE',
+      payload: jsonEncode({'id': recordId}),
+    );
+  }
+
+  Future<void> queueSoftDelete({
+    required String tableName,
+    required String recordId,
+  }) async {
+    await dbHelper.addToSyncQueue(
+      tableName: tableName,
+      recordId: recordId,
+      operation: 'SOFT_DELETE',
       payload: jsonEncode({'id': recordId}),
     );
   }

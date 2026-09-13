@@ -107,10 +107,17 @@ class CropsProvider extends ChangeNotifier {
     }
 
     try {
-      final localRows =
-          await _db.queryByUserId(AppConstants.cropsTable, userId);
-      if (localRows.isNotEmpty) {
-        _crops = localRows.map(CropModel.fromMap).toList();
+      final localRows = await _db.queryByUserId(
+        AppConstants.cropsTable,
+        userId,
+        includeDeleted: true,
+      );
+      final visibleLocalRows = localRows.where((row) {
+        final deleted = row['is_deleted'];
+        return deleted != true && deleted != 1;
+      }).toList(growable: false);
+      if (visibleLocalRows.isNotEmpty) {
+        _crops = visibleLocalRows.map(CropModel.fromMap).toList();
         notifyListeners();
       }
 
@@ -484,6 +491,7 @@ class CropsProvider extends ChangeNotifier {
         updated['updated_at'] = now;
       }
       await _db.upsertRow(table, updated);
+      await _sync.queueSoftDelete(tableName: table, recordId: id);
     }
   }
 
@@ -502,6 +510,7 @@ class CropsProvider extends ChangeNotifier {
   ) async {
     for (final id in ids) {
       await _db.hardDelete(table, id);
+      await _sync.queueDelete(tableName: table, recordId: id);
     }
   }
 

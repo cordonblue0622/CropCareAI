@@ -27,6 +27,8 @@ void main() {
       expect(plan.durationDays, 14);
       expect(productTasks.map((task) => task.day), [1, 8]);
       expect(irrigationTasks, hasLength(14));
+      expect(irrigationTasks.first.dueAt, start);
+      expect(irrigationTasks[1].dueAt, DateTime(2026, 7, 28, 9));
       expect(irrigationTasks.last.day, 14);
       expect(productTasks.first.description, contains('follow its label'));
     });
@@ -92,6 +94,8 @@ void main() {
       );
       expect(plan.tasks, hasLength(14));
       expect(plan.tasks.first.title, 'Day 1: Initial inspection');
+      expect(plan.tasks.first.dueAt, start);
+      expect(plan.tasks[1].dueAt, DateTime(2026, 7, 28, 9));
       expect(plan.tasks.first.description, contains('Inspect lower leaves.'));
       expect(plan.tasks.first.description, contains('Why this matters:'));
       expect(plan.tasks.last.day, 14);

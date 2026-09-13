@@ -15,6 +15,7 @@ import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/models/disease_knowledge_model.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../services/connectivity_service.dart';
+import '../../../services/local_classifier_service.dart';
 
 class ChatProvider extends ChangeNotifier {
   static const Set<String> _supportedTreatmentCardCrops = {
@@ -29,6 +30,7 @@ class ChatProvider extends ChangeNotifier {
   final DatabaseHelper _db;
   final AiBackendService _aiBackend;
   final ConnectivityService _connectivity;
+  final LocalClassifierService _localClassifier;
 
   List<ChatSessionModel> _sessions = [];
   List<ChatMessageModel> _currentMessages = [];
@@ -42,10 +44,12 @@ class ChatProvider extends ChangeNotifier {
     required DatabaseHelper db,
     required AiBackendService aiBackend,
     required ConnectivityService connectivity,
+    LocalClassifierService? localClassifier,
   })  : _supabase = supabase,
         _db = db,
         _aiBackend = aiBackend,
-        _connectivity = connectivity;
+      _connectivity = connectivity,
+      _localClassifier = localClassifier ?? LocalClassifierService();
 
   List<ChatSessionModel> get sessions => _sessions;
   List<ChatMessageModel> get currentMessages => _currentMessages;
@@ -277,10 +281,18 @@ class ChatProvider extends ChangeNotifier {
       imageAttachments.add(Uint8List.fromList(attachedImageBytes));
     }
     final hasAttachedImage = imageAttachments.isNotEmpty;
-    final resolvedHintCropType = _resolveConversationCropHint(
-      attachedDiagnosis: attachedDiagnosis,
-      explicitHint: hintCropType,
+    final messageCropType = _inferCropType(
+      labelKey: null,
+      diseaseName: '',
+      aiContent: content,
     );
+    final isFreshUnscopedPhoto = hasAttachedImage && attachedDiagnosis == null;
+    final resolvedHintCropType = isFreshUnscopedPhoto
+        ? (messageCropType.isEmpty ? null : messageCropType)
+        : _resolveConversationCropHint(
+            attachedDiagnosis: attachedDiagnosis,
+            explicitHint: hintCropType,
+          );
     final requiresFreshImage = attachedDiagnosis == null &&
         !hasAttachedImage &&
         _requiresFreshImageForMessage(
@@ -379,9 +391,11 @@ class ChatProvider extends ChangeNotifier {
         }
         final backendResponse = await _aiBackend.sendChatMessage(
           userMessage: content,
-          cropId: attachedDiagnosis?.cropId.isNotEmpty == true
-              ? attachedDiagnosis!.cropId
-              : _currentSession?.cropId,
+          cropId: isFreshUnscopedPhoto
+              ? null
+              : attachedDiagnosis?.cropId.isNotEmpty == true
+                  ? attachedDiagnosis!.cropId
+                  : _currentSession?.cropId,
           diagnosis: attachedDiagnosis,
           imageBytes: imageAttachments.isEmpty ? null : imageAttachments.first,
           imageBytesList: imageAttachments,
@@ -487,21 +501,119 @@ class ChatProvider extends ChangeNotifier {
         };
       } catch (error) {
         await Future.delayed(const Duration(milliseconds: 500));
-        aiContent = _buildBackendUnavailableResponse(
-          hasAttachedImage: hasAttachedImage,
-          error: error,
-        );
-        aiMetadata = {
-          'model': 'local-fallback',
+        if (!online &&
+            attachedDiagnosis != null &&
+            (attachedDiagnosis.confidenceScore ?? 0) >=
+                AppConstants.temporaryScannerAcceptedConfidence) {
+          final cropType = _inferCropType(
+            labelKey: attachedDiagnosis.labelKey,
+            diseaseName: attachedDiagnosis.diseaseName,
+            aiContent: '',
+          );
+          final actions = _fallbackRecommendedActions(
+            attachedDiagnosis: attachedDiagnosis,
+            inferredDiseaseName: attachedDiagnosis.diseaseName,
+            inferredCropType: cropType,
+          );
+          final showTreatmentCard = !hasShownAddCropSuggestion &&
+              _shouldShowTreatmentCard(
+                attachedDiagnosis: attachedDiagnosis,
+                recommendedActions: actions,
+                inferredDiseaseName: attachedDiagnosis.diseaseName,
+                inferredCropType: cropType,
+                aiContent: attachedDiagnosis.summary ?? '',
+              );
+          aiContent = _formatDiagnosisResponse(
+            attachedDiagnosis,
+            _knowledgeForDiagnosis(attachedDiagnosis),
+          );
+          aiMetadata = {
+            'model': attachedDiagnosis.modelName ?? 'local-tflite',
+            'sources': const ['local-tflite'],
+            'recommended_actions':
+                showTreatmentCard ? actions : const <String>[],
+            'warnings': const [
+              'This diagnosis was generated offline. You can go online to confirm it with conversational AI.'
+            ],
+            'disease_name': attachedDiagnosis.diseaseName,
+            'crop_type': cropType,
+            'label_key': attachedDiagnosis.labelKey ?? '',
+            'severity': attachedDiagnosis.severity.value,
+            'diagnosis_mode': DiagnosisMode.offline.value,
+            'in_app_crop_scope': _supportedTreatmentCardCrops.contains(cropType),
+            'show_treatment_card': showTreatmentCard,
+            if (showTreatmentCard)
+              'plan_title': _planTitleForDiagnosis(attachedDiagnosis.diseaseName),
+          };
+        } else if (!online && hasAttachedImage) {
+          try {
+            final localResult = await _localClassifier.classifyImage(
+              imageBytes: imageAttachments.first,
+              filename: 'chat-photo.jpg',
+            );
+            aiContent = _buildOfflineImageResponse(localResult);
+            final detection = localResult.primaryDetection;
+            final cropType = (localResult.cropType ?? '').trim();
+            final diseaseName = localResult.status == 'ok'
+                ? (detection?.label ?? '').trim()
+                : '';
+            final actions = localResult.status == 'ok'
+                ? _fallbackRecommendedActions(
+                    inferredDiseaseName: diseaseName,
+                    inferredCropType: cropType,
+                  )
+                : const <String>[];
+            final showTreatmentCard = !hasShownAddCropSuggestion &&
+                localResult.status == 'ok' &&
+                _shouldShowTreatmentCard(
+                  attachedDiagnosis: null,
+                  recommendedActions: actions,
+                  inferredDiseaseName: diseaseName,
+                  inferredCropType: cropType,
+                  aiContent: aiContent,
+                );
+            aiMetadata = {
+              'model': localResult.model.name,
+              'sources': const ['local-tflite'],
+              'recommended_actions':
+                  showTreatmentCard ? actions : const <String>[],
+              'warnings': const [
+                'This is a preliminary offline result. Go online for a more accurate AI review.'
+              ],
+              'disease_name': diseaseName,
+              'crop_type': cropType,
+              'label_key': localResult.status == 'ok'
+                  ? (detection?.labelKey ?? '')
+                  : '',
+              'severity': Severity.moderate.value,
+              'diagnosis_mode': DiagnosisMode.offline.value,
+              'in_app_crop_scope': _supportedTreatmentCardCrops.contains(cropType),
+              'show_treatment_card': showTreatmentCard,
+              if (showTreatmentCard) 'plan_title': _planTitleForDiagnosis(diseaseName),
+            };
+          } catch (classifierError) {
+            aiContent = _buildBackendUnavailableResponse(
+              hasAttachedImage: true,
+              error: classifierError,
+            );
+          }
+        } else if (!online) {
+          aiContent = _buildAIResponse(
+            content,
+            attachedDiagnosis: attachedDiagnosis,
+            hintCropType: resolvedHintCropType,
+          );
+        } else {
+          aiContent = _buildBackendUnavailableResponse(
+            hasAttachedImage: hasAttachedImage,
+            error: error,
+          );
+        }
+        aiMetadata ??= {
+          'model': !online ? 'local-fallback' : 'backend-unavailable',
           'sources': const <String>[],
           'recommended_actions': const <String>[],
-          'warnings': [
-            hasAttachedImage
-                ? 'Online AI is unavailable, so the attached image was not diagnosed.'
-                : 'Online AI is unavailable; only general crop-care guidance is shown.'
-          ],
-          'backend_error': error.toString(),
-          'backend_base_url': _aiBackend.baseUrl,
+          'warnings': const <String>[],
           'disease_name': '',
           'crop_type': '',
           'label_key': '',
@@ -588,7 +700,8 @@ class ChatProvider extends ChangeNotifier {
               attachedDiagnosis?.severity.value ??
               'moderate',
           'diagnosis_mode': preferAssistantDiagnosis
-              ? DiagnosisMode.online.value
+              ? (aiMetadata['diagnosis_mode'] as String? ??
+                  DiagnosisMode.online.value)
               : attachedDiagnosis?.diagnosisMode.value ??
                   ((aiMetadata['model'] as String?) == 'local-fallback'
                       ? DiagnosisMode.offline.value
@@ -944,6 +1057,26 @@ class ChatProvider extends ChangeNotifier {
         '2. Capture the front and back of the leaf in good lighting\n'
         '3. If you are online, try again for a more comprehensive AI review\n\n'
         'I will avoid guessing a disease or treatment until the model can identify the crop more reliably.';
+  }
+
+  String _buildOfflineImageResponse(AiBackendDetectResponse result) {
+    final detection = result.primaryDetection;
+    if (detection == null) {
+      return 'The offline scanner could not identify this photo confidently. '
+          'Try a clear, close photo of the affected leaf, then go online for a more accurate AI review.';
+    }
+
+    final confidence = (detection.confidence * 100).toStringAsFixed(0);
+    final crop = (result.cropType ?? '').trim();
+    if (result.status != 'ok') {
+      return 'The offline scanner is not confident enough to diagnose this photo.\n\n'
+          'Top preliminary guess: ${detection.label} ($confidence% confidence).\n\n'
+          'Retake the photo in good light and go online for a more accurate AI review before treating the plant.';
+    }
+
+    final cropDescription = crop.isEmpty ? '' : ' from the $crop crop family';
+    return 'Offline scan result: ${detection.label}$cropDescription ($confidence% confidence).\n\n'
+          'This is a preliminary on-device result. Go online for a more accurate conversational AI review before starting treatment.';
   }
 
   _OfflineTopGuess? _extractTopGuessFromPrompt(String text) {

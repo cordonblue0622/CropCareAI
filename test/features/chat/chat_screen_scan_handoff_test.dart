@@ -52,10 +52,15 @@ class _RecordingChatProvider extends ChatProvider {
   });
 
   final List<ChatMessageModel> _messages = [];
+  final List<ChatSessionModel> _availableSessions = [];
   ChatSessionModel? _session;
+  int sendCallCount = 0;
 
   @override
   List<ChatMessageModel> get currentMessages => _messages;
+
+  @override
+  List<ChatSessionModel> get sessions => _availableSessions;
 
   @override
   ChatSessionModel? get currentSession => _session;
@@ -65,6 +70,25 @@ class _RecordingChatProvider extends ChatProvider {
 
   @override
   bool get isTyping => false;
+
+  void seedConversation(
+    ChatSessionModel session,
+    List<ChatMessageModel> messages,
+  ) {
+    _availableSessions.add(session);
+    _messages
+      ..clear()
+      ..addAll(messages);
+  }
+
+  @override
+  Future<void> fetchSessions(String userId) async {}
+
+  @override
+  Future<void> loadSession(ChatSessionModel session) async {
+    _session = session;
+    notifyListeners();
+  }
 
   @override
   Future<void> startNewSession(String userId, {String? cropId}) async {
@@ -94,6 +118,7 @@ class _RecordingChatProvider extends ChatProvider {
     bool isVideoFrame = false,
     String? hintCropType,
   }) async {
+    sendCallCount++;
     final now = DateTime.now();
     final imageBytes = attachedImageBytes == null
         ? null
@@ -234,5 +259,78 @@ void main() {
       hasLength(1),
     );
     expect(find.text('Try asking:'), findsNothing);
+  });
+
+  testWidgets('saved diagnosis opens its linked conversation without resending',
+      (tester) async {
+    final now = DateTime.now();
+    final session = ChatSessionModel(
+      id: 'saved-session',
+      userId: 'saved-user',
+      cropId: 'crop-1',
+      createdAt: now.subtract(const Duration(days: 2)),
+      updatedAt: now.subtract(const Duration(days: 2)),
+    );
+    final savedMessage = ChatMessageModel(
+      id: 'saved-message',
+      sessionId: session.id,
+      userId: 'saved-user',
+      role: MessageRole.assistant,
+      content: 'Past eggplant diagnosis conversation',
+      createdAt: session.createdAt,
+    );
+    final diagnosis = DiagnosisModel(
+      id: 'diagnosis-1',
+      cropId: 'crop-1',
+      userId: 'saved-user',
+      chatSessionId: session.id,
+      diagnosisMode: DiagnosisMode.online,
+      diseaseName: 'Eggplant Leaf Spot',
+      confidenceScore: 0.9,
+      diagnosedAt: session.createdAt,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+    );
+    final supabase = _FakeSupabaseService();
+    final authRepository = _DelayedAuthRepository(
+      supabaseService: supabase,
+      dbHelper: database,
+    );
+    final authProvider = AuthProvider(authRepository: authRepository);
+    final chatProvider = _RecordingChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: AiBackendService(supabase: supabase),
+      connectivity: _OfflineConnectivityService(),
+    )..seedConversation(session, [savedMessage]);
+    addTearDown(authProvider.dispose);
+    addTearDown(chatProvider.dispose);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<AuthProvider>.value(value: authProvider),
+          ChangeNotifierProvider<ChatProvider>.value(value: chatProvider),
+        ],
+        child: MaterialApp(
+          home: ChatScreen(
+            cropId: 'crop-1',
+            initialDiagnosis: diagnosis,
+            startFreshSession: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    authRepository.completeRestoration(
+      const UserModel(id: 'saved-user', email: 'saved@example.com'),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(chatProvider.currentSession?.id, 'saved-session');
+    expect(chatProvider.sendCallCount, 0);
+    expect(find.text('Past eggplant diagnosis conversation'), findsOneWidget);
   });
 }

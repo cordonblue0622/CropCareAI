@@ -176,10 +176,17 @@ class SupabaseService {
   }
 
   Future<void> softDeleteCrop(String cropId) async {
-    await _client.from('crops').update({
+    await softDeleteRecord(table: 'crops', id: cropId);
+  }
+
+  Future<void> softDeleteRecord({
+    required String table,
+    required String id,
+  }) async {
+    await _client.from(table).update({
       'is_deleted': true,
       'updated_at': DateTime.now().toIso8601String(),
-    }).eq('id', cropId);
+    }).eq('id', id);
   }
 
   // ─── Diagnoses ────────────────────────────────────────────────────────────
