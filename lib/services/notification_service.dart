@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../data/models/treatment_task_model.dart';
 import 'local_notifications_adapter.dart';
 
@@ -17,8 +19,19 @@ class NotificationService {
   NotificationService._();
 
   final LocalNotificationsAdapter _adapter = createLocalNotificationsAdapter();
+  static const _soundPreferenceKey = 'notification_sound_enabled';
 
   Stream<String> get tapStream => _adapter.tapStream;
+
+  Future<bool> get soundEnabled async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_soundPreferenceKey) ?? true;
+  }
+
+  Future<void> setSoundEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_soundPreferenceKey, enabled);
+  }
 
   // ─── Permission ───────────────────────────────────────────────────────────
 
@@ -31,12 +44,16 @@ class NotificationService {
   Future<void> scheduleForTasks(List<TreatmentTaskModel> tasks) async {
     await _adapter.init();
     await _adapter.cancelAll();
+    final playSound = await soundEnabled;
     for (final task in tasks) {
-      await _scheduleSingle(task);
+      await _scheduleSingle(task, playSound: playSound);
     }
   }
 
-  Future<void> _scheduleSingle(TreatmentTaskModel task) async {
+  Future<void> _scheduleSingle(
+    TreatmentTaskModel task, {
+    required bool playSound,
+  }) async {
     final dueAt = task.dueAt;
     final title = task.title;
     final payload = 'task:${task.id}';
@@ -47,6 +64,7 @@ class NotificationService {
       title: 'Upcoming Task — 30 min',
       body: '"$title" is due in 30 minutes. Get ready!',
       kind: ReminderKind.thirtyMin,
+      playSound: playSound,
       payload: payload,
     );
 
@@ -56,6 +74,7 @@ class NotificationService {
       title: 'Task Due Now',
       body: '"$title" is due. Complete it and log your progress.',
       kind: ReminderKind.due,
+      playSound: playSound,
       payload: payload,
     );
 
@@ -65,6 +84,7 @@ class NotificationService {
       title: 'Task Overdue',
       body: '"$title" is overdue. Mark it done or reschedule.',
       kind: ReminderKind.overdue,
+      playSound: playSound,
       payload: payload,
     );
   }

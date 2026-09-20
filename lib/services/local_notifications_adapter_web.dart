@@ -36,6 +36,7 @@ class _WebLocalNotificationsAdapter implements LocalNotificationsAdapter {
     required String title,
     required String body,
     required ReminderKind kind,
+    required bool playSound,
     String? payload,
   }) async {
     final delay = when.difference(DateTime.now());

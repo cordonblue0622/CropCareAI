@@ -458,6 +458,10 @@ class SupabaseService {
         .update({'is_read': true}).eq('id', notificationId);
   }
 
+  Future<void> deleteNotification(String notificationId) async {
+    await _client.from('notifications').delete().eq('id', notificationId);
+  }
+
   // ─── Disease Knowledge Base ───────────────────────────────────────────────
 
   Future<List<Map<String, dynamic>>> getDiseaseKnowledge({

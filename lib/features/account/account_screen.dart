@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../data/models/user_model.dart';
+import 'deleted_crops_history_screen.dart';
 import '../../../data/remote/ai_backend_service.dart';
 import '../auth/providers/auth_provider.dart';
 import '../auth/screens/login_screen.dart';
@@ -17,6 +18,7 @@ import '../notifications/providers/notifications_provider.dart';
 import '../../../features/scan/diagnostic_history_screen.dart';
 import '../../../features/library/library_screen.dart';
 import '../../../shared/widgets/custom_text_field.dart';
+import '../../../services/notification_service.dart';
 import 'help_faq_screen.dart';
 
 class AccountScreen extends StatelessWidget {
@@ -33,6 +35,41 @@ class AccountScreen extends StatelessWidget {
         ),
       );
     }
+  }
+
+  Future<void> _showNotificationSoundSettings(BuildContext context) async {
+    final service = NotificationService.instance;
+    var enabled = await service.soundEnabled;
+    if (!context.mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Notification sound'),
+          content: SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Play a sound for reminders'),
+            subtitle:
+                const Text('Applies to upcoming, due, and overdue alerts.'),
+            value: enabled,
+            onChanged: (value) async {
+              setDialogState(() => enabled = value);
+              await service.setSoundEnabled(value);
+              await service.scheduleForTasks(
+                context.read<NotificationsProvider>().upcomingTasks,
+              );
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _emailSupport(
@@ -379,6 +416,12 @@ class AccountScreen extends StatelessWidget {
                 subtitle: 'Manage access in Android Settings',
                 onTap: () => _openDeviceSettings(context),
               ),
+              _NavItem(
+                icon: Icons.volume_up_outlined,
+                label: 'Notification sound',
+                subtitle: 'Turn reminder sounds on or off',
+                onTap: () => _showNotificationSoundSettings(context),
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -393,6 +436,17 @@ class AccountScreen extends StatelessWidget {
                     context,
                     MaterialPageRoute(
                         builder: (_) => const DiagnosticHistoryScreen())),
+              ),
+              _NavItem(
+                icon: Icons.delete_sweep_outlined,
+                label: 'Deleted Crop History',
+                subtitle: 'Review removed crops and their audit dates',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const DeletedCropsHistoryScreen(),
+                  ),
+                ),
               ),
               _NavItem(
                 icon: Icons.menu_book,

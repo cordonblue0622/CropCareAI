@@ -135,6 +135,13 @@
 				"for %I in (\"C:\\Users\\obedi\\CropCareAI\\CropCareAI-release.apk\") do @echo FullName=%~fI & @echo Length=%~zI & @echo LastWriteTime=%~tI"
 			],
 			"isBackground": false
+		},
+		{
+			"label": "Inspect release git status",
+			"type": "shell",
+			"command": "git status --short --branch",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

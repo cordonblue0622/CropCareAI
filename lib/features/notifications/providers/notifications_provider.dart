@@ -142,6 +142,18 @@ class NotificationsProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
+  Future<void> deleteNotification(String notificationId) async {
+    try {
+      await _supabase.deleteNotification(notificationId);
+    } catch (_) {
+      // Keep the local list usable when the device is offline.
+    }
+    _notifications
+        .removeWhere((notification) => notification.id == notificationId);
+    await _db.hardDelete(AppConstants.notificationsTable, notificationId);
+    notifyListeners();
+  }
+
   /// Marks the task complete in remote + local stores. Returns the affected
   /// crop's id so callers can refresh derived state (e.g. Farm Vitality).
   /// Returns null if the task could not be located in either bucket.

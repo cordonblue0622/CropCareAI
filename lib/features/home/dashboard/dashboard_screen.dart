@@ -199,16 +199,72 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return '${crop[0].toUpperCase()}${crop.substring(1)} disease guide';
   }
 
-  IconData _weatherIcon(FarmWeatherSnapshot? weather) {
-    if (_isLoadingWeather) return Icons.sync_rounded;
-    if (weather == null) return Icons.cloud_queue_rounded;
-    final condition = weather.conditionLabel.toLowerCase();
-    if (condition.contains('thunder')) return Icons.thunderstorm_rounded;
-    if (weather.isWet) return Icons.water_drop_rounded;
-    if (condition.contains('cloud') || condition.contains('overcast')) {
-      return Icons.cloud_rounded;
+  Widget _weatherGlyph(FarmWeatherSnapshot? weather) {
+    if (_isLoadingWeather) {
+      return const SizedBox(
+        width: 18,
+        height: 18,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: Color(0xFFB9D8E5),
+        ),
+      );
     }
-    return Icons.wb_sunny_rounded;
+
+    final condition = weather?.conditionLabel.toLowerCase() ?? '';
+    const color = Color(0xFFB9D8E5);
+    if (condition.contains('thunder')) {
+      return const Icon(Icons.thunderstorm_outlined, color: color, size: 24);
+    }
+    if (condition.contains('snow') || condition.contains('sleet')) {
+      return const Stack(
+        alignment: Alignment.center,
+        children: [
+          Padding(
+            padding: EdgeInsets.only(top: 2),
+            child: Icon(Icons.cloud_outlined, color: color, size: 24),
+          ),
+          Padding(
+            padding: EdgeInsets.only(top: 17),
+            child: Icon(Icons.ac_unit, color: color, size: 11),
+          ),
+        ],
+      );
+    }
+    if (weather?.isWet == true || condition.contains('rain')) {
+      return const Stack(
+        alignment: Alignment.center,
+        children: [
+          Padding(
+            padding: EdgeInsets.only(top: 0),
+            child: Icon(Icons.cloud_outlined, color: color, size: 24),
+          ),
+          Padding(
+            padding: EdgeInsets.only(top: 18),
+            child: Icon(Icons.water_drop_outlined, color: color, size: 12),
+          ),
+        ],
+      );
+    }
+    if (condition.contains('partly') || condition.contains('mostly cloudy')) {
+      return const Stack(
+        alignment: Alignment.center,
+        children: [
+          Padding(
+            padding: EdgeInsets.only(left: 7, bottom: 7),
+            child: Icon(Icons.wb_sunny_outlined, color: color, size: 20),
+          ),
+          Padding(
+            padding: EdgeInsets.only(top: 5, right: 5),
+            child: Icon(Icons.cloud_outlined, color: color, size: 22),
+          ),
+        ],
+      );
+    }
+    if (condition.contains('cloud') || condition.contains('overcast')) {
+      return const Icon(Icons.cloud_outlined, color: color, size: 25);
+    }
+    return const Icon(Icons.wb_sunny_outlined, color: color, size: 24);
   }
 
   _SmartTipContent _buildSmartTipContent({
@@ -462,11 +518,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         color: Colors.white.withValues(alpha: 0.14),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: Icon(
-                        _weatherIcon(_weather),
-                        color: Colors.white,
-                        size: 20,
-                      ),
+                      child: _weatherGlyph(_weather),
                     ),
                   ),
                   const SizedBox(width: 2),
@@ -478,13 +530,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                     if (notifs.unreadCount > 0)
                       Positioned(
-                        right: 8,
-                        top: 8,
+                        right: 2,
+                        top: 2,
                         child: Container(
-                          width: 8,
-                          height: 8,
-                          decoration: const BoxDecoration(
-                              color: Colors.red, shape: BoxShape.circle),
+                          constraints: const BoxConstraints(minWidth: 17),
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          height: 17,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(9),
+                            border: Border.all(
+                              color: AppColors.primaryDark,
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Text(
+                            notifs.unreadCount > 99
+                                ? '99+'
+                                : '${notifs.unreadCount}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
                         ),
                       ),
                   ]),
@@ -569,7 +639,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     onViewAll: () => _pushLibrary(context),
                   ),
                   const SizedBox(height: 8),
-                  _buildDiseases(context, filteredDiseases),
+                  _buildDiseases(context, filteredDiseases.take(3).toList()),
                 ]),
               ),
             ),
@@ -1217,6 +1287,16 @@ class _FarmVitalityChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final measuredScores = crops
+        .map((crop) => crop.latestHealthScore)
+        .whereType<double>()
+        .map((score) => score.clamp(0, 100).toDouble())
+        .toList(growable: false);
+    final averageScore = measuredScores.isEmpty
+        ? null
+        : measuredScores.reduce((total, score) => total + score) /
+            measuredScores.length;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 16, 14, 10),
       decoration: BoxDecoration(
@@ -1239,77 +1319,91 @@ class _FarmVitalityChart extends StatelessWidget {
         ],
       ),
       child: Column(
-        children: crops.asMap().entries.map((entry) {
-          final crop = entry.value;
-          final rawScore = crop.latestHealthScore;
-          final score = rawScore?.clamp(0, 100).toDouble();
-          final color = _barColors[entry.key % _barColors.length];
-          final status = switch (crop.latestProgressStatus) {
-            ProgressStatus.improving => 'Improving',
-            ProgressStatus.worsening => 'Needs attention',
-            ProgressStatus.stable => 'Stable',
-            _ => 'Awaiting check-in',
-          };
-          return InkWell(
-            onTap: () => onCropTap(crop),
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 7),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          crop.cropName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textDark,
-                          ),
-                        ),
-                      ),
-                      Text(status,
-                          style: const TextStyle(
-                              fontSize: 11, color: AppColors.textGray)),
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 72,
-                        child: Text(
-                          score == null
-                              ? 'Not scored'
-                              : '${score.toStringAsFixed(0)}%',
-                          textAlign: TextAlign.right,
-                          style: TextStyle(
-                            fontSize: score == null ? 10 : 13,
+        children: [
+          Row(
+            children: [
+              _VitalityRing(score: averageScore, size: 86),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Overall farm vitality',
+                        style: TextStyle(
+                            fontSize: 16,
                             fontWeight: FontWeight.w800,
-                            color: score == null ? AppColors.textGray : color,
-                          ),
+                            color: AppColors.textDark)),
+                    const SizedBox(height: 4),
+                    Text(
+                      averageScore == null
+                          ? 'Add a health check to begin tracking.'
+                          : 'Average across ${measuredScores.length} of ${crops.length} crops',
+                      style: const TextStyle(
+                          fontSize: 12, color: AppColors.textGray),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisSpacing: 9,
+            mainAxisSpacing: 9,
+            childAspectRatio: 1.35,
+            children: crops.take(4).map((crop) {
+              final rawScore = crop.latestHealthScore;
+              final score = rawScore?.clamp(0, 100).toDouble();
+              final color = _barColors[crops.indexOf(crop) % _barColors.length];
+              final status = switch (crop.latestProgressStatus) {
+                ProgressStatus.improving => 'Improving',
+                ProgressStatus.worsening => 'Needs attention',
+                ProgressStatus.stable => 'Stable',
+                _ => 'Awaiting check-in',
+              };
+              return InkWell(
+                onTap: () => onCropTap(crop),
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.58),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      _VitalityRing(score: score, size: 48),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(crop.cropName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textDark)),
+                            const SizedBox(height: 3),
+                            Text(status,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(fontSize: 10, color: color)),
+                          ],
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      minHeight: 9,
-                      value: (score ?? 0) / 100,
-                      backgroundColor: Colors.white.withValues(alpha: 0.72),
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        score == null
-                            ? AppColors.textLightGray.withValues(alpha: 0.35)
-                            : color,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        }).toList(growable: false),
+                ),
+              );
+            }).toList(growable: false),
+          ),
+        ],
       ),
     );
   }
@@ -1466,7 +1560,7 @@ class _TodayTasksCard extends StatefulWidget {
 }
 
 class _TodayTasksCardState extends State<_TodayTasksCard> {
-  static const int _collapsedVisibleCount = 5;
+  static const int _collapsedVisibleCount = 3;
   bool _expanded = false;
 
   Future<void> _openTask(BuildContext context, TreatmentTaskModel task) async {

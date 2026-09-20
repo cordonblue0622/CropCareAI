@@ -19,7 +19,6 @@ import '../../../services/local_classifier_service.dart';
 import '../../../services/video_diagnosis_service.dart';
 import '../../../core/utils/label_formatter.dart';
 import '../auth/providers/auth_provider.dart';
-import '../chat/providers/chat_provider.dart';
 import '../crops/providers/crops_provider.dart';
 import '../home/home_screen.dart';
 import '../chat/screens/chat_screen.dart';

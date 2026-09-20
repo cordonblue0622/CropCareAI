@@ -21,6 +21,7 @@ class NotificationsScreen extends StatefulWidget {
 class _NotificationsScreenState extends State<NotificationsScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabs;
+  int _taskPage = 0;
 
   @override
   void initState() {
@@ -114,9 +115,11 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                 if (notifs.missedTasks.isNotEmpty)
                   Container(
                     margin: const EdgeInsets.only(left: 4),
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                        color: Colors.red, borderRadius: BorderRadius.circular(10)),
+                        color: Colors.red,
+                        borderRadius: BorderRadius.circular(10)),
                     child: Text(
                       '${notifs.missedTasks.length}',
                       style: const TextStyle(color: Colors.white, fontSize: 10),
@@ -136,19 +139,18 @@ class _NotificationsScreenState extends State<NotificationsScreen>
               controller: _tabs,
               children: [
                 _AlertsTab(
-                    overdueTasks: notifs.missedTasks,
                     notifications: notifs.notifications
-                        .where((n) =>
-                            n.type == NotificationType.progressAlert ||
-                            n.type == NotificationType.general)
+                        .where((n) => n.type == NotificationType.general)
                         .toList(),
                     onMarkRead: notifs.markRead,
-                    onOpenTask: _openTask),
+                    onDelete: notifs.deleteNotification),
                 _TasksTab(
                     todayTasks: notifs.todayTasks,
+                    missedTasks: notifs.missedTasks,
+                    page: _taskPage,
+                    onPageChanged: (page) => setState(() => _taskPage = page),
                     onOpenTask: _openTask),
-                _RemindersTab(
-                    tomorrowTasks: notifs.tomorrowTasks),
+                _RemindersTab(tomorrowTasks: notifs.tomorrowTasks),
               ],
             ),
     );
@@ -158,21 +160,19 @@ class _NotificationsScreenState extends State<NotificationsScreen>
 // ─── Alerts Tab ───────────────────────────────────────────────────────────
 
 class _AlertsTab extends StatelessWidget {
-  final List<TreatmentTaskModel> overdueTasks;
   final List<NotificationModel> notifications;
   final Future<void> Function(String) onMarkRead;
-  final Future<void> Function(TreatmentTaskModel task) onOpenTask;
+  final Future<void> Function(String) onDelete;
 
   const _AlertsTab({
-    required this.overdueTasks,
     required this.notifications,
     required this.onMarkRead,
-    required this.onOpenTask,
+    required this.onDelete,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (overdueTasks.isEmpty && notifications.isEmpty) {
+    if (notifications.isEmpty) {
       return _emptyState(
           icon: Icons.check_circle_outline,
           message: 'No critical alerts',
@@ -181,59 +181,30 @@ class _AlertsTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (overdueTasks.isNotEmpty) ...[
-          _SectionLabel(
-            label: 'Overdue Tasks',
-            count: overdueTasks.length,
-            color: Colors.red,
-          ),
-          const SizedBox(height: 8),
-          ...overdueTasks.map(
-            (task) => _TaskCard(
-              task: task,
-              isMissed: true,
-              actionLabel: 'OPEN DAILY PLAN',
-              onAction: () => onOpenTask(task),
-            ),
-          ),
-          if (notifications.isNotEmpty) const SizedBox(height: 16),
-        ],
-        if (notifications.isNotEmpty) ...[
-          _SectionLabel(
-            label: 'System Alerts',
+        _SectionLabel(
+            label: 'App Updates',
             count: notifications.length,
-            color: Colors.orange,
-          ),
-          const SizedBox(height: 8),
-          ...notifications.map((n) {
-            final isCritical = n.type == NotificationType.progressAlert;
-            return Padding(
+            color: Colors.orange),
+        const SizedBox(height: 8),
+        ...notifications.map((n) => Padding(
               padding: const EdgeInsets.only(bottom: 12),
-              child: _AlertCard(
-                notification: n,
-                borderColor: isCritical ? Colors.red : Colors.orange,
-                onMarkRead: onMarkRead,
-                action: isCritical
-                    ? ElevatedButton.icon(
-                        onPressed: () => onMarkRead(n.id),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 8),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8)),
-                        ),
-                        icon: const Icon(Icons.done, size: 16),
-                        label: const Text('MARK READ',
-                            style: TextStyle(
-                                fontWeight: FontWeight.w700, fontSize: 12)),
-                      )
-                    : null,
+              child: Dismissible(
+                key: ValueKey(n.id),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.only(right: 20),
+                  color: Colors.red,
+                  child: const Icon(Icons.delete_outline, color: Colors.white),
+                ),
+                onDismissed: (_) => onDelete(n.id),
+                child: _AlertCard(
+                  notification: n,
+                  borderColor: Colors.orange,
+                  onMarkRead: onMarkRead,
+                ),
               ),
-            );
-          }),
-        ],
+            )),
       ],
     );
   }
@@ -243,32 +214,79 @@ class _AlertsTab extends StatelessWidget {
 
 class _TasksTab extends StatelessWidget {
   final List<TreatmentTaskModel> todayTasks;
+  final List<TreatmentTaskModel> missedTasks;
+  final int page;
+  final ValueChanged<int> onPageChanged;
   final Future<void> Function(TreatmentTaskModel task) onOpenTask;
-  const _TasksTab({required this.todayTasks, required this.onOpenTask});
+  const _TasksTab({
+    required this.todayTasks,
+    required this.missedTasks,
+    required this.page,
+    required this.onPageChanged,
+    required this.onOpenTask,
+  });
 
   @override
   Widget build(BuildContext context) {
-    if (todayTasks.isEmpty) {
+    final tasks = [...missedTasks, ...todayTasks];
+    if (tasks.isEmpty) {
       return _emptyState(
           icon: Icons.task_alt, message: 'No tasks due', sub: 'All caught up!');
     }
+    final pageCount = (tasks.length / 10).ceil();
+    final visibleTasks = tasks.skip(page * 10).take(10);
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         _SectionLabel(
-            label: "Today's Tasks",
-            count: todayTasks.length,
+            label: "Crop Attention",
+            count: tasks.length,
             color: AppColors.primary),
         const SizedBox(height: 8),
-        ...todayTasks.map((t) => _TaskCard(
+        ...visibleTasks.map((t) => _TaskCard(
               task: t,
-              isMissed: false,
+              isMissed: missedTasks.contains(t),
               actionLabel: 'OPEN DAILY PLAN',
               onAction: () => onOpenTask(t),
             )),
+        if (pageCount > 1)
+          _NotificationPager(
+            page: page,
+            pageCount: pageCount,
+            onChanged: onPageChanged,
+          ),
       ],
     );
   }
+}
+
+class _NotificationPager extends StatelessWidget {
+  final int page;
+  final int pageCount;
+  final ValueChanged<int> onChanged;
+
+  const _NotificationPager({
+    required this.page,
+    required this.pageCount,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) => Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          IconButton(
+            onPressed: page == 0 ? null : () => onChanged(page - 1),
+            icon: const Icon(Icons.chevron_left),
+          ),
+          Text('${page + 1} / $pageCount',
+              style: const TextStyle(fontWeight: FontWeight.w700)),
+          IconButton(
+            onPressed: page >= pageCount - 1 ? null : () => onChanged(page + 1),
+            icon: const Icon(Icons.chevron_right),
+          ),
+        ],
+      );
 }
 
 // ─── Reminders Tab ────────────────────────────────────────────────────────
@@ -325,7 +343,7 @@ class _AlertCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: notification.isRead ? Colors.white : Colors.white,
+        color: notification.isRead ? const Color(0xFFF0F2F0) : Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border(left: BorderSide(color: borderColor, width: 4)),
         boxShadow: [
@@ -352,8 +370,8 @@ class _AlertCard extends StatelessWidget {
               Container(
                 width: 8,
                 height: 8,
-                decoration: BoxDecoration(
-                    shape: BoxShape.circle, color: borderColor),
+                decoration:
+                    BoxDecoration(shape: BoxShape.circle, color: borderColor),
               ),
           ]),
           const SizedBox(height: 6),
@@ -375,8 +393,7 @@ class _AlertCard extends StatelessWidget {
             if (!notification.isRead && action == null)
               TextButton(
                 onPressed: () => onMarkRead(notification.id),
-                style:
-                    TextButton.styleFrom(foregroundColor: AppColors.primary),
+                style: TextButton.styleFrom(foregroundColor: AppColors.primary),
                 child: const Text('Mark read', style: TextStyle(fontSize: 12)),
               ),
           ]),
@@ -414,8 +431,7 @@ class _TaskCard extends StatelessWidget {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(task.title,
-            style: const TextStyle(
-                fontWeight: FontWeight.w700, fontSize: 15)),
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
         if (task.description != null && task.description!.isNotEmpty) ...[
           const SizedBox(height: 4),
           Text(task.description!,
@@ -433,35 +449,34 @@ class _TaskCard extends StatelessWidget {
           Text(
             isMissed
                 ? 'Due ${DateFormat('MMM d').format(task.dueAt)}'
-              : isActionEnabled
-                ? 'Due today ${DateFormat('HH:mm').format(task.dueAt)}'
-                : 'Due tomorrow ${DateFormat('HH:mm').format(task.dueAt)}',
+                : isActionEnabled
+                    ? 'Due today ${DateFormat('HH:mm').format(task.dueAt)}'
+                    : 'Due tomorrow ${DateFormat('HH:mm').format(task.dueAt)}',
             style: TextStyle(
                 fontSize: 12,
-              color: isMissed
-                ? Colors.red
-                : isActionEnabled
-                  ? AppColors.textGray
-                  : AppColors.primaryMedium),
+                color: isMissed
+                    ? Colors.red
+                    : isActionEnabled
+                        ? AppColors.textGray
+                        : AppColors.primaryMedium),
           ),
           const Spacer(),
           ElevatedButton(
             onPressed: onAction,
             style: ElevatedButton.styleFrom(
               backgroundColor: isActionEnabled
-                ? (isMissed ? Colors.orange : AppColors.primary)
-                : AppColors.textLightGray,
+                  ? (isMissed ? Colors.orange : AppColors.primary)
+                  : AppColors.textLightGray,
               foregroundColor: Colors.white,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8)),
               minimumSize: Size.zero,
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
             child: Text(actionLabel,
-                style: const TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.w700)),
+                style:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
           ),
         ]),
       ]),
@@ -499,9 +514,7 @@ class _SectionLabel extends StatelessWidget {
 }
 
 Widget _emptyState(
-    {required IconData icon,
-    required String message,
-    required String sub}) {
+    {required IconData icon, required String message, required String sub}) {
   return Center(
     child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
       Icon(icon, size: 56, color: AppColors.textLightGray),

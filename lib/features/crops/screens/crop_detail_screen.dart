@@ -2299,21 +2299,9 @@ class _DiagnosesTab extends StatelessWidget {
               if (hasDiagnoses) ...[
                 const _SectionHeader('AI Diagnoses'),
                 const SizedBox(height: 8),
-                ...diagnoses.map((d) => InkWell(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => ChatScreen(
-                            cropId: crop.id,
-                            cropName: crop.cropName,
-                            initialDiagnosis: d,
-                            startFreshSession: false,
-                          ),
-                        ),
-                      ),
-                      borderRadius: BorderRadius.circular(12),
+                ...diagnoses.map((d) => Container(
+                      margin: const EdgeInsets.only(bottom: 12),
                       child: Container(
-                        margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
                           color: Colors.white,
@@ -2379,20 +2367,6 @@ class _DiagnosesTab extends StatelessWidget {
                                     maxLines: 4,
                                     overflow: TextOverflow.ellipsis),
                               ],
-                              const SizedBox(height: 6),
-                              const Row(
-                                mainAxisAlignment: MainAxisAlignment.end,
-                                children: [
-                                  Text('View conversation',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          color: AppColors.primary,
-                                          fontWeight: FontWeight.w600)),
-                                  SizedBox(width: 4),
-                                  Icon(Icons.chevron_right,
-                                      size: 16, color: AppColors.primary),
-                                ],
-                              ),
                             ]),
                       ),
                     )),
@@ -2531,7 +2505,7 @@ class _ChatBubble extends StatelessWidget {
   }
 }
 
-/// Inline chat bar that opens ChatScreen for this specific crop.
+/// Inline chat bar for continuing this crop's diagnosis conversation.
 class _CropChatBar extends StatelessWidget {
   final CropModel crop;
   const _CropChatBar({required this.crop});

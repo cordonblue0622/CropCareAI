@@ -58,13 +58,24 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
       for (final kind in ReminderKind.values) {
         await androidImpl.createNotificationChannel(
           AndroidNotificationChannel(
-            kind.channelId,
+            '${kind.channelId}_sound',
             kind.channelName,
             importance: kind == ReminderKind.overdue
                 ? Importance.defaultImportance
                 : Importance.high,
-            playSound: kind != ReminderKind.overdue,
-            enableVibration: kind != ReminderKind.overdue,
+            playSound: true,
+            enableVibration: true,
+          ),
+        );
+        await androidImpl.createNotificationChannel(
+          AndroidNotificationChannel(
+            '${kind.channelId}_quiet',
+            '${kind.channelName} (quiet)',
+            importance: kind == ReminderKind.overdue
+                ? Importance.defaultImportance
+                : Importance.high,
+            playSound: false,
+            enableVibration: false,
           ),
         );
       }
@@ -91,6 +102,7 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
     required String title,
     required String body,
     required ReminderKind kind,
+    required bool playSound,
     String? payload,
   }) async {
     await init();
@@ -101,14 +113,14 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
     }
 
     final androidDetails = AndroidNotificationDetails(
-      kind.channelId,
-      kind.channelName,
+      '${kind.channelId}_${playSound ? 'sound' : 'quiet'}',
+      '${kind.channelName}${playSound ? '' : ' (quiet)'}',
       importance: kind == ReminderKind.overdue
           ? Importance.defaultImportance
           : Importance.high,
       priority: Priority.high,
-      playSound: kind != ReminderKind.overdue,
-      enableVibration: kind != ReminderKind.overdue,
+      playSound: playSound,
+      enableVibration: playSound,
     );
 
     try {

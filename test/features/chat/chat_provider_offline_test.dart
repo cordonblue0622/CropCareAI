@@ -1,7 +1,6 @@
 import 'package:cropcare_ai/core/constants/app_constants.dart';
 import 'package:cropcare_ai/core/constants/app_enums.dart';
 import 'package:cropcare_ai/data/local/database_helper.dart';
-import 'package:cropcare_ai/data/models/ai_backend_models.dart';
 import 'package:cropcare_ai/data/models/diagnosis_model.dart';
 import 'package:cropcare_ai/data/remote/ai_backend_service.dart';
 import 'package:cropcare_ai/data/remote/supabase_service.dart';

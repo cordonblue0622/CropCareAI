@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 
 import 'package:cropcare_ai/core/constants/app_constants.dart';
 import 'package:cropcare_ai/services/tflite_classifier_core.dart';

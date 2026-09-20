@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:cropcare_ai/core/constants/app_constants.dart';
 import 'package:cropcare_ai/core/constants/app_enums.dart';
