@@ -18,7 +18,7 @@ services:
       - key: REQUIRE_AUTH
         value: "true"
       - key: CORS_ORIGINS
-        value: http://localhost:8080,http://127.0.0.1:8080
+        value: http://localhost:8080,http://127.0.0.1:8080,https://crop-care-ai-olive.vercel.app,https://downloadsite-jade.vercel.app
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
