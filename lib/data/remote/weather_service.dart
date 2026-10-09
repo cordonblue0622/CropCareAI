@@ -10,6 +10,7 @@ class FarmWeatherSnapshot {
   final int relativeHumidity;
   final double precipitationMm;
   final int weatherCode;
+  final bool isDay;
   final String conditionLabel;
   final DateTime fetchedAt;
 
@@ -19,6 +20,7 @@ class FarmWeatherSnapshot {
     required this.relativeHumidity,
     required this.precipitationMm,
     required this.weatherCode,
+    this.isDay = true,
     required this.conditionLabel,
     required this.fetchedAt,
   });
@@ -78,6 +80,7 @@ class WeatherService {
         relativeHumidity: (current['humidity'] as num?)?.round() ?? 0,
         precipitationMm: (current['precip_mm'] as num?)?.toDouble() ?? 0,
         weatherCode: (condition['code'] as num?)?.round() ?? -1,
+        isDay: ((current['is_day'] as num?)?.round() ?? 1) == 1,
         conditionLabel:
             (condition['text'] as String?)?.trim().isNotEmpty == true
                 ? (condition['text'] as String).trim().toLowerCase()
@@ -119,7 +122,7 @@ class WeatherService {
           'latitude': '$latitude',
           'longitude': '$longitude',
           'current':
-              'temperature_2m,relative_humidity_2m,precipitation,weather_code',
+              'temperature_2m,relative_humidity_2m,precipitation,weather_code,is_day',
           'timezone': 'auto',
         },
       );
@@ -139,6 +142,7 @@ class WeatherService {
             (current['relative_humidity_2m'] as num?)?.round() ?? 0,
         precipitationMm: (current['precipitation'] as num?)?.toDouble() ?? 0,
         weatherCode: code,
+        isDay: ((current['is_day'] as num?)?.round() ?? 1) == 1,
         conditionLabel: _openMeteoConditionLabel(code),
         fetchedAt: DateTime.tryParse(current['time'] as String? ?? '') ??
             DateTime.now(),

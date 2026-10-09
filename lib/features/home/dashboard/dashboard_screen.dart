@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -38,15 +40,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String? _weatherLocationQuery;
   String _searchQuery = '';
   bool _isLoadingWeather = false;
+  Timer? _weatherRefreshTimer;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadDiseases());
+    _weatherRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
+      final location = _weatherLocationQuery;
+      if (location != null && location.isNotEmpty) _loadWeather(location);
+    });
   }
 
   @override
   void dispose() {
+    _weatherRefreshTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -77,7 +85,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       _weatherLocationQuery = locationQuery;
       _isLoadingWeather = true;
-      _weather = null;
     });
 
     final weather = await _weatherService.fetchCurrentConditions(locationQuery);
@@ -111,6 +118,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      setState(() => _weather = null);
       _loadWeather(normalized);
     });
   }
@@ -126,7 +134,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   List<DiseaseKnowledgeModel> _dashboardDiseases(CropsProvider crops) {
     final allActive = _diseases.where((item) => item.isActive).toList();
-    if (allActive.isEmpty) return const [];
+    if (allActive.isEmpty) return [];
 
     final cropTypes = crops.activeCrops.map((crop) => crop.cropType).toSet();
     if (cropTypes.isEmpty) {
@@ -200,7 +208,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _weatherGlyph(FarmWeatherSnapshot? weather) {
-    if (_isLoadingWeather) {
+    if (_isLoadingWeather && weather == null) {
       return const SizedBox(
         width: 18,
         height: 18,
@@ -211,12 +219,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
     }
 
-    final condition = weather?.conditionLabel.toLowerCase() ?? '';
     const color = Color(0xFFB9D8E5);
-    if (condition.contains('thunder')) {
+    final condition = weather?.conditionLabel.toLowerCase() ?? '';
+    final code = weather?.weatherCode ?? -1;
+    final isNight = weather != null && !weather.isDay;
+    if (condition.contains('thunder') || code >= 95) {
       return const Icon(Icons.thunderstorm_outlined, color: color, size: 24);
     }
-    if (condition.contains('snow') || condition.contains('sleet')) {
+    if (condition.contains('snow') ||
+        condition.contains('sleet') ||
+        (code >= 71 && code <= 86)) {
       return const Stack(
         alignment: Alignment.center,
         children: [
@@ -231,7 +243,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       );
     }
-    if (weather?.isWet == true || condition.contains('rain')) {
+    if (condition.contains('rain') ||
+        condition.contains('drizzle') ||
+        condition.contains('shower') ||
+        (code >= 51 && code <= 67) ||
+        (code >= 80 && code <= 82)) {
       return const Stack(
         alignment: Alignment.center,
         children: [
@@ -246,23 +262,58 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       );
     }
-    if (condition.contains('partly') || condition.contains('mostly cloudy')) {
-      return const Stack(
+    if (condition.contains('fog') ||
+        condition.contains('mist') ||
+        code == 45 ||
+        code == 48) {
+      return const Icon(Icons.cloud_outlined, color: color, size: 25);
+    }
+    if (condition.contains('partly') ||
+        condition.contains('mostly cloudy') ||
+        condition.contains('mainly clear') ||
+        condition.contains('few clouds') ||
+        code == 1 ||
+        code == 2) {
+      return Stack(
         alignment: Alignment.center,
         children: [
           Padding(
-            padding: EdgeInsets.only(left: 7, bottom: 7),
-            child: Icon(Icons.wb_sunny_outlined, color: color, size: 20),
+            padding: const EdgeInsets.only(left: 7, bottom: 7),
+            child: Icon(
+              isNight ? Icons.nights_stay_outlined : Icons.wb_sunny_outlined,
+              color: color,
+              size: 20,
+            ),
           ),
-          Padding(
+          const Padding(
             padding: EdgeInsets.only(top: 5, right: 5),
             child: Icon(Icons.cloud_outlined, color: color, size: 22),
           ),
         ],
       );
     }
-    if (condition.contains('cloud') || condition.contains('overcast')) {
+    if (condition.contains('cloud') ||
+        condition.contains('overcast') ||
+        code == 3) {
+      if (isNight) {
+        return const Stack(
+          alignment: Alignment.center,
+          children: [
+            Padding(
+              padding: EdgeInsets.only(left: 7, bottom: 7),
+              child: Icon(Icons.nights_stay_outlined, color: color, size: 19),
+            ),
+            Padding(
+              padding: EdgeInsets.only(top: 5, right: 5),
+              child: Icon(Icons.cloud_outlined, color: color, size: 23),
+            ),
+          ],
+        );
+      }
       return const Icon(Icons.cloud_outlined, color: color, size: 25);
+    }
+    if (isNight) {
+      return const Icon(Icons.nights_stay_outlined, color: color, size: 24);
     }
     return const Icon(Icons.wb_sunny_outlined, color: color, size: 24);
   }
@@ -1320,40 +1371,48 @@ class _FarmVitalityChart extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Row(
-            children: [
-              _VitalityRing(score: averageScore, size: 86),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Overall farm vitality',
-                        style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w800,
-                            color: AppColors.textDark)),
-                    const SizedBox(height: 4),
-                    Text(
-                      averageScore == null
-                          ? 'Add a health check to begin tracking.'
-                          : 'Average across ${measuredScores.length} of ${crops.length} crops',
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.textGray),
-                    ),
-                  ],
+          Container(
+            padding: const EdgeInsets.all(11),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.58),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
+            ),
+            child: Row(
+              children: [
+                _VitalityRing(score: averageScore, size: 78),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Overall farm vitality',
+                          style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textDark)),
+                      const SizedBox(height: 4),
+                      Text(
+                        averageScore == null
+                            ? 'Add a health check to begin tracking.'
+                            : 'Average across ${measuredScores.length} of ${crops.length} crops',
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textGray),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 10),
           GridView.count(
             crossAxisCount: 2,
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 9,
-            mainAxisSpacing: 9,
-            childAspectRatio: 1.35,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            childAspectRatio: 2.05,
             children: crops.take(4).map((crop) {
               final rawScore = crop.latestHealthScore;
               final score = rawScore?.clamp(0, 100).toDouble();
@@ -1368,15 +1427,16 @@ class _FarmVitalityChart extends StatelessWidget {
                 onTap: () => onCropTap(crop),
                 borderRadius: BorderRadius.circular(8),
                 child: Container(
-                  padding: const EdgeInsets.all(8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.58),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(
                     children: [
-                      _VitalityRing(score: score, size: 48),
-                      const SizedBox(width: 8),
+                      _VitalityRing(score: score, size: 38),
+                      const SizedBox(width: 6),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1386,14 +1446,14 @@ class _FarmVitalityChart extends StatelessWidget {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                    fontSize: 12,
+                                    fontSize: 11,
                                     fontWeight: FontWeight.w700,
                                     color: AppColors.textDark)),
-                            const SizedBox(height: 3),
+                            const SizedBox(height: 2),
                             Text(status,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: TextStyle(fontSize: 10, color: color)),
+                                style: TextStyle(fontSize: 9, color: color)),
                           ],
                         ),
                       ),
@@ -1561,7 +1621,7 @@ class _TodayTasksCard extends StatefulWidget {
 
 class _TodayTasksCardState extends State<_TodayTasksCard> {
   static const int _collapsedVisibleCount = 3;
-  bool _expanded = false;
+  int _page = 0;
 
   Future<void> _openTask(BuildContext context, TreatmentTaskModel task) async {
     final crops = context.read<CropsProvider>();
@@ -1599,19 +1659,17 @@ class _TodayTasksCardState extends State<_TodayTasksCard> {
     final todayTasks = widget.notifs.todayTasks;
     final missedTasks = widget.notifs.missedTasks;
     final totalCount = todayTasks.length + missedTasks.length;
-    final showingAll = _expanded || totalCount <= _collapsedVisibleCount;
-    final visibleMissed = showingAll
-        ? missedTasks
-        : missedTasks.take(_collapsedVisibleCount).toList(growable: false);
-    final remainingSlots = showingAll
-        ? todayTasks.length
-        : (_collapsedVisibleCount - visibleMissed.length)
-            .clamp(0, _collapsedVisibleCount);
-    final visibleToday = showingAll
-        ? todayTasks
-        : todayTasks.take(remainingSlots).toList(growable: false);
-    final hiddenCount = totalCount - visibleMissed.length - visibleToday.length;
-
+    final pageCount = (totalCount / _collapsedVisibleCount).ceil();
+    final safePage = pageCount == 0 ? 0 : _page.clamp(0, pageCount - 1).toInt();
+    final allTasks = [...missedTasks, ...todayTasks];
+    final pageTasks = allTasks
+        .skip(safePage * _collapsedVisibleCount)
+        .take(_collapsedVisibleCount)
+        .toList(growable: false);
+    final visibleMissed =
+        pageTasks.where(missedTasks.contains).toList(growable: false);
+    final visibleToday =
+        pageTasks.where(todayTasks.contains).toList(growable: false);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1741,26 +1799,35 @@ class _TodayTasksCardState extends State<_TodayTasksCard> {
                   onDone: () => _openTask(context, t),
                 )),
           ],
-          if (hiddenCount > 0 ||
-              (_expanded && totalCount > _collapsedVisibleCount)) ...[
+          if (pageCount > 1) ...[
             const SizedBox(height: 4),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: () => setState(() => _expanded = !_expanded),
-                icon: Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: AppColors.primary,
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  tooltip: 'Previous tasks',
+                  onPressed: safePage == 0
+                      ? null
+                      : () => setState(() => _page = safePage - 1),
+                  icon: const Icon(Icons.chevron_left),
                 ),
-                label: Text(
-                  _expanded ? 'Show less' : 'See more ($hiddenCount)',
-                  style: const TextStyle(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w700,
-                  ),
+                Text('${safePage + 1} / $pageCount',
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+                TextButton(
+                  onPressed: safePage < pageCount - 1
+                      ? () => setState(() => _page = safePage + 1)
+                      : () => setState(() => _page = 0),
+                  child: Text(
+                      safePage < pageCount - 1 ? 'See more' : 'Show first'),
                 ),
-              ),
+                IconButton(
+                  tooltip: 'Next tasks',
+                  onPressed: safePage >= pageCount - 1
+                      ? null
+                      : () => setState(() => _page = safePage + 1),
+                  icon: const Icon(Icons.chevron_right),
+                ),
+              ],
             ),
           ],
         ],

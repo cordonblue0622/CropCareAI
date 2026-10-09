@@ -8,6 +8,7 @@ import '../../../data/models/crop_model.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../shared/widgets/app_image_reference.dart';
 import '../../auth/providers/auth_provider.dart';
+import '../../notifications/providers/notifications_provider.dart';
 import '../providers/crops_provider.dart';
 import 'crop_detail_screen.dart';
 import 'add_crop_screen.dart';
@@ -866,7 +867,16 @@ class _CropCard extends StatelessWidget {
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
-              await context.read<CropsProvider>().deleteCrop(crop.id);
+              final notifications = context.read<NotificationsProvider>();
+              final deleted = await context.read<CropsProvider>().deleteCrop(
+                crop.id,
+                onLocalDelete: () => notifications.removeCropData(crop.id),
+              );
+              if (!deleted && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Could not delete this crop.')),
+                );
+              }
             },
             child: const Text('Delete', style: TextStyle(color: Colors.red)),
           ),

@@ -18,6 +18,9 @@ class _WebLocalNotificationsAdapter implements LocalNotificationsAdapter {
   }
 
   @override
+  Future<String?> getLaunchPayload() async => null;
+
+  @override
   Future<bool> requestPermission() async {
     try {
       js.requestPermission();
@@ -62,4 +65,7 @@ class _WebLocalNotificationsAdapter implements LocalNotificationsAdapter {
     }
     _timers.clear();
   }
+
+  @override
+  Future<Set<int>> pendingNotificationIds() async => _timers.keys.toSet();
 }

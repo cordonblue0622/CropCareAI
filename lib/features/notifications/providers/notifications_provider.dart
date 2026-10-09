@@ -1,4 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../data/local/database_helper.dart';
@@ -12,10 +16,12 @@ class NotificationsProvider extends ChangeNotifier {
   final DatabaseHelper _db;
 
   List<NotificationModel> _notifications = [];
+  final Set<String> _locallyDeletedNotificationIds = <String>{};
   List<TreatmentTaskModel> _todayTasks = [];
   List<TreatmentTaskModel> _missedTasks = [];
   List<TreatmentTaskModel> _tomorrowTasks = [];
   List<TreatmentTaskModel> _upcomingTasks = [];
+  List<TreatmentTaskModel> _pendingTasks = [];
   bool _isLoading = false;
 
   NotificationsProvider(
@@ -30,6 +36,7 @@ class NotificationsProvider extends ChangeNotifier {
   List<TreatmentTaskModel> get missedTasks => _missedTasks;
   List<TreatmentTaskModel> get tomorrowTasks => _tomorrowTasks;
   List<TreatmentTaskModel> get upcomingTasks => _upcomingTasks;
+  List<TreatmentTaskModel> get pendingTasks => _pendingTasks;
   bool get isLoading => _isLoading;
   int get unreadCount => unread.length;
 
@@ -44,46 +51,187 @@ class NotificationsProvider extends ChangeNotifier {
       _fetchTasks(userId),
     ]);
 
+    await _syncCropAttentionAlerts(userId);
+
     _isLoading = false;
     notifyListeners();
 
     final notificationsAllowed =
         await NotificationService.instance.requestPermission();
     if (notificationsAllowed) {
-      await NotificationService.instance.scheduleForTasks(_upcomingTasks);
+      await NotificationService.instance.scheduleForTasks(_pendingTasks);
     }
   }
 
   Future<void> _fetchNotifications(String userId) async {
     try {
       final rows = await _supabase.getNotifications(userId);
-      _notifications = rows.map(NotificationModel.fromMap).toList();
+      final deletedCropIds = await _deletedCropIds(userId);
+      final pendingDeleteIds = await _pendingNotificationDeleteIds();
+      _notifications = rows
+          .map(NotificationModel.fromMap)
+          .where((notification) =>
+              (notification.cropId == null ||
+                  !deletedCropIds.contains(notification.cropId)) &&
+              !pendingDeleteIds.contains(notification.id))
+          .toList();
       await _db.upsertRows(
         AppConstants.notificationsTable,
         _notifications.map((notification) => notification.toMap()),
       );
     } catch (_) {
-      final rows = await _db.queryByUserId(
-          AppConstants.notificationsTable, userId,
-          includeDeleted: true);
-      _notifications = rows.map(NotificationModel.fromMap).toList();
+      final rows =
+          await _db.queryByUserId(AppConstants.notificationsTable, userId);
+      final deletedCropIds = await _deletedCropIds(userId);
+      final pendingDeleteIds = await _pendingNotificationDeleteIds();
+      _notifications = rows
+          .map(NotificationModel.fromMap)
+          .where((notification) =>
+              (notification.cropId == null ||
+                  !deletedCropIds.contains(notification.cropId)) &&
+              !pendingDeleteIds.contains(notification.id))
+          .toList();
+    }
+  }
+
+  Future<Set<String>> _pendingNotificationDeleteIds() async {
+    try {
+      final pending = await _db.getPendingSyncItems();
+      final queuedDeletes = pending
+          .where((item) =>
+              item['table_name'] == AppConstants.notificationsTable &&
+              item['operation'] == 'DELETE')
+          .map((item) => item['record_id'] as String?)
+          .whereType<String>();
+      return {..._locallyDeletedNotificationIds, ...queuedDeletes};
+    } catch (_) {
+      return <String>{};
     }
   }
 
   Future<void> _fetchTasks(String userId) async {
     try {
       final rows = await _supabase.getTreatmentTasksByUser(userId);
-      final allTasks = rows.map(TreatmentTaskModel.fromMap).toList();
+      final deletedCropIds = await _deletedCropIds(userId);
+      final allTasks = rows
+          .map(TreatmentTaskModel.fromMap)
+          .where((task) => !deletedCropIds.contains(task.cropId))
+          .toList();
       await _db.upsertRows(
         AppConstants.treatmentTasksTable,
         allTasks.map((task) => task.toMap()),
       );
-      _bucketTasks(allTasks);
+      _pendingTasks = allTasks
+          .where((task) => !task.isDeleted && task.status == TaskStatus.pending)
+          .toList(growable: false);
+      _bucketTasks(_pendingTasks);
     } catch (_) {
       final rows =
           await _db.queryByUserId(AppConstants.treatmentTasksTable, userId);
-      final allTasks = rows.map(TreatmentTaskModel.fromMap).toList();
-      _bucketTasks(allTasks);
+      final deletedCropIds = await _deletedCropIds(userId);
+      final allTasks = rows
+          .map(TreatmentTaskModel.fromMap)
+          .where((task) => !deletedCropIds.contains(task.cropId))
+          .toList();
+      _pendingTasks = allTasks
+          .where((task) => !task.isDeleted && task.status == TaskStatus.pending)
+          .toList(growable: false);
+      _bucketTasks(_pendingTasks);
+    }
+  }
+
+  Future<Set<String>> _deletedCropIds(String userId) async {
+    try {
+      final rows = await _db.queryByUserId(
+        AppConstants.cropsTable,
+        userId,
+        includeDeleted: true,
+      );
+      return rows
+          .where((row) => row['is_deleted'] == true || row['is_deleted'] == 1)
+          .map((row) => row['id'] as String?)
+          .whereType<String>()
+          .toSet();
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
+  String _dismissedCropAlertsKey(String userId) =>
+      'dismissed_crop_attention_alerts_$userId';
+
+  Future<void> _rememberDismissedCropAlert(String userId, String cropId) async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final key = _dismissedCropAlertsKey(userId);
+      final dismissed = preferences.getStringList(key) ?? <String>[];
+      if (!dismissed.contains(cropId)) {
+        dismissed.add(cropId);
+        await preferences.setStringList(key, dismissed);
+      }
+    } catch (_) {
+      // The notification can still be dismissed when preferences are unavailable.
+    }
+  }
+
+  Future<void> _syncCropAttentionAlerts(String userId) async {
+    final overdueByCrop = <String, TreatmentTaskModel>{};
+    for (final task in _missedTasks) {
+      overdueByCrop.putIfAbsent(task.cropId, () => task);
+    }
+
+    Set<String> dismissedCropIds = <String>{};
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final key = _dismissedCropAlertsKey(userId);
+      final storedDismissals =
+          (preferences.getStringList(key) ?? <String>[]).toSet();
+      dismissedCropIds =
+          storedDismissals.intersection(overdueByCrop.keys.toSet());
+      if (dismissedCropIds.length != storedDismissals.length) {
+        await preferences.setStringList(key, dismissedCropIds.toList());
+      }
+    } catch (_) {
+      // Alert generation continues if local dismissal storage is unavailable.
+    }
+
+    for (final entry in overdueByCrop.entries) {
+      if (dismissedCropIds.contains(entry.key)) continue;
+      final existing = _notifications.any((notification) =>
+          notification.cropId == entry.key &&
+          notification.type == NotificationType.progressAlert);
+      if (existing) continue;
+
+      final now = DateTime.now();
+      final notification = NotificationModel(
+        id: const Uuid().v4(),
+        userId: userId,
+        cropId: entry.key,
+        treatmentId: entry.value.treatmentId,
+        type: NotificationType.progressAlert,
+        title: 'Your crop needs attention',
+        body: 'Visit the app to see what needs attention for this crop.',
+        scheduledFor: now,
+        createdAt: now,
+      );
+      _notifications.insert(0, notification);
+      await _db.upsertRow(
+        AppConstants.notificationsTable,
+        notification.toMap(),
+      );
+      await _db.addToSyncQueue(
+        tableName: AppConstants.notificationsTable,
+        recordId: notification.id,
+        operation: 'UPSERT',
+        payload: jsonEncode(_remoteNotificationMap(notification)),
+      );
+      try {
+        await _supabase.upsertRecord(
+          table: AppConstants.notificationsTable,
+          data: _remoteNotificationMap(notification),
+        );
+        await _clearQueuedOperation(notification.id, 'UPSERT');
+      } catch (_) {}
     }
   }
 
@@ -130,28 +278,111 @@ class NotificationsProvider extends ChangeNotifier {
   // ─── Actions ──────────────────────────────────────────────────────────────
 
   Future<void> markRead(String notificationId) async {
+    final idx = _notifications.indexWhere((n) => n.id == notificationId);
+    if (idx == -1) return;
+    final updated = _notifications[idx].copyWith(isRead: true);
+    _notifications[idx] = updated;
+    await _db.upsertRow(AppConstants.notificationsTable, updated.toMap());
+    await _db.addToSyncQueue(
+      tableName: AppConstants.notificationsTable,
+      recordId: notificationId,
+      operation: 'UPSERT',
+      payload: jsonEncode(_remoteNotificationMap(updated)),
+    );
+    notifyListeners();
     try {
       await _supabase.markNotificationRead(notificationId);
-      final idx = _notifications.indexWhere((n) => n.id == notificationId);
-      if (idx != -1) {
-        final updated = _notifications[idx].copyWith(isRead: true);
-        _notifications[idx] = updated;
-        await _db.upsertRow(AppConstants.notificationsTable, updated.toMap());
-        notifyListeners();
-      }
+      await _clearQueuedOperation(notificationId, 'UPSERT');
     } catch (_) {}
   }
 
   Future<void> deleteNotification(String notificationId) async {
+    final index = _notifications.indexWhere(
+      (notification) => notification.id == notificationId,
+    );
+    if (index == -1) return;
+
+    final notification = _notifications[index];
+    _locallyDeletedNotificationIds.add(notificationId);
+    _notifications.removeAt(index);
+    notifyListeners();
+
+    if (notification.type == NotificationType.progressAlert &&
+        notification.cropId != null) {
+      await _rememberDismissedCropAlert(
+        notification.userId,
+        notification.cropId!,
+      );
+    }
+
+    await _queueDelete(notificationId);
+    await _db.hardDelete(AppConstants.notificationsTable, notificationId);
     try {
       await _supabase.deleteNotification(notificationId);
-    } catch (_) {
-      // Keep the local list usable when the device is offline.
-    }
-    _notifications
-        .removeWhere((notification) => notification.id == notificationId);
-    await _db.hardDelete(AppConstants.notificationsTable, notificationId);
+      await _clearQueuedDelete(notificationId);
+      _locallyDeletedNotificationIds.remove(notificationId);
+    } catch (_) {}
+  }
+
+  Future<void> removeCropData(String cropId) async {
+    _notifications.removeWhere((notification) => notification.cropId == cropId);
+    _todayTasks.removeWhere((task) => task.cropId == cropId);
+    _missedTasks.removeWhere((task) => task.cropId == cropId);
+    _tomorrowTasks.removeWhere((task) => task.cropId == cropId);
+    _upcomingTasks.removeWhere((task) => task.cropId == cropId);
+    _pendingTasks.removeWhere((task) => task.cropId == cropId);
+
+    // Publish the pruned counts before awaiting OS reminder rescheduling.
     notifyListeners();
+    await NotificationService.instance.scheduleForTasks(_pendingTasks);
+  }
+
+  Future<void> _queueDelete(String notificationId) async {
+    await _db.addToSyncQueue(
+      tableName: AppConstants.notificationsTable,
+      recordId: notificationId,
+      operation: 'DELETE',
+      payload: jsonEncode({'id': notificationId}),
+    );
+  }
+
+  Future<void> _clearQueuedDelete(String notificationId) async {
+    final pending = await _db.getPendingSyncItems();
+    for (final item in pending) {
+      if (item['table_name'] == AppConstants.notificationsTable &&
+          item['record_id'] == notificationId &&
+          item['operation'] == 'DELETE') {
+        await _db.markSyncItemDone(item['id'] as int);
+      }
+    }
+  }
+
+  Future<void> _clearQueuedOperation(
+      String notificationId, String operation) async {
+    final pending = await _db.getPendingSyncItems();
+    for (final item in pending) {
+      if (item['table_name'] == AppConstants.notificationsTable &&
+          item['record_id'] == notificationId &&
+          item['operation'] == operation) {
+        await _db.markSyncItemDone(item['id'] as int);
+      }
+    }
+  }
+
+  Map<String, dynamic> _remoteNotificationMap(NotificationModel notification) {
+    return {
+      'id': notification.id,
+      'user_id': notification.userId,
+      'crop_id': notification.cropId,
+      'treatment_id': notification.treatmentId,
+      'type': notification.type.value,
+      'title': notification.title,
+      'body': notification.body,
+      'scheduled_for': notification.scheduledFor?.toIso8601String(),
+      'is_read': notification.isRead,
+      'is_sent': notification.isSent,
+      'created_at': notification.createdAt.toIso8601String(),
+    };
   }
 
   /// Marks the task complete in remote + local stores. Returns the affected
@@ -184,6 +415,7 @@ class NotificationsProvider extends ChangeNotifier {
       _missedTasks.removeWhere((task) => task.id == taskId);
       _tomorrowTasks.removeWhere((task) => task.id == taskId);
       _upcomingTasks.removeWhere((task) => task.id == taskId);
+      _pendingTasks.removeWhere((task) => task.id == taskId);
 
       if (completedTask != null) {
         await _db.upsertRow(
@@ -193,7 +425,7 @@ class NotificationsProvider extends ChangeNotifier {
       }
 
       // Reschedule so the completed task no longer fires reminders.
-      await NotificationService.instance.scheduleForTasks(_upcomingTasks);
+      await NotificationService.instance.scheduleForTasks(_pendingTasks);
       notifyListeners();
 
       return completedTask?.cropId;
@@ -204,10 +436,12 @@ class NotificationsProvider extends ChangeNotifier {
 
   void clear() {
     _notifications = [];
+    _locallyDeletedNotificationIds.clear();
     _todayTasks = [];
     _missedTasks = [];
     _tomorrowTasks = [];
     _upcomingTasks = [];
+    _pendingTasks = [];
     notifyListeners();
   }
 }

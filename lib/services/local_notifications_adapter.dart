@@ -38,6 +38,9 @@ abstract class LocalNotificationsAdapter {
   /// Initialise the platform implementation. Safe to call multiple times.
   Future<void> init();
 
+  /// Payload for a notification tap that launched a terminated app.
+  Future<String?> getLaunchPayload();
+
   /// Request OS permission to display notifications.
   /// Returns `true` if granted (or already granted), `false` if denied.
   Future<bool> requestPermission();
@@ -58,6 +61,8 @@ abstract class LocalNotificationsAdapter {
 
   /// Cancel everything we have scheduled.
   Future<void> cancelAll();
+
+  Future<Set<int>> pendingNotificationIds();
 
   /// Stream of payloads delivered when the user taps a notification.
   /// Empty broadcast stream on platforms where tap-handling is not wired.

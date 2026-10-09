@@ -39,7 +39,10 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
     }
 
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const initSettings = InitializationSettings(android: androidInit);
+    const initSettings = InitializationSettings(
+      android: androidInit,
+      iOS: DarwinInitializationSettings(),
+    );
 
     await _plugin.initialize(
       initSettings,
@@ -85,14 +88,37 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
   }
 
   @override
+  Future<String?> getLaunchPayload() async {
+    await init();
+    final details = await _plugin.getNotificationAppLaunchDetails();
+    final payload = details?.notificationResponse?.payload;
+    return details?.didNotificationLaunchApp == true &&
+            payload != null &&
+            payload.isNotEmpty
+        ? payload
+        : null;
+  }
+
+  @override
   Future<bool> requestPermission() async {
     await init();
-    if (!Platform.isAndroid) return false;
-    final androidImpl = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
-    if (androidImpl == null) return false;
-    final granted = await androidImpl.requestNotificationsPermission();
-    return granted ?? false;
+    if (Platform.isAndroid) {
+      final androidImpl = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      final granted = await androidImpl?.requestNotificationsPermission();
+      return granted ?? false;
+    }
+    if (Platform.isIOS) {
+      final iosImpl = _plugin.resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin>();
+      final granted = await iosImpl?.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      return granted ?? false;
+    }
+    return false;
   }
 
   @override
@@ -129,7 +155,14 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
         title,
         body,
         scheduledTz,
-        NotificationDetails(android: androidDetails),
+        NotificationDetails(
+          android: androidDetails,
+          iOS: DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: playSound,
+          ),
+        ),
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
         payload: payload,
         uiLocalNotificationDateInterpretation:
@@ -145,7 +178,14 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
         title,
         body,
         scheduledTz,
-        NotificationDetails(android: androidDetails),
+        NotificationDetails(
+          android: androidDetails,
+          iOS: DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: playSound,
+          ),
+        ),
         androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
         payload: payload,
         uiLocalNotificationDateInterpretation:
@@ -164,5 +204,12 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
   Future<void> cancelAll() async {
     await init();
     await _plugin.cancelAll();
+  }
+
+  @override
+  Future<Set<int>> pendingNotificationIds() async {
+    await init();
+    final requests = await _plugin.pendingNotificationRequests();
+    return requests.map((request) => request.id).toSet();
   }
 }

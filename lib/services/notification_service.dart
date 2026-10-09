@@ -1,18 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/constants/app_enums.dart';
 import '../data/models/treatment_task_model.dart';
 import 'local_notifications_adapter.dart';
 
-/// Schedules treatment-task reminders via the platform-specific
-/// [LocalNotificationsAdapter]. Three reminder points per task:
-///
-///   1. [ReminderKind.thirtyMin]  — `dueAt - 30min`
-///   2. [ReminderKind.due]        — at `dueAt`
-///   3. [ReminderKind.overdue]    — `dueAt + 4h` (skipped if task completed)
-///
-/// Past-due reminders are silently skipped by the adapter.
+/// Schedules one generic crop-attention notification at the nearest pending
+/// task for each crop, avoiding a stream of notifications for individual tasks.
 class NotificationService {
   static final NotificationService _instance = NotificationService._();
   static NotificationService get instance => _instance;
@@ -20,8 +16,14 @@ class NotificationService {
 
   final LocalNotificationsAdapter _adapter = createLocalNotificationsAdapter();
   static const _soundPreferenceKey = 'notification_sound_enabled';
+  static const _scheduledCropTasksKey = 'notification_scheduled_crop_tasks';
 
   Stream<String> get tapStream => _adapter.tapStream;
+
+  Future<String?> initializeAndGetLaunchPayload() async {
+    await _adapter.init();
+    return _adapter.getLaunchPayload();
+  }
 
   Future<bool> get soundEnabled async {
     final prefs = await SharedPreferences.getInstance();
@@ -41,52 +43,81 @@ class NotificationService {
 
   /// Cancel everything currently scheduled and replace with reminders for
   /// the given [tasks]. Idempotent — safe to call repeatedly.
-  Future<void> scheduleForTasks(List<TreatmentTaskModel> tasks) async {
+  Future<void> scheduleForTasks(
+    List<TreatmentTaskModel> tasks, {
+    bool forceReschedule = false,
+  }) async {
     await _adapter.init();
-    await _adapter.cancelAll();
+    final prefs = await SharedPreferences.getInstance();
     final playSound = await soundEnabled;
+    final nextTaskByCrop = <String, TreatmentTaskModel>{};
     for (final task in tasks) {
-      await _scheduleSingle(task, playSound: playSound);
+      if (task.isDeleted || task.status != TaskStatus.pending) continue;
+      final current = nextTaskByCrop[task.cropId];
+      if (current == null || task.dueAt.isBefore(current.dueAt)) {
+        nextTaskByCrop[task.cropId] = task;
+      }
     }
+    final desiredIds = nextTaskByCrop.keys
+        .map((cropId) => reminderIdFor(cropId, ReminderKind.due.token))
+        .toSet();
+    final pendingIds = await _adapter.pendingNotificationIds();
+    for (final staleId in pendingIds.difference(desiredIds)) {
+      await _adapter.cancel(staleId);
+    }
+
+    final scheduledTasks = <String, String>{
+      for (final entry
+          in (jsonDecode(prefs.getString(_scheduledCropTasksKey) ?? '{}')
+                  as Map<String, dynamic>)
+              .entries)
+        entry.key: entry.value.toString(),
+    };
+    scheduledTasks
+        .removeWhere((cropId, _) => !nextTaskByCrop.containsKey(cropId));
+
+    for (final task in nextTaskByCrop.values) {
+      final scheduleKey =
+          '${task.id}|${task.dueAt.toIso8601String()}|${playSound ? 'sound' : 'quiet'}';
+      final alreadyScheduled = scheduledTasks[task.cropId] == scheduleKey;
+      final notificationId = reminderIdFor(task.cropId, ReminderKind.due.token);
+      final overdue = task.dueAt.isBefore(DateTime.now());
+      if (alreadyScheduled &&
+          (overdue ||
+              (!forceReschedule && pendingIds.contains(notificationId)))) {
+        continue;
+      }
+      if (forceReschedule && pendingIds.contains(notificationId) && !overdue) {
+        await _adapter.cancel(notificationId);
+      }
+      final scheduled =
+          await _scheduleCropAttention(task, playSound: playSound);
+      if (scheduled) scheduledTasks[task.cropId] = scheduleKey;
+    }
+    await prefs.setString(_scheduledCropTasksKey, jsonEncode(scheduledTasks));
   }
 
-  Future<void> _scheduleSingle(
+  Future<bool> _scheduleCropAttention(
     TreatmentTaskModel task, {
     required bool playSound,
   }) async {
-    final dueAt = task.dueAt;
-    final title = task.title;
-    final payload = 'task:${task.id}';
-
+    final overdue = task.dueAt.isBefore(DateTime.now());
+    final id = reminderIdFor(task.cropId, ReminderKind.due.token);
+    if (overdue && (await _adapter.pendingNotificationIds()).contains(id)) {
+      return true;
+    }
     await _adapter.schedule(
-      id: reminderIdFor(task.id, ReminderKind.thirtyMin.token),
-      when: dueAt.subtract(const Duration(minutes: 30)),
-      title: 'Upcoming Task — 30 min',
-      body: '"$title" is due in 30 minutes. Get ready!',
-      kind: ReminderKind.thirtyMin,
+      id: id,
+      when: overdue
+          ? DateTime.now().add(const Duration(seconds: 20))
+          : task.dueAt,
+      title: 'Your crop needs attention',
+      body: 'Visit CropCare AI to see what needs attention.',
+      kind: overdue ? ReminderKind.overdue : ReminderKind.due,
       playSound: playSound,
-      payload: payload,
+      payload: 'crop:${task.cropId}',
     );
-
-    await _adapter.schedule(
-      id: reminderIdFor(task.id, ReminderKind.due.token),
-      when: dueAt,
-      title: 'Task Due Now',
-      body: '"$title" is due. Complete it and log your progress.',
-      kind: ReminderKind.due,
-      playSound: playSound,
-      payload: payload,
-    );
-
-    await _adapter.schedule(
-      id: reminderIdFor(task.id, ReminderKind.overdue.token),
-      when: dueAt.add(const Duration(hours: 4)),
-      title: 'Task Overdue',
-      body: '"$title" is overdue. Mark it done or reschedule.',
-      kind: ReminderKind.overdue,
-      playSound: playSound,
-      payload: payload,
-    );
+    return true;
   }
 
   // ─── Cancel ───────────────────────────────────────────────────────────────
@@ -94,8 +125,6 @@ class NotificationService {
   Future<void> cancelAll() => _adapter.cancelAll();
 
   Future<void> cancelForTask(String taskId) async {
-    await _adapter.cancel(reminderIdFor(taskId, ReminderKind.thirtyMin.token));
     await _adapter.cancel(reminderIdFor(taskId, ReminderKind.due.token));
-    await _adapter.cancel(reminderIdFor(taskId, ReminderKind.overdue.token));
   }
 }

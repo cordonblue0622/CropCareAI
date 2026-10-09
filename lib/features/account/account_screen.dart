@@ -57,7 +57,8 @@ class AccountScreen extends StatelessWidget {
               setDialogState(() => enabled = value);
               await service.setSoundEnabled(value);
               await service.scheduleForTasks(
-                context.read<NotificationsProvider>().upcomingTasks,
+                context.read<NotificationsProvider>().pendingTasks,
+                forceReschedule: true,
               );
             },
           ),

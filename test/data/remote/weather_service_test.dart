@@ -36,6 +36,7 @@ void main() {
                 'relative_humidity_2m': 86,
                 'precipitation': 1.2,
                 'weather_code': 95,
+                'is_day': 0,
               },
             }),
             200,
@@ -45,8 +46,8 @@ void main() {
       }
     });
 
-    final snapshot =
-        await WeatherService(client: client).fetchCurrentConditions(' Los Banos ');
+    final snapshot = await WeatherService(client: client)
+        .fetchCurrentConditions(' Los Banos ');
 
     expect(requestedUris, hasLength(2));
     expect(requestedUris.first.host, 'geocoding-api.open-meteo.com');
@@ -61,12 +62,17 @@ void main() {
     expect(requestedUris.last.path, '/v1/forecast');
     expect(requestedUris.last.queryParameters['latitude'], '14.1667');
     expect(requestedUris.last.queryParameters['longitude'], '121.25');
+    expect(
+      requestedUris.last.queryParameters['current'],
+      contains('is_day'),
+    );
     expect(snapshot, isNotNull);
     expect(snapshot!.locationLabel, 'Los Banos, Philippines');
     expect(snapshot.temperatureC, 29.4);
     expect(snapshot.relativeHumidity, 86);
     expect(snapshot.precipitationMm, 1.2);
     expect(snapshot.weatherCode, 95);
+    expect(snapshot.isDay, isFalse);
     expect(snapshot.conditionLabel, 'thunderstorms');
     expect(snapshot.fetchedAt, DateTime(2026, 9, 6, 14, 30));
     expect(snapshot.isHumid, isTrue);

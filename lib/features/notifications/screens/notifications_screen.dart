@@ -21,7 +21,9 @@ class NotificationsScreen extends StatefulWidget {
 class _NotificationsScreenState extends State<NotificationsScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabs;
+  int _alertPage = 0;
   int _taskPage = 0;
+  int _reminderPage = 0;
 
   @override
   void initState() {
@@ -69,6 +71,25 @@ class _NotificationsScreenState extends State<NotificationsScreen>
           initialSelectedDate:
               DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day),
         ),
+      ),
+    );
+  }
+
+  Future<void> _openCropNotification(NotificationModel notification) async {
+    final cropId = notification.cropId;
+    if (cropId == null) return;
+    final crops = context.read<CropsProvider>();
+    CropModel? crop;
+    for (final candidate in crops.crops) {
+      if (candidate.id == cropId && !candidate.isDeleted) {
+        crop = candidate;
+        break;
+      }
+    }
+    if (crop == null) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CropDetailScreen(crop: crop!, initialTabIndex: 1),
       ),
     );
   }
@@ -140,17 +161,26 @@ class _NotificationsScreenState extends State<NotificationsScreen>
               children: [
                 _AlertsTab(
                     notifications: notifs.notifications
-                        .where((n) => n.type == NotificationType.general)
+                        .where((n) =>
+                            n.type == NotificationType.general ||
+                            n.type == NotificationType.progressAlert)
                         .toList(),
+                    page: _alertPage,
+                    onPageChanged: (page) => setState(() => _alertPage = page),
                     onMarkRead: notifs.markRead,
-                    onDelete: notifs.deleteNotification),
+                    onDelete: notifs.deleteNotification,
+                    onOpenCrop: _openCropNotification),
                 _TasksTab(
                     todayTasks: notifs.todayTasks,
                     missedTasks: notifs.missedTasks,
                     page: _taskPage,
                     onPageChanged: (page) => setState(() => _taskPage = page),
                     onOpenTask: _openTask),
-                _RemindersTab(tomorrowTasks: notifs.tomorrowTasks),
+                _RemindersTab(
+                  tomorrowTasks: notifs.tomorrowTasks,
+                  page: _reminderPage,
+                  onPageChanged: (page) => setState(() => _reminderPage = page),
+                ),
               ],
             ),
     );
@@ -161,13 +191,19 @@ class _NotificationsScreenState extends State<NotificationsScreen>
 
 class _AlertsTab extends StatelessWidget {
   final List<NotificationModel> notifications;
+  final int page;
+  final ValueChanged<int> onPageChanged;
   final Future<void> Function(String) onMarkRead;
   final Future<void> Function(String) onDelete;
+  final Future<void> Function(NotificationModel) onOpenCrop;
 
   const _AlertsTab({
     required this.notifications,
+    required this.page,
+    required this.onPageChanged,
     required this.onMarkRead,
     required this.onDelete,
+    required this.onOpenCrop,
   });
 
   @override
@@ -178,15 +214,19 @@ class _AlertsTab extends StatelessWidget {
           message: 'No critical alerts',
           sub: 'Your crops are doing well!');
     }
+    const pageSize = 10;
+    final pageCount = (notifications.length / pageSize).ceil();
+    final safePage = page.clamp(0, pageCount - 1).toInt();
+    final visible = notifications.skip(safePage * pageSize).take(pageSize);
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         _SectionLabel(
-            label: 'App Updates',
+            label: 'Notifications',
             count: notifications.length,
             color: Colors.orange),
         const SizedBox(height: 8),
-        ...notifications.map((n) => Padding(
+        ...visible.map((n) => Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: Dismissible(
                 key: ValueKey(n.id),
@@ -202,9 +242,18 @@ class _AlertsTab extends StatelessWidget {
                   notification: n,
                   borderColor: Colors.orange,
                   onMarkRead: onMarkRead,
+                  onTap: n.type == NotificationType.progressAlert
+                      ? () => onOpenCrop(n)
+                      : null,
                 ),
               ),
             )),
+        if (pageCount > 1)
+          _NotificationPager(
+            page: safePage,
+            pageCount: pageCount,
+            onChanged: onPageChanged,
+          ),
       ],
     );
   }
@@ -234,7 +283,8 @@ class _TasksTab extends StatelessWidget {
           icon: Icons.task_alt, message: 'No tasks due', sub: 'All caught up!');
     }
     final pageCount = (tasks.length / 10).ceil();
-    final visibleTasks = tasks.skip(page * 10).take(10);
+    final safePage = page.clamp(0, pageCount - 1).toInt();
+    final visibleTasks = tasks.skip(safePage * 10).take(10);
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -251,7 +301,7 @@ class _TasksTab extends StatelessWidget {
             )),
         if (pageCount > 1)
           _NotificationPager(
-            page: page,
+            page: safePage,
             pageCount: pageCount,
             onChanged: onPageChanged,
           ),
@@ -293,7 +343,13 @@ class _NotificationPager extends StatelessWidget {
 
 class _RemindersTab extends StatelessWidget {
   final List<TreatmentTaskModel> tomorrowTasks;
-  const _RemindersTab({required this.tomorrowTasks});
+  final int page;
+  final ValueChanged<int> onPageChanged;
+  const _RemindersTab({
+    required this.tomorrowTasks,
+    required this.page,
+    required this.onPageChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -303,6 +359,10 @@ class _RemindersTab extends StatelessWidget {
           message: 'No reminders',
           sub: 'Reminders will appear here');
     }
+    const pageSize = 10;
+    final pageCount = (tomorrowTasks.length / pageSize).ceil();
+    final safePage = page.clamp(0, pageCount - 1).toInt();
+    final visible = tomorrowTasks.skip(safePage * pageSize).take(pageSize);
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -312,7 +372,7 @@ class _RemindersTab extends StatelessWidget {
           color: AppColors.primaryMedium,
         ),
         const SizedBox(height: 8),
-        ...tomorrowTasks.map(
+        ...visible.map(
           (task) => _TaskCard(
             task: task,
             isMissed: false,
@@ -320,6 +380,12 @@ class _RemindersTab extends StatelessWidget {
             onAction: null,
           ),
         ),
+        if (pageCount > 1)
+          _NotificationPager(
+            page: safePage,
+            pageCount: pageCount,
+            onChanged: onPageChanged,
+          ),
       ],
     );
   }
@@ -331,12 +397,12 @@ class _AlertCard extends StatelessWidget {
   final NotificationModel notification;
   final Color borderColor;
   final Future<void> Function(String) onMarkRead;
-  final Widget? action;
+  final VoidCallback? onTap;
   const _AlertCard({
     required this.notification,
     required this.borderColor,
     required this.onMarkRead,
-    this.action,
+    this.onTap,
   });
 
   @override
@@ -353,51 +419,57 @@ class _AlertCard extends StatelessWidget {
               offset: const Offset(0, 2))
         ],
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Expanded(
-              child: Text(notification.title,
-                  style: TextStyle(
-                      fontWeight: notification.isRead
-                          ? FontWeight.w600
-                          : FontWeight.w800,
-                      fontSize: 15,
-                      color: AppColors.textDark)),
-            ),
-            if (!notification.isRead)
-              Container(
-                width: 8,
-                height: 8,
-                decoration:
-                    BoxDecoration(shape: BoxShape.circle, color: borderColor),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(
+                child: Text(notification.title,
+                    style: TextStyle(
+                        fontWeight: notification.isRead
+                            ? FontWeight.w600
+                            : FontWeight.w800,
+                        fontSize: 15,
+                        color: AppColors.textDark)),
               ),
-          ]),
-          const SizedBox(height: 6),
-          Text(notification.body,
-              style: const TextStyle(
-                  color: AppColors.textGray, fontSize: 13, height: 1.4)),
-          const SizedBox(height: 8),
-          Row(children: [
-            const Icon(Icons.access_time,
-                size: 13, color: AppColors.textLightGray),
-            const SizedBox(width: 4),
-            Text(
-              DateFormat('MMM d, HH:mm').format(notification.createdAt),
-              style:
-                  const TextStyle(fontSize: 12, color: AppColors.textLightGray),
-            ),
-            const Spacer(),
-            if (action != null) action!,
-            if (!notification.isRead && action == null)
-              TextButton(
-                onPressed: () => onMarkRead(notification.id),
-                style: TextButton.styleFrom(foregroundColor: AppColors.primary),
-                child: const Text('Mark read', style: TextStyle(fontSize: 12)),
+              if (!notification.isRead)
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration:
+                      BoxDecoration(shape: BoxShape.circle, color: borderColor),
+                ),
+            ]),
+            const SizedBox(height: 6),
+            Text(notification.body,
+                style: const TextStyle(
+                    color: AppColors.textGray, fontSize: 13, height: 1.4)),
+            const SizedBox(height: 8),
+            Row(children: [
+              const Icon(Icons.access_time,
+                  size: 13, color: AppColors.textLightGray),
+              const SizedBox(width: 4),
+              Text(
+                DateFormat('MMM d, HH:mm').format(notification.createdAt),
+                style: const TextStyle(
+                    fontSize: 12, color: AppColors.textLightGray),
               ),
+              const Spacer(),
+              if (!notification.isRead)
+                TextButton(
+                  onPressed: () => onMarkRead(notification.id),
+                  style:
+                      TextButton.styleFrom(foregroundColor: AppColors.primary),
+                  child:
+                      const Text('Mark read', style: TextStyle(fontSize: 12)),
+                ),
+            ]),
           ]),
-        ]),
+        ),
       ),
     );
   }

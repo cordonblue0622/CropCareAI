@@ -165,6 +165,22 @@ void main() {
       'content': 'Saved crop conversation',
       'created_at': now.toIso8601String(),
     });
+    await database.upsertRow(AppConstants.treatmentTasksTable, {
+      'id': 'task-1',
+      'user_id': crop.userId,
+      'crop_id': crop.id,
+      'treatment_id': null,
+      'title': 'Water crop',
+      'description': null,
+      'due_at': now.toIso8601String(),
+      'completed_at': null,
+      'status': 'pending',
+      'task_order': 0,
+      'sync_version': 1,
+      'is_deleted': 0,
+      'created_at': now.toIso8601String(),
+      'updated_at': now.toIso8601String(),
+    });
     await database.upsertRow(AppConstants.notificationsTable, {
       'id': 'notification-1',
       'user_id': crop.userId,
@@ -190,7 +206,27 @@ void main() {
     addTearDown(provider.dispose);
     await provider.fetchCrops(crop.userId);
 
-    expect(await provider.deleteCrop(crop.id), isTrue);
+    var localCleanupReached = false;
+    expect(
+      await provider.deleteCrop(
+        crop.id,
+        onLocalDelete: () async {
+          localCleanupReached = true;
+          expect(
+            (await database.queryById(
+                AppConstants.treatmentTasksTable, 'task-1'))?['is_deleted'],
+            1,
+          );
+          expect(
+            await database.queryById(
+                AppConstants.notificationsTable, 'notification-1'),
+            isNull,
+          );
+        },
+      ),
+      isTrue,
+    );
+    expect(localCleanupReached, isTrue);
 
     expect(provider.crops, isEmpty);
     expect(

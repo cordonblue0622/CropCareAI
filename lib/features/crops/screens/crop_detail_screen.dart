@@ -28,7 +28,7 @@ import '../../../services/health_score_service.dart';
 import '../../../services/connectivity_service.dart';
 import '../../../services/speech_recognition_service.dart';
 import '../../auth/providers/auth_provider.dart';
-import '../../chat/screens/chat_screen.dart';
+import '../../chat/providers/chat_provider.dart';
 import '../../home/home_screen.dart';
 import '../providers/crops_provider.dart';
 import 'add_crop_screen.dart';
@@ -63,6 +63,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   List<TreatmentTaskModel> _tasks = [];
   List<ProgressUpdateModel> _progress = [];
   List<ChatMessageModel> _chatHistory = [];
+  ChatSessionModel? _cropChatSession;
   bool _loading = true;
 
   DateTime _selectedDate = _todayDate();
@@ -215,6 +216,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       );
       final rawSessions = _mergeRowsById(localSessions, remoteSessions);
       final sessions = _safeParseRows(rawSessions, ChatSessionModel.fromMap);
+      sessions.sort((a, b) => (b.lastMessageAt ?? b.createdAt)
+          .compareTo(a.lastMessageAt ?? a.createdAt));
       final messageRowsById = <String, Map<String, dynamic>>{};
       for (final session in sessions) {
         final localMessages = await db.queryChatMessages(session.id);
@@ -250,6 +253,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         _tasks = allTasks;
         _progress = progress;
         _chatHistory = historyMessages;
+        _cropChatSession = sessions.isEmpty ? null : sessions.first;
         _loading = false;
       });
       // Re-analyse any offline check-ins that are still pending GPT analysis.
@@ -1215,6 +1219,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                       diagnoses: _diagnoses,
                       chatHistory: _chatHistory,
                       crop: _crop,
+                      chatSession: _cropChatSession,
                     ),
                   ],
                 ),
@@ -2260,16 +2265,67 @@ class _VisualEvolutionCard extends StatelessWidget {
 
 // ─── Diagnoses Tab ────────────────────────────────────────────────────────
 
-class _DiagnosesTab extends StatelessWidget {
+class _DiagnosesTab extends StatefulWidget {
   final List<DiagnosisModel> diagnoses;
   final List<ChatMessageModel> chatHistory;
   final CropModel crop;
+  final ChatSessionModel? chatSession;
 
   const _DiagnosesTab({
     required this.diagnoses,
     required this.chatHistory,
     required this.crop,
+    required this.chatSession,
   });
+
+  @override
+  State<_DiagnosesTab> createState() => _DiagnosesTabState();
+}
+
+class _DiagnosesTabState extends State<_DiagnosesTab> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _ensureCropSession());
+  }
+
+  @override
+  void didUpdateWidget(covariant _DiagnosesTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.crop.id != widget.crop.id ||
+        oldWidget.chatSession?.id != widget.chatSession?.id) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _ensureCropSession());
+    }
+  }
+
+  Future<void> _ensureCropSession() async {
+    if (!mounted) return;
+    final chat = context.read<ChatProvider>();
+    final session = widget.chatSession;
+    if (session != null) {
+      if (chat.currentSession?.id != session.id) {
+        await chat.loadSession(session);
+      }
+      return;
+    }
+    if (chat.currentSession?.cropId == widget.crop.id) return;
+    await chat.startNewSession(widget.crop.userId, cropId: widget.crop.id);
+  }
+
+  Future<void> _sendMessage(String content) async {
+    final message = content.trim();
+    if (message.isEmpty) return;
+    await _ensureCropSession();
+    if (!mounted) return;
+    final chat = context.read<ChatProvider>();
+    await chat.sendMessage(
+      userId: widget.crop.userId,
+      content: message,
+      hintCropType: widget.crop.cropType.name,
+      attachedDiagnosis:
+          widget.diagnoses.isEmpty ? null : widget.diagnoses.first,
+    );
+  }
 
   Color _severityColor(Severity s) {
     switch (s) {
@@ -2286,8 +2342,16 @@ class _DiagnosesTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final chat = context.watch<ChatProvider>();
+    final diagnoses = widget.diagnoses;
+    final crop = widget.crop;
+    final liveHistory = chat.currentSession?.cropId == crop.id
+        ? chat.currentMessages
+            .where((message) => message.role != MessageRole.system)
+            .toList(growable: false)
+        : widget.chatHistory;
     final hasDiagnoses = diagnoses.isNotEmpty;
-    final hasHistory = chatHistory.isNotEmpty;
+    final hasHistory = liveHistory.isNotEmpty;
 
     return Column(
       children: [
@@ -2377,7 +2441,7 @@ class _DiagnosesTab extends StatelessWidget {
               if (hasHistory) ...[
                 const _SectionHeader('Conversation History'),
                 const SizedBox(height: 8),
-                ...chatHistory.map((msg) => _ChatBubble(message: msg)),
+                ...liveHistory.map((msg) => _ChatBubble(message: msg)),
                 const SizedBox(height: 8),
               ],
 
@@ -2410,7 +2474,11 @@ class _DiagnosesTab extends StatelessWidget {
         ),
 
         // ── Crop Chat Field ──
-        _CropChatBar(crop: crop),
+        _CropChatBar(
+          cropName: crop.cropName,
+          isSending: chat.isTyping,
+          onSend: _sendMessage,
+        ),
       ],
     );
   }
@@ -2506,9 +2574,28 @@ class _ChatBubble extends StatelessWidget {
 }
 
 /// Inline chat bar for continuing this crop's diagnosis conversation.
-class _CropChatBar extends StatelessWidget {
-  final CropModel crop;
-  const _CropChatBar({required this.crop});
+class _CropChatBar extends StatefulWidget {
+  final String cropName;
+  final bool isSending;
+  final Future<void> Function(String) onSend;
+  const _CropChatBar({
+    required this.cropName,
+    required this.isSending,
+    required this.onSend,
+  });
+
+  @override
+  State<_CropChatBar> createState() => _CropChatBarState();
+}
+
+class _CropChatBarState extends State<_CropChatBar> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2526,57 +2613,52 @@ class _CropChatBar extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: GestureDetector(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => ChatScreen(
-                    cropId: crop.id,
-                    cropName: crop.cropName,
-                    startFreshSession: false,
-                  ),
+            child: TextField(
+              controller: _controller,
+              enabled: !widget.isSending,
+              textInputAction: TextInputAction.send,
+              onSubmitted:
+                  widget.isSending ? null : (value) => widget.onSend(value),
+              decoration: InputDecoration(
+                hintText: 'Ask AI about ${widget.cropName}',
+                filled: true,
+                fillColor: Colors.grey[100],
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  borderSide:
+                      BorderSide(color: AppColors.primary.withOpacity(0.2)),
                 ),
-              ),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(24),
-                  border:
-                      Border.all(color: AppColors.primary.withOpacity(0.25)),
-                ),
-                child: Text(
-                  'Ask AI about ${crop.cropName}…',
-                  style:
-                      const TextStyle(color: AppColors.textGray, fontSize: 14),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  borderSide:
+                      BorderSide(color: AppColors.primary.withOpacity(0.2)),
                 ),
               ),
             ),
           ),
           const SizedBox(width: 8),
-          InkWell(
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => ChatScreen(
-                  cropId: crop.id,
-                  cropName: crop.cropName,
-                  startFreshSession: false,
-                ),
-              ),
-            ),
-            borderRadius: BorderRadius.circular(24),
-            child: Container(
-              width: 44,
-              height: 44,
-              decoration: const BoxDecoration(
-                color: AppColors.primary,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.chat_bubble_outline,
-                  color: Colors.white, size: 20),
-            ),
+          IconButton.filled(
+            tooltip: 'Send message',
+            onPressed: widget.isSending
+                ? null
+                : () {
+                    final text = _controller.text;
+                    _controller.clear();
+                    widget.onSend(text);
+                  },
+            style: IconButton.styleFrom(backgroundColor: AppColors.primary),
+            icon: widget.isSending
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.send_rounded, color: Colors.white),
           ),
         ],
       ),

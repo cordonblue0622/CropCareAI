@@ -248,9 +248,12 @@ class CropsProvider extends ChangeNotifier {
 
   // ─── Delete ───────────────────────────────────────────────────────────────
 
-  Future<bool> deleteCrop(String cropId) async {
+  Future<bool> deleteCrop(
+    String cropId, {
+    Future<void> Function()? onLocalDelete,
+  }) async {
     if (kIsWeb) {
-      return _deleteCropOnWeb(cropId);
+      return _deleteCropOnWeb(cropId, onLocalDelete: onLocalDelete);
     }
 
     try {
@@ -305,56 +308,6 @@ class CropsProvider extends ChangeNotifier {
         );
       }
 
-      if (crop != null) {
-        try {
-          final remoteDiagnosisRows =
-              await _supabase.getDiagnosesByCrop(cropId);
-          final remoteTreatmentRows =
-              await _supabase.getTreatmentsByCrop(cropId);
-          final remoteProgressRows = await _supabase.getProgressUpdates(cropId);
-          final remoteTaskRows =
-              (await _supabase.getTreatmentTasksByUser(crop.userId))
-                  .where((row) => row['crop_id'] == cropId)
-                  .toList(growable: false);
-          final remoteNotificationIds =
-              (await _supabase.getNotifications(crop.userId))
-                  .where((row) => row['crop_id'] == cropId)
-                  .map((row) => row['id'] as String?)
-                  .whereType<String>()
-                  .toList(growable: false);
-          final remoteSessionRows =
-              await _supabase.getChatSessionsByCrop(cropId);
-          final remoteSessionIds = remoteSessionRows
-              .map((row) => row['id'] as String?)
-              .whereType<String>()
-              .toList(growable: false);
-          final remoteChatMessageIds = <String>[];
-          for (final sessionId in remoteSessionIds) {
-            final rows = await _supabase.getChatMessages(sessionId);
-            remoteChatMessageIds.addAll(
-              rows.map((row) => row['id'] as String?).whereType<String>(),
-            );
-          }
-
-          await _softDeleteRemoteRows(
-              AppConstants.diagnosesTable, remoteDiagnosisRows);
-          await _softDeleteRemoteRows(
-              AppConstants.treatmentsTable, remoteTreatmentRows);
-          await _softDeleteRemoteRows(
-              AppConstants.treatmentTasksTable, remoteTaskRows);
-          await _softDeleteRemoteRows(
-              AppConstants.progressUpdatesTable, remoteProgressRows);
-          await _softDeleteRemoteRows(
-              AppConstants.chatSessionsTable, remoteSessionRows);
-          await _hardDeleteRemoteRows(
-              AppConstants.notificationsTable, remoteNotificationIds);
-          await _hardDeleteRemoteRows(
-              AppConstants.chatMessagesTable, remoteChatMessageIds);
-        } catch (_) {
-          // Best-effort remote cascade. Local deletion still proceeds.
-        }
-      }
-
       await _softDeleteLocalRows(AppConstants.diagnosesTable, diagnosisRows);
       await _softDeleteLocalRows(AppConstants.treatmentsTable, treatmentRows);
       await _softDeleteLocalRows(AppConstants.treatmentTasksTable, taskRows);
@@ -379,12 +332,24 @@ class CropsProvider extends ChangeNotifier {
           localData: deletedCrop.toMap(),
           remoteData: _remoteMap(deletedCrop),
         );
-        await _attemptSync();
       } else {
         await _db.softDelete(AppConstants.cropsTable, cropId);
       }
       _crops.removeWhere((c) => c.id == cropId);
       notifyListeners();
+      if (onLocalDelete != null) {
+        try {
+          await onLocalDelete();
+        } catch (_) {}
+      }
+      if (crop != null) {
+        try {
+          await _deleteCropRemotely(crop);
+        } catch (_) {
+          // Local tombstones and queued deletes remain authoritative offline.
+        }
+      }
+      await _attemptSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -393,7 +358,10 @@ class CropsProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool> _deleteCropOnWeb(String cropId) async {
+  Future<bool> _deleteCropOnWeb(
+    String cropId, {
+    Future<void> Function()? onLocalDelete,
+  }) async {
     final crop = _crops.cast<CropModel?>().firstWhere(
           (item) => item?.id == cropId,
           orElse: () => null,
@@ -405,55 +373,68 @@ class CropsProvider extends ChangeNotifier {
     }
 
     try {
-      final remoteDiagnosisRows = await _supabase.getDiagnosesByCrop(cropId);
-      final remoteTreatmentRows = await _supabase.getTreatmentsByCrop(cropId);
-      final remoteProgressRows = await _supabase.getProgressUpdates(cropId);
-      final remoteTaskRows =
-          (await _supabase.getTreatmentTasksByUser(crop.userId))
-              .where((row) => row['crop_id'] == cropId)
-              .toList(growable: false);
-      final remoteNotificationIds =
-          (await _supabase.getNotifications(crop.userId))
-              .where((row) => row['crop_id'] == cropId)
-              .map((row) => row['id'] as String?)
-              .whereType<String>();
-      final remoteSessionRows = await _supabase.getChatSessionsByCrop(cropId);
-      final remoteChatMessageIds = <String>[];
-      for (final session in remoteSessionRows) {
-        final sessionId = session['id'] as String?;
-        if (sessionId == null || sessionId.isEmpty) {
-          continue;
-        }
-        final rows = await _supabase.getChatMessages(sessionId);
-        remoteChatMessageIds.addAll(
-            rows.map((row) => row['id'] as String?).whereType<String>());
-      }
-
-      await _softDeleteRemoteRows(
-          AppConstants.diagnosesTable, remoteDiagnosisRows);
-      await _softDeleteRemoteRows(
-          AppConstants.treatmentsTable, remoteTreatmentRows);
-      await _softDeleteRemoteRows(
-          AppConstants.treatmentTasksTable, remoteTaskRows);
-      await _softDeleteRemoteRows(
-          AppConstants.progressUpdatesTable, remoteProgressRows);
-      await _softDeleteRemoteRows(
-          AppConstants.chatSessionsTable, remoteSessionRows);
-      await _hardDeleteRemoteRows(
-          AppConstants.notificationsTable, remoteNotificationIds);
-      await _hardDeleteRemoteRows(
-          AppConstants.chatMessagesTable, remoteChatMessageIds);
-      await _supabase.softDeleteCrop(cropId);
-
+      await _deleteCropRemotely(crop, deleteCrop: true);
       _crops.removeWhere((item) => item.id == cropId);
       _error = null;
       notifyListeners();
+      if (onLocalDelete != null) {
+        try {
+          await onLocalDelete();
+        } catch (_) {}
+      }
       return true;
     } catch (error) {
       _error = 'Could not delete this crop. Please try again.';
       notifyListeners();
       return false;
     }
+  }
+
+  Future<void> _deleteCropRemotely(
+    CropModel crop, {
+    bool deleteCrop = false,
+  }) async {
+    final remoteDiagnosisRows = await _supabase.getDiagnosesByCrop(crop.id);
+    final remoteTreatmentRows = await _supabase.getTreatmentsByCrop(crop.id);
+    final remoteProgressRows = await _supabase.getProgressUpdates(crop.id);
+    final remoteTaskRows =
+        (await _supabase.getTreatmentTasksByUser(crop.userId))
+            .where((row) => row['crop_id'] == crop.id)
+            .toList(growable: false);
+    final remoteNotificationIds =
+        (await _supabase.getNotifications(crop.userId))
+            .where((row) => row['crop_id'] == crop.id)
+            .map((row) => row['id'] as String?)
+            .whereType<String>()
+            .toList(growable: false);
+    final remoteSessionRows = await _supabase.getChatSessionsByCrop(crop.id);
+    final remoteSessionIds = remoteSessionRows
+        .map((row) => row['id'] as String?)
+        .whereType<String>()
+        .toList(growable: false);
+    final remoteChatMessageIds = <String>[];
+    for (final sessionId in remoteSessionIds) {
+      final rows = await _supabase.getChatMessages(sessionId);
+      remoteChatMessageIds.addAll(
+        rows.map((row) => row['id'] as String?).whereType<String>(),
+      );
+    }
+
+    await _softDeleteRemoteRows(
+        AppConstants.diagnosesTable, remoteDiagnosisRows);
+    await _softDeleteRemoteRows(
+        AppConstants.treatmentsTable, remoteTreatmentRows);
+    await _softDeleteRemoteRows(
+        AppConstants.treatmentTasksTable, remoteTaskRows);
+    await _softDeleteRemoteRows(
+        AppConstants.progressUpdatesTable, remoteProgressRows);
+    await _softDeleteRemoteRows(
+        AppConstants.chatSessionsTable, remoteSessionRows);
+    await _hardDeleteRemoteRows(
+        AppConstants.notificationsTable, remoteNotificationIds);
+    await _hardDeleteRemoteRows(
+        AppConstants.chatMessagesTable, remoteChatMessageIds);
+    if (deleteCrop) await _supabase.softDeleteCrop(crop.id);
   }
 
   Future<void> _softDeleteRemoteRows(

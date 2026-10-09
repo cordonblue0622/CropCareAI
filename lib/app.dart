@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'core/constants/app_constants.dart';
 import 'core/theme/app_theme.dart';
 import 'data/local/database_helper.dart';
+import 'data/models/crop_model.dart';
 import 'data/models/treatment_task_model.dart';
 import 'data/remote/ai_backend_service.dart';
 import 'data/remote/supabase_service.dart';
@@ -46,6 +47,7 @@ class _CropCareAppState extends State<CropCareApp> {
   bool? _lastConnectivityState;
   bool _offlineBannerDismissed = false;
   bool _notificationPermissionRequested = false;
+  String? _pendingNotificationPayload;
   bool _passwordRecoveryRouteOpen = false;
 
   @override
@@ -54,9 +56,32 @@ class _CropCareAppState extends State<CropCareApp> {
     // Subscribe lazily so the singleton has been created.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _tapSub = NotificationService.instance.tapStream.listen(_handleTap);
+      unawaited(_handleNotificationLaunch());
       _runVideoCleanup();
       _initializeBackendWarmUp();
       _initializeConnectivityStatus();
+    });
+  }
+
+  Future<void> _handleNotificationLaunch() async {
+    final payload =
+        await NotificationService.instance.initializeAndGetLaunchPayload();
+    if (payload != null && mounted) {
+      _pendingNotificationPayload = payload;
+      _schedulePendingNotificationTap();
+    }
+  }
+
+  void _schedulePendingNotificationTap() {
+    if (_pendingNotificationPayload == null ||
+        !(_authProvider?.isAuthenticated ?? false)) {
+      return;
+    }
+    Future<void>.delayed(const Duration(milliseconds: 850), () async {
+      if (!mounted || !(_authProvider?.isAuthenticated ?? false)) return;
+      final payload = _pendingNotificationPayload;
+      _pendingNotificationPayload = null;
+      if (payload != null) await _handleTap(payload);
     });
   }
 
@@ -117,6 +142,7 @@ class _CropCareAppState extends State<CropCareApp> {
         return;
       }
       if (auth.isAuthenticated) {
+        _schedulePendingNotificationTap();
         Future<void>.microtask(warmUpIfOnline);
         Future<void>.microtask(initializeNotificationsIfAuthenticated);
       }
@@ -133,6 +159,7 @@ class _CropCareAppState extends State<CropCareApp> {
 
     Future<void>.microtask(warmUpIfOnline);
     Future<void>.microtask(initializeNotificationsIfAuthenticated);
+    _schedulePendingNotificationTap();
     if (auth.passwordRecoveryRequested) {
       unawaited(_openPasswordRecovery(auth));
     }
@@ -260,11 +287,6 @@ class _CropCareAppState extends State<CropCareApp> {
   }
 
   Future<void> _handleTap(String payload) async {
-    // Phase 1 payload format: "task:<taskId>"
-    if (!payload.startsWith('task:')) return;
-    final taskId = payload.substring('task:'.length);
-    if (taskId.isEmpty) return;
-
     final navigator = _navigatorKey.currentState;
     if (navigator == null) return;
     final ctx = navigator.context;
@@ -273,6 +295,45 @@ class _CropCareAppState extends State<CropCareApp> {
     final db = ctx.read<DatabaseHelper>();
     final cropsProvider = ctx.read<CropsProvider>();
     final auth = ctx.read<AuthProvider>();
+    if (!auth.isAuthenticated) {
+      _pendingNotificationPayload = payload;
+      return;
+    }
+
+    if (payload.startsWith('crop:')) {
+      final cropId = payload.substring('crop:'.length);
+      if (cropId.isEmpty) return;
+      CropModel? crop;
+      for (final candidate in cropsProvider.crops) {
+        if (candidate.id == cropId) {
+          crop = candidate;
+          break;
+        }
+      }
+      if (crop == null) {
+        final userId = auth.currentUser?.id;
+        if (userId != null) await cropsProvider.fetchCrops(userId);
+        if (!navigator.mounted) return;
+        try {
+          crop = cropsProvider.crops.firstWhere(
+            (candidate) => candidate.id == cropId,
+          );
+        } catch (_) {
+          _showSnack(navigator.context, 'Crop not found.');
+          return;
+        }
+      }
+      final resolvedCrop = crop;
+      if (resolvedCrop == null) return;
+      navigator.push(MaterialPageRoute(
+        builder: (_) => CropDetailScreen(crop: resolvedCrop, initialTabIndex: 1),
+      ));
+      return;
+    }
+
+    if (!payload.startsWith('task:')) return;
+    final taskId = payload.substring('task:'.length);
+    if (taskId.isEmpty) return;
 
     Map<String, dynamic>? row;
     try {
@@ -294,34 +355,36 @@ class _CropCareAppState extends State<CropCareApp> {
     final task = TreatmentTaskModel.fromMap(row);
 
     // Find the crop. Refresh once if not present.
-    var crop = cropsProvider.activeCrops.firstWhere(
-      (c) => c.id == task.cropId,
-      orElse: () => cropsProvider.crops.firstWhere(
-        (c) => c.id == task.cropId,
-        orElse: () => cropsProvider.crops.isNotEmpty
-            ? cropsProvider.crops.first
-            : throw StateError('No crops loaded'),
-      ),
-    );
-    if (crop.id != task.cropId) {
-      // The fallback returned an unrelated crop; try a refresh.
-      final userId = auth.currentUser?.id;
-      if (userId != null) {
-        await cropsProvider.fetchCrops(userId);
+    CropModel? crop;
+    for (final candidate in cropsProvider.crops) {
+      if (candidate.id == task.cropId && !candidate.isDeleted) {
+        crop = candidate;
+        break;
       }
+    }
+    if (crop == null) {
+      final userId = auth.currentUser?.id;
+      if (userId != null) await cropsProvider.fetchCrops(userId);
       if (!navigator.mounted) return;
-      try {
-        crop = cropsProvider.crops.firstWhere((c) => c.id == task.cropId);
-      } catch (_) {
+      for (final candidate in cropsProvider.crops) {
+        if (candidate.id == task.cropId && !candidate.isDeleted) {
+          crop = candidate;
+          break;
+        }
+      }
+      if (crop == null) {
         _showSnack(navigator.context, 'Crop not found.');
         return;
       }
     }
 
+    final resolvedCrop = crop;
+    if (resolvedCrop == null) return;
+
     navigator.push(
       MaterialPageRoute(
         builder: (_) => CropDetailScreen(
-          crop: crop,
+          crop: resolvedCrop,
           initialTabIndex: 1, // Progress tab
           initialSelectedDate:
               DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day),
