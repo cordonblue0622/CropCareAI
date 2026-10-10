@@ -70,6 +70,7 @@ class _FakeAiBackendService implements AiBackendService {
     List<Map<String, String>> conversationHistory = const [],
     String? locale,
     String? hintCropType,
+    bool imagesFromPreviousTurns = false,
   }) async =>
       throw UnimplementedError();
 

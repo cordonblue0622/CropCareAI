@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:csv/csv.dart';
+import 'package:uuid/enums.dart';
 import 'package:uuid/uuid.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
@@ -982,6 +983,146 @@ class CropsProvider extends ChangeNotifier {
     return TreatmentTimelineRebaseResult(
       treatment: updatedTreatment,
       tasks: updatedTasks,
+    );
+  }
+
+  /// Migrates legacy reviewed-protocol tasks that stored a day's action list
+  /// in a single task into separately checkable task rows. Deterministic child
+  /// IDs make this safe to retry if a sync is interrupted partway through.
+  Future<List<TreatmentTaskModel>> expandLegacyProtocolTasks(
+    List<TreatmentTaskModel> tasks, {
+    bool syncNow = false,
+  }) async {
+    final expanded = <TreatmentTaskModel>[];
+    final tasksById = {for (final task in tasks) task.id: task};
+    var changed = false;
+    final dayTitle = RegExp(r'^Day\s+\d+\s*:', caseSensitive: false);
+    final actionLine = RegExp(r'^\s*-\s+(.+?)\s*$');
+
+    for (final task in tasks) {
+      if (task.isDeleted) continue;
+      final description = task.description?.trim() ?? '';
+      final actions = description
+          .split('\n')
+          .map((line) => actionLine.firstMatch(line)?.group(1)?.trim())
+          .whereType<String>()
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false);
+
+      if (!dayTitle.hasMatch(task.title.trim()) || actions.length < 2) {
+        expanded.add(task);
+        continue;
+      }
+
+      changed = true;
+      final contextDescription = description
+          .split('\n')
+          .where((line) => !actionLine.hasMatch(line))
+          .join('\n')
+          .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+          .trim();
+      final now = DateTime.now();
+      for (var index = 0; index < actions.length; index++) {
+        final childId = const Uuid().v5(
+          Namespace.url.value,
+          'cropcareai:protocol-task:${task.id}:${index + 1}',
+        );
+        final existingChild = tasksById[childId];
+        final child = existingChild ??
+            task.copyWith(
+              id: childId,
+              title: actions[index],
+              description:
+                  contextDescription.isEmpty ? null : contextDescription,
+              taskOrder: task.taskOrder == null
+                  ? index + 1
+                  : task.taskOrder! * 100 + index + 1,
+              updatedAt: now,
+            );
+        if (existingChild == null) {
+          await _upsertLocallyAndQueue(
+            table: AppConstants.treatmentTasksTable,
+            recordId: child.id,
+            localData: child.toMap(),
+            remoteData: _treatmentTaskRemoteMap(child),
+          );
+        }
+        expanded.add(child);
+      }
+
+      final retired = task.copyWith(
+        isDeleted: true,
+        syncVersion: task.syncVersion + 1,
+        updatedAt: now,
+      );
+      await _upsertLocallyAndQueue(
+        table: AppConstants.treatmentTasksTable,
+        recordId: retired.id,
+        localData: retired.toMap(),
+        remoteData: _treatmentTaskRemoteMap(retired),
+      );
+    }
+
+    if (changed) {
+      notifyListeners();
+      if (syncNow) await _attemptSync();
+    }
+    return expanded;
+  }
+
+  /// Moves a missed treatment day and all remaining pending days to the date
+  /// the farmer actually submitted the check-in. Completed earlier days keep
+  /// their historical dates.
+  Future<TreatmentTimelineRebaseResult> shiftTreatmentTimelineFrom({
+    required TreatmentModel treatment,
+    required List<TreatmentTaskModel> tasks,
+    required DateTime fromDate,
+    required DateTime toDate,
+    bool syncNow = true,
+  }) async {
+    final scheduledDay = DateTime(fromDate.year, fromDate.month, fromDate.day);
+    final submittedDay = DateTime(toDate.year, toDate.month, toDate.day);
+    final shiftDays = submittedDay.difference(scheduledDay).inDays;
+    if (shiftDays <= 0) {
+      return TreatmentTimelineRebaseResult(treatment: treatment, tasks: tasks);
+    }
+
+    final now = DateTime.now();
+    final shiftedTasks = <TreatmentTaskModel>[];
+    for (final task in tasks) {
+      if (task.treatmentId != treatment.id || task.isDeleted) {
+        shiftedTasks.add(task);
+        continue;
+      }
+
+      final taskDay =
+          DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
+      final isSubmittedDay = taskDay == scheduledDay;
+      if (taskDay.isBefore(scheduledDay) ||
+          (task.status == TaskStatus.completed && !isSubmittedDay)) {
+        shiftedTasks.add(task);
+        continue;
+      }
+
+      final shifted = task.copyWith(
+        dueAt: task.dueAt.add(Duration(days: shiftDays)),
+        syncVersion: task.syncVersion + 1,
+        updatedAt: now,
+      );
+      await _upsertLocallyAndQueue(
+        table: AppConstants.treatmentTasksTable,
+        recordId: shifted.id,
+        localData: shifted.toMap(),
+        remoteData: _treatmentTaskRemoteMap(shifted),
+      );
+      shiftedTasks.add(shifted);
+    }
+
+    notifyListeners();
+    if (syncNow) await _attemptSync();
+    return TreatmentTimelineRebaseResult(
+      treatment: treatment,
+      tasks: shiftedTasks,
     );
   }
 

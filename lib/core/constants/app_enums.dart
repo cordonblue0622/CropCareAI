@@ -96,7 +96,12 @@ extension MessageRoleX on MessageRole {
 }
 
 // ─── Notification Type ────────────────────────────────────────────────────────
-enum NotificationType { taskReminder, treatmentReminder, progressAlert, general }
+enum NotificationType {
+  taskReminder,
+  treatmentReminder,
+  progressAlert,
+  general
+}
 
 extension NotificationTypeX on NotificationType {
   String get value {

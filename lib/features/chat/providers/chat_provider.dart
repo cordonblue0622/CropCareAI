@@ -48,8 +48,8 @@ class ChatProvider extends ChangeNotifier {
   })  : _supabase = supabase,
         _db = db,
         _aiBackend = aiBackend,
-      _connectivity = connectivity,
-      _localClassifier = localClassifier ?? LocalClassifierService();
+        _connectivity = connectivity,
+        _localClassifier = localClassifier ?? LocalClassifierService();
 
   List<ChatSessionModel> get sessions => _sessions;
   List<ChatMessageModel> get currentMessages => _currentMessages;
@@ -171,30 +171,56 @@ class ChatProvider extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
 
+    final messageRowsById = <String, Map<String, dynamic>>{};
     try {
-      final rows = await _supabase.getChatMessages(session.id);
-      _currentMessages = rows.map(ChatMessageModel.fromMap).toList();
+      for (final row in await _db.queryChatMessages(session.id)) {
+        final id = (row['id'] as String?)?.trim();
+        if (id != null && id.isNotEmpty) {
+          messageRowsById[id] = Map<String, dynamic>.from(row);
+        }
+      }
+    } catch (error, stackTrace) {
+      _logCacheFailure('read cached chat messages', error, stackTrace);
+    }
+
+    try {
+      for (final row in await _supabase.getChatMessages(session.id)) {
+        final id = (row['id'] as String?)?.trim();
+        if (id != null && id.isNotEmpty) {
+          messageRowsById[id] = Map<String, dynamic>.from(row);
+        }
+      }
+    } catch (_) {
+      // Continue with cached messages when the server is unavailable.
+    }
+
+    try {
+      _currentMessages = messageRowsById.values
+          .map(ChatMessageModel.fromMap)
+          .toList()
+        ..sort((left, right) => left.createdAt.compareTo(right.createdAt));
       await _db.upsertRows(
         AppConstants.chatMessagesTable,
         _currentMessages.map((message) => message.toMap()),
       );
-    } catch (_) {
-      try {
-        final rows = await _db.queryChatMessages(session.id);
-        _currentMessages = rows.map(ChatMessageModel.fromMap).toList();
-      } catch (error, stackTrace) {
-        _logCacheFailure('load chat messages', error, stackTrace);
-        _currentMessages = [];
-      }
+    } catch (error, stackTrace) {
+      _logCacheFailure('load chat messages', error, stackTrace);
+      _currentMessages = [];
     }
 
-    // Restore images from Supabase Storage URLs stored in metadata.
+    // Restore images from Supabase Storage or inline references stored in metadata.
     for (var i = 0; i < _currentMessages.length; i++) {
       final imageBytesList = <Uint8List>[];
-      for (final url in _currentMessages[i].imageUrls) {
+      for (final reference in _currentMessages[i].imageUrls) {
+        final inlineBytes = decodeInlineImageDataUrl(reference);
+        if (inlineBytes != null) {
+          imageBytesList.add(inlineBytes);
+          continue;
+        }
+        if (!isRemoteImageReference(reference)) continue;
         try {
           final res = await http
-              .get(Uri.parse(url))
+              .get(Uri.parse(reference))
               .timeout(const Duration(seconds: 15));
           if (res.statusCode == 200) {
             imageBytesList.add(res.bodyBytes);
@@ -266,21 +292,32 @@ class ChatProvider extends ChangeNotifier {
       await _markCurrentSessionOffline();
     }
 
+    final provisionalSuggestionIndex = _currentMessages.indexWhere(
+      (message) =>
+          message.role == MessageRole.system &&
+          message.metadata?['type'] == 'add_crop_suggestion' &&
+          message.metadata?['diagnosis_mode'] == DiagnosisMode.offline.value,
+    );
+    final hasProvisionalOfflineSuggestion = provisionalSuggestionIndex >= 0;
     final hasShownAddCropSuggestion = _currentMessages.any(
-      (m) =>
-          m.role == MessageRole.system &&
-          m.metadata?['type'] == 'add_crop_suggestion',
+      (message) =>
+          message.role == MessageRole.system &&
+          message.metadata?['type'] == 'add_crop_suggestion',
     );
     final imageAttachments = attachedImageBytesList
         .where((bytes) => bytes.isNotEmpty)
         .map(Uint8List.fromList)
-      .toList();
+        .toList();
     if (imageAttachments.isEmpty &&
         attachedImageBytes != null &&
         attachedImageBytes.isNotEmpty) {
       imageAttachments.add(Uint8List.fromList(attachedImageBytes));
     }
     final hasAttachedImage = imageAttachments.isNotEmpty;
+    final conversationImages =
+        hasAttachedImage ? imageAttachments : _recentConversationImageBytes();
+    final hasConversationImage = conversationImages.isNotEmpty;
+    final previousImageReference = _latestConversationImageReference();
     final messageCropType = _inferCropType(
       labelKey: null,
       diseaseName: '',
@@ -294,7 +331,7 @@ class ChatProvider extends ChangeNotifier {
             explicitHint: hintCropType,
           );
     final requiresFreshImage = attachedDiagnosis == null &&
-        !hasAttachedImage &&
+        !hasConversationImage &&
         _requiresFreshImageForMessage(
           content,
           resolvedHintCropType: resolvedHintCropType,
@@ -397,8 +434,10 @@ class ChatProvider extends ChangeNotifier {
                   ? attachedDiagnosis!.cropId
                   : _currentSession?.cropId,
           diagnosis: attachedDiagnosis,
-          imageBytes: imageAttachments.isEmpty ? null : imageAttachments.first,
-          imageBytesList: imageAttachments,
+          imageBytes:
+              conversationImages.isEmpty ? null : conversationImages.first,
+          imageBytesList: conversationImages,
+          imagesFromPreviousTurns: !hasAttachedImage && hasConversationImage,
           imageMimeType: attachedImageMimeType,
           conversationHistory: conversationHistory,
           hintCropType: resolvedHintCropType,
@@ -439,9 +478,17 @@ class ChatProvider extends ChangeNotifier {
                   );
         final requiresMoreInput =
             _needsAdditionalInputResponse(backendResponse.answer);
+        final isOnlineConfirmationOfOfflineResult = online &&
+            hasProvisionalOfflineSuggestion &&
+            hasConversationImage &&
+            backendResponse.sources.contains('openai-vision') &&
+            !requiresMoreInput &&
+            backendResponse.inAppCropScope &&
+            inferredDiseaseName.isNotEmpty;
         final backendAllowsPlan = !requiresMoreInput &&
             backendResponse.inAppCropScope &&
-            backendResponse.showTreatmentUi;
+            (backendResponse.showTreatmentUi ||
+                isOnlineConfirmationOfOfflineResult);
         final normalizedActions = backendAllowsPlan
             ? (backendResponse.recommendedActions.isNotEmpty
                 ? backendResponse.recommendedActions
@@ -472,13 +519,15 @@ class ChatProvider extends ChangeNotifier {
         aiContent = _formatBackendResponse(backendResponse);
         final showTreatmentCard = backendAllowsPlan &&
             backendResponse.inAppCropScope &&
-            !hasShownAddCropSuggestion &&
+            (!hasShownAddCropSuggestion ||
+                isOnlineConfirmationOfOfflineResult) &&
             _shouldShowTreatmentCard(
               attachedDiagnosis: attachedDiagnosis,
               recommendedActions: effectiveActions,
               inferredDiseaseName: inferredDiseaseName,
               inferredCropType: effectiveCropType,
               aiContent: backendResponse.answer,
+              allowEmptyActions: isOnlineConfirmationOfOfflineResult,
             );
         aiMetadata = {
           'model': backendResponse.model,
@@ -540,10 +589,12 @@ class ChatProvider extends ChangeNotifier {
             'label_key': attachedDiagnosis.labelKey ?? '',
             'severity': attachedDiagnosis.severity.value,
             'diagnosis_mode': DiagnosisMode.offline.value,
-            'in_app_crop_scope': _supportedTreatmentCardCrops.contains(cropType),
+            'in_app_crop_scope':
+                _supportedTreatmentCardCrops.contains(cropType),
             'show_treatment_card': showTreatmentCard,
             if (showTreatmentCard)
-              'plan_title': _planTitleForDiagnosis(attachedDiagnosis.diseaseName),
+              'plan_title':
+                  _planTitleForDiagnosis(attachedDiagnosis.diseaseName),
           };
         } else if (!online && hasAttachedImage) {
           try {
@@ -582,14 +633,15 @@ class ChatProvider extends ChangeNotifier {
               ],
               'disease_name': diseaseName,
               'crop_type': cropType,
-              'label_key': localResult.status == 'ok'
-                  ? (detection?.labelKey ?? '')
-                  : '',
+              'label_key':
+                  localResult.status == 'ok' ? (detection?.labelKey ?? '') : '',
               'severity': Severity.moderate.value,
               'diagnosis_mode': DiagnosisMode.offline.value,
-              'in_app_crop_scope': _supportedTreatmentCardCrops.contains(cropType),
+              'in_app_crop_scope':
+                  _supportedTreatmentCardCrops.contains(cropType),
               'show_treatment_card': showTreatmentCard,
-              if (showTreatmentCard) 'plan_title': _planTitleForDiagnosis(diseaseName),
+              if (showTreatmentCard)
+                'plan_title': _planTitleForDiagnosis(diseaseName),
             };
           } catch (classifierError) {
             aiContent = _buildBackendUnavailableResponse(
@@ -641,7 +693,8 @@ class ChatProvider extends ChangeNotifier {
     // Add an "Add to My Crops" suggestion card when:
     //   - a local diagnosis was attached (scan result), OR
     //   - an image was sent and the AI returned treatment steps (GPT vision)
-    // Treatment checklist + "Add to My Crops" only on first diagnosis turn with backend consent
+    // A verified online vision diagnosis can replace the provisional offline
+    // suggestion so the crop card reflects the photo review.
     final showTreatmentCard = aiMetadata['show_treatment_card'] == true;
     if (showTreatmentCard) {
       final inAppCropScope = aiMetadata['in_app_crop_scope'] == true;
@@ -686,8 +739,11 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
         return;
       }
+      final replacedSuggestion = online && hasProvisionalOfflineSuggestion
+          ? _currentMessages[provisionalSuggestionIndex]
+          : null;
       final cardMsg = ChatMessageModel(
-        id: const Uuid().v4(),
+        id: replacedSuggestion?.id ?? const Uuid().v4(),
         sessionId: _currentSession!.id,
         userId: userId,
         role: MessageRole.system,
@@ -709,13 +765,20 @@ class ChatProvider extends ChangeNotifier {
           'crop_type': inferredCropType,
           'summary': aiContent,
           'model_name': aiMetadata['model'],
-          'image_url': persistedImageReference,
+          'image_url': persistedImageReference ?? previousImageReference,
+          if (persistedImageReferences.isEmpty &&
+              previousImageReference != null)
+            'image_urls': [previousImageReference],
           'recommended_actions':
               (aiMetadata['recommended_actions'] as List<dynamic>? ?? []),
         },
         createdAt: DateTime.now(),
       );
-      _currentMessages.add(cardMsg);
+      if (replacedSuggestion == null) {
+        _currentMessages.add(cardMsg);
+      } else {
+        _currentMessages[provisionalSuggestionIndex] = cardMsg;
+      }
       await _saveMessage(cardMsg);
     }
 
@@ -733,7 +796,7 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  List<Map<String, String>> _recentConversationHistory({int limit = 6}) {
+  List<Map<String, String>> _recentConversationHistory() {
     final history = <Map<String, String>>[];
 
     for (final message in _currentMessages.reversed) {
@@ -750,13 +813,33 @@ class ChatProvider extends ChangeNotifier {
         'role': message.role.value,
         'content': content,
       });
-
-      if (history.length == limit) {
-        break;
-      }
     }
 
     return history.reversed.toList();
+  }
+
+  List<Uint8List> _recentConversationImageBytes({int maxImages = 4}) {
+    final newestFirst = <Uint8List>[];
+    for (final message in _currentMessages.reversed) {
+      if (message.role != MessageRole.user) continue;
+      final attached = message.imageBytesList;
+      if (attached != null && attached.isNotEmpty) {
+        newestFirst.addAll(attached.where((bytes) => bytes.isNotEmpty));
+      } else if (message.imageBytes != null && message.imageBytes!.isNotEmpty) {
+        newestFirst.add(message.imageBytes!);
+      }
+      if (newestFirst.length >= maxImages) break;
+    }
+    return newestFirst.take(maxImages).toList().reversed.toList();
+  }
+
+  String? _latestConversationImageReference() {
+    for (final message in _currentMessages.reversed) {
+      if (message.role != MessageRole.user) continue;
+      final references = message.imageUrls;
+      if (references.isNotEmpty) return references.first;
+    }
+    return null;
   }
 
   bool _shouldShowTreatmentCard({
@@ -765,8 +848,9 @@ class ChatProvider extends ChangeNotifier {
     required String inferredDiseaseName,
     required String inferredCropType,
     required String aiContent,
+    bool allowEmptyActions = false,
   }) {
-    if (recommendedActions.isEmpty) {
+    if (recommendedActions.isEmpty && !allowEmptyActions) {
       return false;
     }
 
@@ -1076,7 +1160,7 @@ class ChatProvider extends ChangeNotifier {
 
     final cropDescription = crop.isEmpty ? '' : ' from the $crop crop family';
     return 'Offline scan result: ${detection.label}$cropDescription ($confidence% confidence).\n\n'
-          'This is a preliminary on-device result. Go online for a more accurate conversational AI review before starting treatment.';
+        'This is a preliminary on-device result. Go online for a more accurate conversational AI review before starting treatment.';
   }
 
   _OfflineTopGuess? _extractTopGuessFromPrompt(String text) {
@@ -1284,7 +1368,7 @@ class ChatProvider extends ChangeNotifier {
 
   Future<void> _saveMessage(ChatMessageModel msg) async {
     try {
-      await _supabase.insertChatMessage({
+      await _supabase.upsertChatMessage({
         'id': msg.id,
         'session_id': msg.sessionId,
         'user_id': msg.userId,

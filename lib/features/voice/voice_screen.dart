@@ -46,8 +46,8 @@ class _VoiceScreenState extends State<VoiceScreen>
     _pulseCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 900))
       ..repeat(reverse: true);
-    _pulse = Tween<double>(begin: 1.0, end: 1.18).animate(
-        CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+    _pulse = Tween<double>(begin: 1.0, end: 1.18)
+        .animate(CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
   }
 
   Future<bool> _ensureMicrophonePermission() async {
@@ -198,9 +198,8 @@ class _VoiceScreenState extends State<VoiceScreen>
       setState(() {
         _transcribing = false;
         _words = transcript;
-        _errorText = transcript.isEmpty
-            ? 'No speech was detected. Try again.'
-            : null;
+        _errorText =
+            transcript.isEmpty ? 'No speech was detected. Try again.' : null;
       });
 
       if (transcript.isNotEmpty) {
@@ -216,7 +215,7 @@ class _VoiceScreenState extends State<VoiceScreen>
     }
   }
 
-  void _handleCommand(String text) {
+  Future<void> _handleCommand(String text) async {
     if (text.isEmpty) return;
     final lower = text.toLowerCase();
     if (lower.contains('scan') ||
@@ -224,10 +223,10 @@ class _VoiceScreenState extends State<VoiceScreen>
         lower.contains('image') ||
         lower.contains('photo') ||
         lower.contains('diagnos')) {
-      Navigator.push(
+      await Navigator.push(
           context, MaterialPageRoute(builder: (_) => const ScanScreen()));
     } else {
-      Navigator.push(
+      await Navigator.push(
           context,
           MaterialPageRoute(
               builder: (_) => ChatScreen(
@@ -235,6 +234,14 @@ class _VoiceScreenState extends State<VoiceScreen>
                     initialQuery: text,
                   )));
     }
+    if (!mounted) return;
+    setState(() {
+      _listening = false;
+      _transcribing = false;
+      _usingBackendFallback = false;
+      _words = '';
+      _errorText = null;
+    });
   }
 
   @override
@@ -308,7 +315,9 @@ class _VoiceScreenState extends State<VoiceScreen>
                 ),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
                   Icon(
-                      _listening ? Icons.radio_button_on : Icons.radio_button_off,
+                      _listening
+                          ? Icons.radio_button_on
+                          : Icons.radio_button_off,
                       size: 10,
                       color: Colors.white),
                   const SizedBox(width: 5),
@@ -456,7 +465,8 @@ class _WaveBar extends StatefulWidget {
   State<_WaveBar> createState() => _WaveBarState();
 }
 
-class _WaveBarState extends State<_WaveBar> with SingleTickerProviderStateMixin {
+class _WaveBarState extends State<_WaveBar>
+    with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
   late Animation<double> _anim;
 
@@ -466,8 +476,8 @@ class _WaveBarState extends State<_WaveBar> with SingleTickerProviderStateMixin 
     final duration = Duration(milliseconds: 400 + widget.index * 60);
     _ctrl = AnimationController(vsync: this, duration: duration)
       ..repeat(reverse: true);
-    _anim = Tween<double>(begin: 4, end: 40).animate(
-        CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+    _anim = Tween<double>(begin: 4, end: 40)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
   }
 
   @override

@@ -24,13 +24,23 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
+  int _voiceScreenVersion = 0;
+
+  void _selectTab(int index) {
+    setState(() {
+      if (_currentIndex == 3 || index == 3) {
+        _voiceScreenVersion++;
+      }
+      _currentIndex = index;
+    });
+  }
 
   void switchTab(int index) {
     if (index == 2) {
       setTab(2);
       return;
     }
-    setState(() => _currentIndex = index);
+    _selectTab(index);
   }
 
   @override
@@ -56,7 +66,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setTab(2);
       return;
     }
-    setState(() => _currentIndex = index);
+    _selectTab(index);
   }
 
   Future<void> _loadData() async {
@@ -73,13 +83,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> setTab(int index) async {
     if (index == 2) {
+      if (_currentIndex == 3) {
+        setState(() => _voiceScreenVersion++);
+      }
       await Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => const ScanScreen()),
       );
       return;
     }
 
-    setState(() => _currentIndex = index);
+    _selectTab(index);
   }
 
   @override
@@ -93,7 +106,7 @@ class _HomeScreenState extends State<HomeScreen> {
           DashboardScreen(onOpenMyCrops: () => setTab(1)),
           const MyCropsScreen(),
           const ScanScreen(),
-          const VoiceScreen(),
+          VoiceScreen(key: ValueKey(_voiceScreenVersion)),
           const AccountScreen(),
         ],
       ),

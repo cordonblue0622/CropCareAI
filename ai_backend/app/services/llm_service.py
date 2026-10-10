@@ -79,6 +79,7 @@ The farmer is continuing an earlier chat (they may have already received a diagn
 
 Rules:
 - The active crop supplied in the chat context is authoritative. Answer only for that crop, even if prior messages or general examples mention tomato. Do not change crops or default to tomato unless the farmer explicitly names a different crop.
+- Inspect every photo attached to this request, including photos repeated from earlier in the conversation. Use those images to review or correct an earlier offline scan, and do not ask the farmer to upload a photo again when a usable image is attached.
 - If the farmer asks about a product, brand, spray, or active ingredient, explain whether it fits the active crop and likely problem, what it is mainly used for, and when it would not be a good fit.
 - If the farmer asks about fertilizer, feeding, or nutrients, answer directly for the named crop and growth stage. If web search results are available, use them to strengthen product-specific guidance.
 - If web search results are available, use them to verify what a named product is for or what active ingredient it contains. If reliable web results are not available, use your own crop-protection knowledge and clearly tell the farmer to verify the label, crop registration, dosage, and pre-harvest interval locally.
@@ -227,6 +228,13 @@ class LlmService:
         conversation_text = self._format_conversation_history(payload)
         if conversation_text:
             user_context_lines.append(f"Recent conversation:\n{conversation_text}")
+
+        if payload.images_from_previous_turns:
+            user_context_lines.append(
+                "The attached photo(s) were sent earlier in this same conversation. "
+                "Review them together with the conversation and the farmer's latest question. "
+                "Treat any TFLite/offline result as a preliminary suggestion that you must verify from the attached photo(s)."
+            )
 
         if active_crop:
             if payload.image_data_url or payload.image_data_urls:
@@ -864,7 +872,7 @@ class LlmService:
 
     def _format_conversation_history(self, payload: ChatRequest) -> str:
         lines: list[str] = []
-        for turn in payload.conversation_history[-6:]:
+        for turn in payload.conversation_history:
             content = " ".join(turn.content.split())
             if not content:
                 continue
@@ -959,7 +967,8 @@ class LlmService:
     ) -> list[str]:
         sources: list[str] = []
         if include_openai:
-            sources.append("openai-vision" if payload.image_data_url else "openai")
+            has_image = bool(payload.image_data_url or payload.image_data_urls)
+            sources.append("openai-vision" if has_image else "openai")
         if include_web_search:
             sources.append("openai-web-search")
         sources.extend(

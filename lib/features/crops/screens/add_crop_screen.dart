@@ -68,23 +68,31 @@ class _AddCropScreenState extends State<AddCropScreen> {
           notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
           plantedAt: _plantedAt,
         );
+        if (mounted) Navigator.pop(context);
       } else {
-        await cropsProvider.updateCrop(
-          widget.existing!.copyWith(
-            cropName: _nameCtrl.text.trim(),
-            cropType: _selectedType,
-            plotCode:
-                _plotCtrl.text.trim().isEmpty ? null : _plotCtrl.text.trim(),
-            locationLabel: _locationCtrl.text.trim().isEmpty
-                ? null
-                : _locationCtrl.text.trim(),
-            notes:
-                _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
-            plantedAt: _plantedAt,
-          ),
+        final updatedCrop = widget.existing!.copyWith(
+          cropName: _nameCtrl.text.trim(),
+          cropType: _selectedType,
+          plotCode:
+              _plotCtrl.text.trim().isEmpty ? null : _plotCtrl.text.trim(),
+          locationLabel: _locationCtrl.text.trim().isEmpty
+              ? null
+              : _locationCtrl.text.trim(),
+          notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
+          plantedAt: _plantedAt,
         );
+        final saved = await cropsProvider.updateCrop(updatedCrop);
+        if (!saved) throw StateError('Crop update was rejected.');
+
+        var resultCrop = updatedCrop;
+        for (final crop in cropsProvider.crops) {
+          if (crop.id == updatedCrop.id) {
+            resultCrop = crop;
+            break;
+          }
+        }
+        if (mounted) Navigator.pop(context, resultCrop);
       }
-      if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

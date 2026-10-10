@@ -63,10 +63,12 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   List<TreatmentTaskModel> _tasks = [];
   List<ProgressUpdateModel> _progress = [];
   List<ChatMessageModel> _chatHistory = [];
+  List<ChatSessionModel> _chatSessions = [];
   ChatSessionModel? _cropChatSession;
   bool _loading = true;
 
   DateTime _selectedDate = _todayDate();
+  DateTime? _dailyPlanFocusDate;
 
   static DateTime _todayDate() {
     final now = DateTime.now();
@@ -151,6 +153,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   Future<void> _loadData() async {
     final db = context.read<DatabaseHelper>();
     final svc = context.read<SupabaseService>();
+    final cropsProvider = context.read<CropsProvider>();
 
     try {
       final localDx = await db.queryDiagnosesForCrop(_crop.id);
@@ -176,8 +179,11 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       final rawTx = _mergeRowsById(localTx, remoteTx);
       final rawProgress = _mergeRowsById(localProgress, remoteProgress);
 
-      final diagnoses = _safeParseRows(rawDx, DiagnosisModel.fromMap);
-      final treatments = _safeParseRows(rawTx, TreatmentModel.fromMap);
+      final diagnoses = _safeParseRows(rawDx, DiagnosisModel.fromMap)
+        ..removeWhere((diagnosis) => diagnosis.isDeleted)
+        ..sort((a, b) => b.diagnosedAt.compareTo(a.diagnosedAt));
+      final treatments = _safeParseRows(rawTx, TreatmentModel.fromMap)
+        ..removeWhere((treatment) => treatment.isDeleted);
       final progress = _safeParseRows(rawProgress, ProgressUpdateModel.fromMap)
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
@@ -200,10 +206,12 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           }
         }
       }
-      final allTasks = _safeParseRows(
+      final parsedTasks = _safeParseRows(
         taskRowsById.values,
         TreatmentTaskModel.fromMap,
-      );
+      )..removeWhere((task) => task.isDeleted);
+      final allTasks =
+          await cropsProvider.expandLegacyProtocolTasks(parsedTasks);
       allTasks.sort((a, b) {
         final dueCompare = a.dueAt.compareTo(b.dueAt);
         if (dueCompare != 0) return dueCompare;
@@ -215,7 +223,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         <Map<String, dynamic>>[],
       );
       final rawSessions = _mergeRowsById(localSessions, remoteSessions);
-      final sessions = _safeParseRows(rawSessions, ChatSessionModel.fromMap);
+      final sessions = _safeParseRows(rawSessions, ChatSessionModel.fromMap)
+        ..removeWhere((session) => session.isDeleted);
       sessions.sort((a, b) => (b.lastMessageAt ?? b.createdAt)
           .compareTo(a.lastMessageAt ?? a.createdAt));
       final messageRowsById = <String, Map<String, dynamic>>{};
@@ -245,6 +254,12 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       final historyMessages = allMessages
           .where((message) => message.role != MessageRole.system)
           .toList(growable: false);
+      final linkedDiagnosisSessionId = diagnoses
+          .map((diagnosis) => diagnosis.chatSessionId?.trim() ?? '')
+          .firstWhere((id) => id.isNotEmpty, orElse: () => '');
+      final selectedCropSession = sessions
+          .where((session) => session.id == linkedDiagnosisSessionId)
+          .firstOrNull;
 
       if (!mounted) return;
       setState(() {
@@ -253,7 +268,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         _tasks = allTasks;
         _progress = progress;
         _chatHistory = historyMessages;
-        _cropChatSession = sessions.isEmpty ? null : sessions.first;
+        _chatSessions = sessions;
+        _cropChatSession =
+            selectedCropSession ?? (sessions.isEmpty ? null : sessions.first);
         _loading = false;
       });
       // Re-analyse any offline check-ins that are still pending GPT analysis.
@@ -510,57 +527,79 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _CheckInSheet(
-        crop: _crop,
-        allTasks: _tasks,
-        checkedTasks: checkedTasks,
-        activeTreatment: _treatmentForTask(task),
-        latestDiagnosis: _diagnosisForTask(task),
-        previousUpdate: previousUpdate,
-        onSubmitted: (newScore, newStatus, update) async {
-          submittedScore = newScore;
-          submittedStatus = newStatus;
-          submittedUpdate = update;
-          TreatmentTimelineRebaseResult? rebase;
-          if (activeTreatment != null &&
-              !_hasTreatmentCheckIn(activeTreatment.id)) {
-            rebase = await cropsProvider.rebaseTreatmentTimeline(
-              treatment: activeTreatment,
-              tasks: _tasks,
-              startedAt: update.updateDate,
+      builder: (modalContext) => AnimatedPadding(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(modalContext).viewInsets.bottom,
+        ),
+        child: _CheckInSheet(
+          crop: _crop,
+          allTasks: _tasks,
+          checkedTasks: checkedTasks,
+          activeTreatment: _treatmentForTask(task),
+          latestDiagnosis: _diagnosisForTask(task),
+          previousUpdate: previousUpdate,
+          onSubmitted: (newScore, newStatus, update) async {
+            submittedScore = newScore;
+            submittedStatus = newStatus;
+            submittedUpdate = update;
+            TreatmentTimelineRebaseResult? rebase;
+            if (activeTreatment != null && checkedTasks.isNotEmpty) {
+              if (!_hasTreatmentCheckIn(activeTreatment.id)) {
+                rebase = await cropsProvider.rebaseTreatmentTimeline(
+                  treatment: activeTreatment,
+                  tasks: _tasks,
+                  startedAt: update.updateDate,
+                  syncNow: false,
+                );
+              } else {
+                rebase = await cropsProvider.shiftTreatmentTimelineFrom(
+                  treatment: activeTreatment,
+                  tasks: _tasks,
+                  fromDate: checkedTasks.first.dueAt,
+                  toDate: update.updateDate,
+                  syncNow: false,
+                );
+              }
+            }
+            await cropsProvider.saveProgressUpdate(update, syncNow: false);
+            await cropsProvider.updateCropHealthScore(
+              _crop.id,
+              newScore,
+              newStatus,
               syncNow: false,
             );
-          }
-          await cropsProvider.saveProgressUpdate(update, syncNow: false);
-          await cropsProvider.updateCropHealthScore(
-            _crop.id,
-            newScore,
-            newStatus,
-            syncNow: false,
-          );
-          if (!mounted) return;
-          setState(() {
-            if (rebase != null) {
-              _treatments = _treatments
-                  .map((treatment) => treatment.id == rebase!.treatment.id
-                      ? rebase.treatment
-                      : treatment)
-                  .toList();
-              _tasks = rebase.tasks;
+            if (!mounted) return;
+            setState(() {
+              if (rebase != null) {
+                _treatments = _treatments
+                    .map((treatment) => treatment.id == rebase!.treatment.id
+                        ? rebase.treatment
+                        : treatment)
+                    .toList();
+                _tasks = rebase.tasks;
+              }
+              _selectedDate = DateTime(
+                update.updateDate.year,
+                update.updateDate.month,
+                update.updateDate.day,
+              );
+              _dailyPlanFocusDate = null;
+              _crop = _crop.copyWith(
+                latestHealthScore: newScore,
+                latestProgressStatus: newStatus,
+                lastCheckedAt: update.createdAt,
+              );
+              _progress = [update, ..._progress]
+                ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            });
+            unawaited(cropsProvider.flushPendingSync());
+            if (newStatus == ProgressStatus.insufficientData) {
+              unawaited(_analyzePendingCheckIns());
             }
-            _crop = _crop.copyWith(
-              latestHealthScore: newScore,
-              latestProgressStatus: newStatus,
-              lastCheckedAt: update.createdAt,
-            );
-            _progress = [update, ..._progress]
-              ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-          });
-          unawaited(cropsProvider.flushPendingSync());
-          if (newStatus == ProgressStatus.insufficientData) {
-            unawaited(_analyzePendingCheckIns());
-          }
-        },
+          },
+        ),
       ),
     );
 
@@ -920,34 +959,23 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     Navigator.of(context, rootNavigator: true).pop();
   }
 
-  Future<void> _onTaskToggled(TreatmentTaskModel task) async {
-    if (task.status == TaskStatus.completed) {
-      return;
-    }
-
+  void _onTaskToggled(TreatmentTaskModel task) {
     final taskDate =
         DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
-    final today = _todayDate();
-
-    if (taskDate.isAfter(today)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'This task can only be completed on ${DateFormat('MMM d').format(task.dueAt)} or later.',
-          ),
-        ),
-      );
-      return;
-    }
-
-    setState(() => _selectedDate = taskDate);
+    setState(() {
+      _selectedDate = taskDate;
+      _dailyPlanFocusDate = taskDate;
+    });
     _tabs.animateTo(1);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-            'Open the Daily Plan tab to upload your update for this task.'),
-      ),
+  }
+
+  Future<void> _editCrop() async {
+    final updatedCrop = await Navigator.push<CropModel>(
+      context,
+      MaterialPageRoute(builder: (_) => AddCropScreen(existing: _crop)),
     );
+    if (updatedCrop == null || !mounted) return;
+    setState(() => _crop = updatedCrop);
   }
 
   Color _statusColor(CropStatus s) {
@@ -981,11 +1009,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
             actions: [
               IconButton(
                 icon: const Icon(Icons.edit),
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => AddCropScreen(existing: _crop)),
-                ),
+                onPressed: _editCrop,
               ),
             ],
             flexibleSpace: FlexibleSpaceBar(
@@ -1203,6 +1227,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                       tasks: _tasks,
                       treatments: _treatments,
                       progress: _progress,
+                      focusDate: _dailyPlanFocusDate,
                       onTaskComplete: _completeDailyTask,
                       onDailyCheckIn: _showDailyCheckIn,
                     ),
@@ -1212,12 +1237,16 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                       progress: _progress,
                       healthCurve: _healthCurve,
                       selectedDate: _selectedDate,
-                      onDateSelected: (d) => setState(() => _selectedDate = d),
+                      onDateSelected: (d) => setState(() {
+                        _selectedDate = d;
+                        _dailyPlanFocusDate = null;
+                      }),
                       onTaskSelected: _onTaskToggled,
                     ),
                     _DiagnosesTab(
                       diagnoses: _diagnoses,
                       chatHistory: _chatHistory,
+                      chatSessions: _chatSessions,
                       crop: _crop,
                       chatSession: _cropChatSession,
                     ),
@@ -1449,6 +1478,7 @@ class _DailyPlanTab extends StatelessWidget {
   final List<TreatmentTaskModel> tasks;
   final List<TreatmentModel> treatments;
   final List<ProgressUpdateModel> progress;
+  final DateTime? focusDate;
   final Future<void> Function(TreatmentTaskModel task) onTaskComplete;
   final Future<void> Function(List<TreatmentTaskModel> tasks) onDailyCheckIn;
 
@@ -1457,6 +1487,7 @@ class _DailyPlanTab extends StatelessWidget {
     required this.tasks,
     required this.treatments,
     required this.progress,
+    required this.focusDate,
     required this.onTaskComplete,
     required this.onDailyCheckIn,
   });
@@ -1473,7 +1504,13 @@ class _DailyPlanTab extends StatelessWidget {
         .where((task) => task.status == TaskStatus.completed)
         .length;
     final scheduledDays = _scheduledDays(orderedTasks);
-    final activeDay = _activeDay(scheduledDays, orderedTasks);
+    final focusedDay = focusDate == null
+        ? null
+        : DateTime(focusDate!.year, focusDate!.month, focusDate!.day);
+    final activeDay = focusedDay != null &&
+            scheduledDays.any((day) => _isSameDay(day, focusedDay))
+        ? focusedDay
+        : _activeDay(scheduledDays, orderedTasks);
     final activeTasks = activeDay == null
         ? const <TreatmentTaskModel>[]
         : orderedTasks
@@ -1484,9 +1521,17 @@ class _DailyPlanTab extends StatelessWidget {
     final activeDayComplete = activeTasks.isNotEmpty &&
         activeTasks.every((task) => task.status == TaskStatus.completed);
     final activeDayCheckedIn = _hasCheckInAfterTasks(activeTasks);
+    final activeDayIsFuture = activeDay != null &&
+        DateUtils.dateOnly(activeDay)
+            .isAfter(DateUtils.dateOnly(DateTime.now()));
     final lockedUntilTomorrow = activeDay != null &&
-        !activeDayCheckedIn &&
-        _hasCheckInToday(activeTasks);
+        (activeDayIsFuture ||
+            (!activeDayCheckedIn && _hasCheckInToday(activeTasks)));
+    final lockLabel = activeDay == null
+        ? 'Available tomorrow'
+        : activeDayIsFuture
+            ? 'Available ${DateFormat('MMM d').format(activeDay)}'
+            : 'Available tomorrow';
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
@@ -1591,6 +1636,7 @@ class _DailyPlanTab extends StatelessWidget {
           ...activeTasks.map((task) => _TaskCard(
                 task: task,
                 locked: lockedUntilTomorrow,
+                lockedLabel: lockLabel,
                 onComplete: () => onTaskComplete(task),
               )),
           if (activeDayComplete && !activeDayCheckedIn) ...[
@@ -1608,7 +1654,9 @@ class _DailyPlanTab extends StatelessWidget {
                 ),
                 label: Text(
                   lockedUntilTomorrow
-                      ? 'Next treatment day unlocks tomorrow'
+                      ? activeDayIsFuture
+                          ? 'This treatment day starts ${DateFormat('MMM d').format(activeDay)}'
+                          : 'Next treatment day unlocks tomorrow'
                       : 'Submit daily check-in',
                 ),
                 style: ElevatedButton.styleFrom(
@@ -1724,11 +1772,13 @@ class _PlanDayHeader extends StatelessWidget {
 class _TaskCard extends StatelessWidget {
   final TreatmentTaskModel task;
   final bool locked;
+  final String lockedLabel;
   final Future<void> Function() onComplete;
 
   const _TaskCard({
     required this.task,
     required this.locked,
+    required this.lockedLabel,
     required this.onComplete,
   });
 
@@ -1814,7 +1864,7 @@ class _TaskCard extends StatelessWidget {
                 isCompleted
                     ? 'Completed ${task.completedAt != null ? DateFormat('MMM d').format(task.completedAt!) : 'today'}'
                     : locked
-                        ? 'Available tomorrow'
+                        ? lockedLabel
                         : 'Due today',
                 style: TextStyle(
                   fontSize: 11,
@@ -2070,7 +2120,6 @@ class _ProgressTab extends StatelessWidget {
         date: day,
         imageRef: imageRef,
         headline: humanizeDiseaseLabel(diagnosis.diseaseName),
-        caption: diagnosis.summary?.trim(),
       );
       break;
     }
@@ -2091,9 +2140,6 @@ class _ProgressTab extends StatelessWidget {
         date: day,
         imageRef: imageRef,
         headline: _statusLabel(update.progressStatus),
-        caption: update.note?.trim().isNotEmpty == true
-            ? update.note!.trim()
-            : update.detectedDiseaseName?.trim(),
       );
     }
 
@@ -2132,7 +2178,6 @@ class _VisualEvolutionEntry {
   final DateTime date;
   final String imageRef;
   final String headline;
-  final String? caption;
   final int dayNumber;
   final bool isToday;
 
@@ -2140,7 +2185,6 @@ class _VisualEvolutionEntry {
     required this.date,
     required this.imageRef,
     required this.headline,
-    this.caption,
     this.dayNumber = 1,
     this.isToday = false,
   });
@@ -2153,7 +2197,6 @@ class _VisualEvolutionEntry {
       date: date,
       imageRef: imageRef,
       headline: headline,
-      caption: caption,
       dayNumber: dayNumber ?? this.dayNumber,
       isToday: isToday ?? this.isToday,
     );
@@ -2241,19 +2284,6 @@ class _VisualEvolutionCard extends StatelessWidget {
                     color: AppColors.textGray,
                   ),
                 ),
-                if (entry.caption != null && entry.caption!.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    entry.caption!,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      height: 1.35,
-                      color: AppColors.textGray,
-                    ),
-                  ),
-                ],
               ],
             ),
           ),
@@ -2268,12 +2298,14 @@ class _VisualEvolutionCard extends StatelessWidget {
 class _DiagnosesTab extends StatefulWidget {
   final List<DiagnosisModel> diagnoses;
   final List<ChatMessageModel> chatHistory;
+  final List<ChatSessionModel> chatSessions;
   final CropModel crop;
   final ChatSessionModel? chatSession;
 
   const _DiagnosesTab({
     required this.diagnoses,
     required this.chatHistory,
+    required this.chatSessions,
     required this.crop,
     required this.chatSession,
   });
@@ -2283,9 +2315,24 @@ class _DiagnosesTab extends StatefulWidget {
 }
 
 class _DiagnosesTabState extends State<_DiagnosesTab> {
+  String? _activeSessionId;
+  String? _activeDiagnosisId;
+
+  DiagnosisModel? get _initialConversationDiagnosis => widget.diagnoses
+      .where((diagnosis) => diagnosis.chatSessionId?.trim().isNotEmpty == true)
+      .firstOrNull;
+
+  String? get _effectiveSessionId =>
+      _activeSessionId ??
+      _initialConversationDiagnosis?.chatSessionId ??
+      widget.chatSession?.id;
+
   @override
   void initState() {
     super.initState();
+    _activeSessionId =
+        _initialConversationDiagnosis?.chatSessionId ?? widget.chatSession?.id;
+    _activeDiagnosisId = _initialConversationDiagnosis?.id;
     WidgetsBinding.instance.addPostFrameCallback((_) => _ensureCropSession());
   }
 
@@ -2293,7 +2340,12 @@ class _DiagnosesTabState extends State<_DiagnosesTab> {
   void didUpdateWidget(covariant _DiagnosesTab oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.crop.id != widget.crop.id ||
-        oldWidget.chatSession?.id != widget.chatSession?.id) {
+        oldWidget.chatSession?.id != widget.chatSession?.id ||
+        oldWidget.diagnoses.firstOrNull?.chatSessionId !=
+            widget.diagnoses.firstOrNull?.chatSessionId) {
+      _activeSessionId = _initialConversationDiagnosis?.chatSessionId ??
+          widget.chatSession?.id;
+      _activeDiagnosisId = _initialConversationDiagnosis?.id;
       WidgetsBinding.instance.addPostFrameCallback((_) => _ensureCropSession());
     }
   }
@@ -2301,15 +2353,59 @@ class _DiagnosesTabState extends State<_DiagnosesTab> {
   Future<void> _ensureCropSession() async {
     if (!mounted) return;
     final chat = context.read<ChatProvider>();
-    final session = widget.chatSession;
+    final sessionId = _effectiveSessionId;
+    final session = widget.chatSessions
+            .where((candidate) => candidate.id == sessionId)
+            .firstOrNull ??
+        widget.chatSession;
     if (session != null) {
       if (chat.currentSession?.id != session.id) {
         await chat.loadSession(session);
       }
       return;
     }
-    if (chat.currentSession?.cropId == widget.crop.id) return;
-    await chat.startNewSession(widget.crop.userId, cropId: widget.crop.id);
+    if (chat.currentSession?.cropId == widget.crop.id) {
+      _activeSessionId = chat.currentSession?.id;
+    }
+  }
+
+  Future<void> _openDiagnosisConversation(DiagnosisModel diagnosis) async {
+    final sessionId = diagnosis.chatSessionId?.trim() ?? '';
+    if (sessionId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content:
+                Text('No saved conversation is linked to this diagnosis.')),
+      );
+      return;
+    }
+
+    final chat = context.read<ChatProvider>();
+    var session = widget.chatSessions
+        .where((candidate) => candidate.id == sessionId)
+        .firstOrNull;
+    if (session == null) {
+      await chat.fetchSessions(widget.crop.userId);
+      session = chat.sessions
+          .where(
+              (candidate) => candidate.id == sessionId && !candidate.isDeleted)
+          .firstOrNull;
+    }
+    if (session == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('This saved conversation is unavailable.')),
+      );
+      return;
+    }
+
+    await chat.loadSession(session);
+    if (!mounted) return;
+    setState(() {
+      _activeSessionId = session!.id;
+      _activeDiagnosisId = diagnosis.id;
+    });
   }
 
   Future<void> _sendMessage(String content) async {
@@ -2318,12 +2414,20 @@ class _DiagnosesTabState extends State<_DiagnosesTab> {
     await _ensureCropSession();
     if (!mounted) return;
     final chat = context.read<ChatProvider>();
+    if (chat.currentSession?.cropId != widget.crop.id) {
+      await chat.startNewSession(widget.crop.userId, cropId: widget.crop.id);
+    }
+    final diagnosis = widget.diagnoses
+        .where((candidate) => candidate.id == _activeDiagnosisId)
+        .firstOrNull;
+    if (mounted) {
+      setState(() => _activeSessionId = chat.currentSession?.id);
+    }
     await chat.sendMessage(
       userId: widget.crop.userId,
       content: message,
       hintCropType: widget.crop.cropType.name,
-      attachedDiagnosis:
-          widget.diagnoses.isEmpty ? null : widget.diagnoses.first,
+      attachedDiagnosis: diagnosis,
     );
   }
 
@@ -2345,11 +2449,19 @@ class _DiagnosesTabState extends State<_DiagnosesTab> {
     final chat = context.watch<ChatProvider>();
     final diagnoses = widget.diagnoses;
     final crop = widget.crop;
-    final liveHistory = chat.currentSession?.cropId == crop.id
+    final activeSessionId = _effectiveSessionId;
+    final providerHistory = chat.currentSession?.id == activeSessionId
         ? chat.currentMessages
             .where((message) => message.role != MessageRole.system)
             .toList(growable: false)
-        : widget.chatHistory;
+        : const <ChatMessageModel>[];
+    final cachedHistory = widget.chatHistory
+        .where((message) =>
+            message.role != MessageRole.system &&
+            (activeSessionId == null || message.sessionId == activeSessionId))
+        .toList(growable: false);
+    final liveHistory =
+        providerHistory.isNotEmpty ? providerHistory : cachedHistory;
     final hasDiagnoses = diagnoses.isNotEmpty;
     final hasHistory = liveHistory.isNotEmpty;
 
@@ -2420,6 +2532,18 @@ class _DiagnosesTabState extends State<_DiagnosesTab> {
                                     fontSize: 12,
                                     color: AppColors.textLightGray),
                               ),
+                              if (d.imageUrl?.trim().isNotEmpty == true) ...[
+                                const SizedBox(height: 10),
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: AppImageReference(
+                                    imageRef: d.imageUrl!.trim(),
+                                    height: 150,
+                                    width: double.infinity,
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                              ],
                               if (d.summary != null &&
                                   d.summary!.isNotEmpty) ...[
                                 const SizedBox(height: 8),
@@ -2430,6 +2554,20 @@ class _DiagnosesTabState extends State<_DiagnosesTab> {
                                         height: 1.4),
                                     maxLines: 4,
                                     overflow: TextOverflow.ellipsis),
+                              ],
+                              if (d.chatSessionId?.trim().isNotEmpty ==
+                                  true) ...[
+                                const SizedBox(height: 8),
+                                TextButton.icon(
+                                  onPressed: () =>
+                                      _openDiagnosisConversation(d),
+                                  icon: const Icon(Icons.forum_outlined),
+                                  label: Text(
+                                    activeSessionId == d.chatSessionId
+                                        ? 'Viewing conversation'
+                                        : 'View conversation',
+                                  ),
+                                ),
                               ],
                             ]),
                       ),
@@ -2491,6 +2629,7 @@ class _ChatBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isUser = message.role == MessageRole.user;
+    final imageReferences = message.imageUrls;
     return Padding(
       padding: EdgeInsets.only(
         bottom: 10,
@@ -2535,18 +2674,22 @@ class _ChatBubble extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (message.imageUrl != null)
+                  for (final imageReference in imageReferences) ...[
                     ClipRRect(
                       borderRadius: BorderRadius.circular(8),
                       child: AppImageReference(
-                        imageRef: message.imageUrl!,
-                        width: 180,
+                        imageRef: imageReference,
+                        width: 220,
                         fit: BoxFit.cover,
                       ),
                     ),
-                  if (message.imageUrl != null && message.content.isNotEmpty)
+                    if (imageReference != imageReferences.last)
+                      const SizedBox(height: 6),
+                  ],
+                  if (imageReferences.isNotEmpty && message.content.isNotEmpty)
                     const SizedBox(height: 6),
-                  if (message.content.isNotEmpty)
+                  if (message.content.isNotEmpty &&
+                      message.metadata?['hide_text'] != true)
                     Text(
                       message.content,
                       style: TextStyle(
@@ -2702,12 +2845,65 @@ class _CheckInSheetState extends State<_CheckInSheet> {
   final _speech = SpeechRecognitionService();
   bool _isDictating = false;
   bool _submitting = false;
+  OverlayEntry? _feedbackEntry;
+  Timer? _feedbackTimer;
 
   @override
   void dispose() {
+    _feedbackTimer?.cancel();
+    _feedbackEntry?.remove();
     _speech.stop();
     _noteCtrl.dispose();
     super.dispose();
+  }
+
+  void _showFeedback(String message) {
+    _feedbackTimer?.cancel();
+    _feedbackEntry?.remove();
+    final entry = OverlayEntry(
+      builder: (overlayContext) => Positioned(
+        top: MediaQuery.of(overlayContext).padding.top + 12,
+        left: 16,
+        right: 16,
+        child: Material(
+          color: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFF323232),
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x33000000),
+                  blurRadius: 12,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.info_outline, color: Colors.white, size: 20),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    message,
+                    maxLines: 5,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, height: 1.3),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    _feedbackEntry = entry;
+    Overlay.of(context, rootOverlay: true).insert(entry);
+    _feedbackTimer = Timer(const Duration(seconds: 5), () {
+      if (entry.mounted) entry.remove();
+      if (identical(_feedbackEntry, entry)) _feedbackEntry = null;
+    });
   }
 
   Future<void> _pickPhoto(ImageSource source) async {
@@ -2734,12 +2930,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
     );
     if (frame == null || frame.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Could not read a frame from that video. Try again.'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        _showFeedback('Could not read a frame from that video. Try again.');
       }
       return;
     }
@@ -2812,12 +3003,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
     );
     if (!started) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Voice dictation is unavailable on this device.'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        _showFeedback('Voice dictation is unavailable on this device.');
       }
       return;
     }
@@ -2840,12 +3026,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
 
   Future<void> _submit() async {
     if (_photoBytes == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please take a photo before submitting.'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      _showFeedback('Please take a photo before submitting.');
       return;
     }
     setState(() => _submitting = true);
@@ -2900,14 +3081,9 @@ class _CheckInSheetState extends State<_CheckInSheet> {
           if (!aiResponse.accepted) {
             if (mounted) {
               setState(() => _submitting = false);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    aiResponse.rejectionReason ??
-                        'This photo does not match your tracked crop well enough. Please retake the check-in photo.',
-                  ),
-                  behavior: SnackBarBehavior.floating,
-                ),
+              _showFeedback(
+                aiResponse.rejectionReason ??
+                    'This photo does not match your tracked crop well enough. Please retake the check-in photo.',
               );
             }
             return;
@@ -2956,12 +3132,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
     } catch (e) {
       if (mounted) {
         setState(() => _submitting = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Could not save this check-in. Please try again.'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        _showFeedback('Could not save this check-in. Please try again.');
       }
     }
   }
@@ -3168,6 +3339,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
                 TextField(
                   controller: _noteCtrl,
                   maxLines: 3,
+                  scrollPadding: const EdgeInsets.only(bottom: 24),
                   decoration: InputDecoration(
                     hintText: 'How does the crop look today? Any changes?',
                     filled: true,

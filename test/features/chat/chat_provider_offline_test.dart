@@ -115,6 +115,7 @@ class _TrackingAiBackendService extends AiBackendService {
     List<Map<String, String>> conversationHistory = const [],
     String? locale,
     String? hintCropType,
+    bool imagesFromPreviousTurns = false,
   }) async {
     sendCallCount++;
     lastCropId = cropId;

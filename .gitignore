@@ -65,7 +65,7 @@ ai_backend/models/**/*.safetensors
 ai_backend/models/whisper-cache/
 
 # ML training artifacts
-ml/.venv/
+ml/.venv*/
 ml/.pytest_cache/
 ml/artifacts/
 ml/data/

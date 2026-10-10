@@ -74,8 +74,7 @@ class TreatmentPlanService {
     );
   }
 
-  /// Groups each reviewed daily consultation into one checkable task so its
-  /// individual instructions do not artificially inflate a crop's task count.
+  /// Creates one checkable task for every action in a reviewed daily protocol.
   static TreatmentPlan buildFromDaySteps({
     required List<DiseaseTreatmentDayStepModel> daySteps,
     required DateTime startDate,
@@ -93,22 +92,39 @@ class TreatmentPlanService {
     final durationDays =
         (expectedDurationDays ?? lastProtocolDay).clamp(lastProtocolDay, 42);
 
+    final tasks = <TreatmentPlanTask>[];
+    for (final step in activeSteps) {
+      final actions = step.tasks
+          .map((task) => task.trim())
+          .where((task) => task.isNotEmpty)
+          .toList(growable: false);
+      final taskActions = actions.isEmpty ? [step.dayTitle.trim()] : actions;
+      for (final action in taskActions) {
+        if (action.isEmpty) continue;
+        tasks.add(
+          TreatmentPlanTask(
+            day: step.dayNumber,
+            dueAt: _dateForDay(startDate, step.dayNumber),
+            title: action,
+            description: _protocolActionDescription(
+              step: step,
+              durationDays: durationDays,
+            ),
+          ),
+        );
+      }
+    }
+
+    tasks.sort((left, right) {
+      final dateCompare = left.dueAt.compareTo(right.dueAt);
+      if (dateCompare != 0) return dateCompare;
+      return left.title.compareTo(right.title);
+    });
+
     return TreatmentPlan(
       durationDays: durationDays,
       sourceSteps: activeSteps.map((step) => step.dayTitle).toList(),
-      tasks: activeSteps
-          .map(
-            (step) => TreatmentPlanTask(
-              day: step.dayNumber,
-              dueAt: _dateForDay(startDate, step.dayNumber),
-              title: 'Day ${step.dayNumber}: ${step.dayTitle}',
-              description: _protocolDescription(
-                step: step,
-                durationDays: durationDays,
-              ),
-            ),
-          )
-          .toList(),
+      tasks: tasks,
     );
   }
 
@@ -242,15 +258,13 @@ class TreatmentPlanService {
     return 'Day $day of $durationDays. $cadence$productSafety';
   }
 
-  static String _protocolDescription({
+  static String _protocolActionDescription({
     required DiseaseTreatmentDayStepModel step,
     required int durationDays,
   }) {
-    final taskList = step.tasks.map((task) => '- $task').join('\n');
     final notes = step.notes?.trim();
     return [
       'Day ${step.dayNumber} of $durationDays.',
-      if (taskList.isNotEmpty) taskList,
       if (notes != null && notes.isNotEmpty) 'Why this matters: $notes',
     ].join('\n\n');
   }

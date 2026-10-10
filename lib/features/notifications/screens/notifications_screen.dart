@@ -39,6 +39,10 @@ class _NotificationsScreenState extends State<NotificationsScreen>
   Future<void> _openCropNotification(NotificationModel notification) async {
     final cropId = notification.cropId;
     if (cropId == null) return;
+    await _openCropId(cropId);
+  }
+
+  Future<void> _openCropId(String cropId) async {
     final crops = context.read<CropsProvider>();
     CropModel? crop;
     for (final candidate in crops.crops) {
@@ -59,6 +63,10 @@ class _NotificationsScreenState extends State<NotificationsScreen>
   Widget build(BuildContext context) {
     final notifs = context.watch<NotificationsProvider>();
     final user = context.watch<AuthProvider>().currentUser;
+    final cropsById = {
+      for (final crop in context.watch<CropsProvider>().crops)
+        if (!crop.isDeleted) crop.id: crop,
+    };
 
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
@@ -94,7 +102,7 @@ class _NotificationsScreenState extends State<NotificationsScreen>
             Tab(
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 const Text('Alerts'),
-                if (notifs.missedTasks.isNotEmpty)
+                if (notifs.alertCount > 0)
                   Container(
                     margin: const EdgeInsets.only(left: 4),
                     padding:
@@ -103,7 +111,7 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                         color: Colors.red,
                         borderRadius: BorderRadius.circular(10)),
                     child: Text(
-                      '${notifs.missedTasks.length}',
+                      '${notifs.alertCount}',
                       style: const TextStyle(color: Colors.white, fontSize: 10),
                     ),
                   ),
@@ -123,7 +131,8 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                     notifications: notifs.notifications
                         .where((n) =>
                             n.type == NotificationType.general ||
-                            n.type == NotificationType.progressAlert)
+                            n.type == NotificationType.progressAlert ||
+                            n.type == NotificationType.treatmentReminder)
                         .toList(),
                     page: _alertPage,
                     onPageChanged: (page) => setState(() => _alertPage = page),
@@ -132,8 +141,10 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                     onOpenCrop: _openCropNotification),
                 _RemindersTab(
                   tomorrowTasks: notifs.tomorrowTasks,
+                  cropsById: cropsById,
                   page: _reminderPage,
                   onPageChanged: (page) => setState(() => _reminderPage = page),
+                  onOpenCrop: _openCropId,
                 ),
               ],
             ),
@@ -196,9 +207,7 @@ class _AlertsTab extends StatelessWidget {
                   notification: n,
                   borderColor: Colors.orange,
                   onMarkRead: onMarkRead,
-                  onTap: n.type == NotificationType.progressAlert
-                      ? () => onOpenCrop(n)
-                      : null,
+                  onTap: n.cropId != null ? () => onOpenCrop(n) : null,
                 ),
               ),
             )),
@@ -246,43 +255,59 @@ class _NotificationPager extends StatelessWidget {
 
 class _RemindersTab extends StatelessWidget {
   final List<TreatmentTaskModel> tomorrowTasks;
+  final Map<String, CropModel> cropsById;
   final int page;
   final ValueChanged<int> onPageChanged;
+  final Future<void> Function(String) onOpenCrop;
   const _RemindersTab({
     required this.tomorrowTasks,
+    required this.cropsById,
     required this.page,
     required this.onPageChanged,
+    required this.onOpenCrop,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (tomorrowTasks.isEmpty) {
+    final tasksByCrop = <String, List<TreatmentTaskModel>>{};
+    for (final task in tomorrowTasks) {
+      if (!cropsById.containsKey(task.cropId)) continue;
+      tasksByCrop
+          .putIfAbsent(task.cropId, () => <TreatmentTaskModel>[])
+          .add(task);
+    }
+    final cropIds = tasksByCrop.keys.toList()
+      ..sort(
+          (a, b) => cropsById[a]!.cropName.compareTo(cropsById[b]!.cropName));
+    if (cropIds.isEmpty) {
       return _emptyState(
           icon: Icons.notifications_none,
           message: 'No reminders',
           sub: 'Reminders will appear here');
     }
     const pageSize = 10;
-    final pageCount = (tomorrowTasks.length / pageSize).ceil();
+    final pageCount = (cropIds.length / pageSize).ceil();
     final safePage = page.clamp(0, pageCount - 1).toInt();
-    final visible = tomorrowTasks.skip(safePage * pageSize).take(pageSize);
+    final visible = cropIds.skip(safePage * pageSize).take(pageSize);
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         _SectionLabel(
           label: 'Tomorrow',
-          count: tomorrowTasks.length,
+          count: cropIds.length,
           color: AppColors.primaryMedium,
         ),
         const SizedBox(height: 8),
-        ...visible.map(
-          (task) => _TaskCard(
-            task: task,
-            isMissed: false,
-            actionLabel: 'AVAILABLE TOMORROW',
-            onAction: null,
-          ),
-        ),
+        ...visible.map((cropId) {
+          final crop = cropsById[cropId]!;
+          final cropTasks = tasksByCrop[cropId]!;
+          return _CropReminderCard(
+            crop: crop,
+            taskCount: cropTasks.length,
+            dueAt: cropTasks.first.dueAt,
+            onTap: () => onOpenCrop(cropId),
+          );
+        }),
         if (pageCount > 1)
           _NotificationPager(
             page: safePage,
@@ -290,6 +315,81 @@ class _RemindersTab extends StatelessWidget {
             onChanged: onPageChanged,
           ),
       ],
+    );
+  }
+}
+
+class _CropReminderCard extends StatelessWidget {
+  final CropModel crop;
+  final int taskCount;
+  final DateTime dueAt;
+  final VoidCallback onTap;
+
+  const _CropReminderCard({
+    required this.crop,
+    required this.taskCount,
+    required this.dueAt,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cropType = crop.cropType.name;
+    final message = taskCount == 1
+        ? 'A new task awaits for your $cropType crop. Visit your crop now to review the plan.'
+        : '$taskCount tasks await for your $cropType crop. Visit your crop now to review the plan.';
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      color: Colors.white,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.notifications_active_outlined,
+                  color: AppColors.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      crop.cropName,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      message,
+                      style: const TextStyle(
+                        color: AppColors.textGray,
+                        fontSize: 13,
+                        height: 1.4,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Tomorrow · ${DateFormat('MMM d').format(dueAt)}',
+                      style: const TextStyle(
+                        color: AppColors.primaryMedium,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: AppColors.textGray),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -374,87 +474,6 @@ class _AlertCard extends StatelessWidget {
           ]),
         ),
       ),
-    );
-  }
-}
-
-class _TaskCard extends StatelessWidget {
-  final TreatmentTaskModel task;
-  final bool isMissed;
-  final String actionLabel;
-  final VoidCallback? onAction;
-
-  const _TaskCard({
-    required this.task,
-    required this.isMissed,
-    required this.actionLabel,
-    required this.onAction,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isActionEnabled = onAction != null;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border(
-            left: BorderSide(
-                color: isMissed ? Colors.red : AppColors.primary, width: 4)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(task.title,
-            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-        if (task.description != null && task.description!.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          Text(task.description!,
-              style: const TextStyle(
-                  color: AppColors.textGray, fontSize: 13, height: 1.4)),
-        ],
-        const SizedBox(height: 8),
-        Row(children: [
-          Icon(
-            isMissed ? Icons.warning_amber : Icons.schedule,
-            size: 14,
-            color: isMissed ? Colors.red : AppColors.textGray,
-          ),
-          const SizedBox(width: 4),
-          Text(
-            isMissed
-                ? 'Due ${DateFormat('MMM d').format(task.dueAt)}'
-                : isActionEnabled
-                    ? 'Due today ${DateFormat('HH:mm').format(task.dueAt)}'
-                    : 'Due tomorrow ${DateFormat('HH:mm').format(task.dueAt)}',
-            style: TextStyle(
-                fontSize: 12,
-                color: isMissed
-                    ? Colors.red
-                    : isActionEnabled
-                        ? AppColors.textGray
-                        : AppColors.primaryMedium),
-          ),
-          const Spacer(),
-          ElevatedButton(
-            onPressed: onAction,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: isActionEnabled
-                  ? (isMissed ? Colors.orange : AppColors.primary)
-                  : AppColors.textLightGray,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8)),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            child: Text(actionLabel,
-                style:
-                    const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-          ),
-        ]),
-      ]),
     );
   }
 }

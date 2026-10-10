@@ -503,6 +503,10 @@ class SupabaseService {
     await _client.from('chat_messages').insert(message);
   }
 
+  Future<void> upsertChatMessage(Map<String, dynamic> message) async {
+    await _client.from('chat_messages').upsert(message);
+  }
+
   // ─── Notifications ────────────────────────────────────────────────────────
 
   Future<List<Map<String, dynamic>>> getNotifications(String userId) async {

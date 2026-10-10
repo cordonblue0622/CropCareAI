@@ -393,6 +393,16 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     final chat = context.watch<ChatProvider>();
     final messages = chat.currentMessages;
+    final hasOnlineVisionReview = messages.any((message) {
+      if (message.role != MessageRole.assistant) return false;
+      final sources = message.metadata?['sources'];
+      final reviewedDisease =
+          (message.metadata?['disease_name'] as String? ?? '').trim();
+      return sources is List &&
+          sources.contains('openai-vision') &&
+          reviewedDisease.isNotEmpty &&
+          message.metadata?['in_app_crop_scope'] == true;
+    });
     final hasInitialScanContext = widget.initialDiagnosis != null ||
         widget.initialImageBytes?.isNotEmpty == true ||
         widget.initialIsVideoFrame ||
@@ -466,7 +476,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       children: [
                         // _ScanImageCard removed — the image is already shown
                         // as a bubble inside the first user message.
-                        if (widget.initialDiagnosis != null)
+                        if (widget.initialDiagnosis != null &&
+                            !hasOnlineVisionReview)
                           _DiagnosisSummaryCard(
                               diagnosis: widget.initialDiagnosis!),
                         ...messages
@@ -553,6 +564,21 @@ class _DiagnosisSummaryCard extends StatelessWidget {
 
   const _DiagnosisSummaryCard({required this.diagnosis});
 
+  String _modelLabel(String name, String? version) {
+    final normalized = name.trim();
+    final lower = normalized.toLowerCase();
+    if (lower.contains('tflite') ||
+        lower.contains('efficientnet') ||
+        lower.contains('local')) {
+      return 'TFLite';
+    }
+    final fullName = [normalized, version?.trim()]
+        .whereType<String>()
+        .where((part) => part.isNotEmpty)
+        .join(' ');
+    return fullName;
+  }
+
   @override
   Widget build(BuildContext context) {
     final confidence = diagnosis.confidenceScore != null
@@ -589,10 +615,12 @@ class _DiagnosisSummaryCard extends StatelessWidget {
                     const Icon(Icons.eco, color: AppColors.primary, size: 18),
               ),
               const SizedBox(width: 10),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'AI diagnosis',
-                  style: TextStyle(
+                  diagnosis.diagnosisMode == DiagnosisMode.offline
+                      ? 'TFLite scan suggestion'
+                      : 'AI diagnosis',
+                  style: const TextStyle(
                     color: AppColors.primaryDark,
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
@@ -658,9 +686,10 @@ class _DiagnosisSummaryCard extends StatelessWidget {
                   diagnosis.modelName!.isNotEmpty)
                 _DiagnosisChip(
                   icon: Icons.memory,
-                  label:
-                      '${diagnosis.modelName} ${diagnosis.modelVersion ?? ''}'
-                          .trim(),
+                  label: _modelLabel(
+                    diagnosis.modelName!,
+                    diagnosis.modelVersion,
+                  ),
                 ),
             ],
           ),
@@ -678,26 +707,36 @@ class _DiagnosisChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppColors.backgroundCream,
-        borderRadius: BorderRadius.circular(999),
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width * 0.76,
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: AppColors.primaryDark),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: const TextStyle(
-              color: AppColors.primaryDark,
-              fontWeight: FontWeight.w700,
-              fontSize: 12,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.backgroundCream,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: AppColors.primaryDark),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                softWrap: true,
+                style: const TextStyle(
+                  color: AppColors.primaryDark,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

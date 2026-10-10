@@ -119,6 +119,7 @@ class AiBackendService {
     List<Map<String, String>> conversationHistory = const [],
     String? locale,
     String? hintCropType,
+    bool imagesFromPreviousTurns = false,
   }) async {
     final imageDataUrls = imageBytesList
         .where((bytes) => bytes.isNotEmpty)
@@ -135,12 +136,14 @@ class AiBackendService {
           'confidence': diagnosis.confidenceScore,
           'severity': diagnosis.severity.value,
         },
-      if (imageBytes != null && imageBytes.isNotEmpty)
+      if (imageDataUrls.isEmpty && imageBytes != null && imageBytes.isNotEmpty)
         'image_data_url': _buildImageDataUrl(
           imageBytes,
           mimeType: imageMimeType,
         ),
       if (imageDataUrls.isNotEmpty) 'image_data_urls': imageDataUrls,
+      if (imagesFromPreviousTurns && imageDataUrls.isNotEmpty)
+        'images_from_previous_turns': true,
       if (conversationHistory.isNotEmpty)
         'conversation_history': conversationHistory,
       if (locale != null && locale.isNotEmpty) 'locale': locale,

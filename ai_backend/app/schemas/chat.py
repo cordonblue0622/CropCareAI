@@ -29,6 +29,7 @@ class ChatRequest(BaseModel):
     diagnosis: DiagnosisContext | None = None
     image_data_url: str | None = None
     image_data_urls: list[str] = Field(default_factory=list)
+    images_from_previous_turns: bool = False
     weather: WeatherContext | None = None
     conversation_history: list[ConversationTurn] = Field(default_factory=list)
     locale: str | None = "en"
