@@ -95,8 +95,11 @@ class CropsProvider extends ChangeNotifier {
 
     if (kIsWeb) {
       try {
-        final remoteRows = await _supabase.getCrops(userId);
-        _crops = remoteRows.map(CropModel.fromMap).toList();
+        final remoteRows = await _supabase.getCropsIncludingDeleted(userId);
+        _crops = remoteRows
+            .map(CropModel.fromMap)
+            .where((crop) => !crop.isDeleted)
+            .toList();
       } catch (error) {
         _error = 'Could not load crops. Check your internet connection.';
       } finally {
@@ -121,7 +124,19 @@ class CropsProvider extends ChangeNotifier {
         notifyListeners();
       }
 
-      final remoteRows = await _supabase.getCrops(userId);
+      final remoteRows = await _supabase.getCropsIncludingDeleted(userId);
+      final remoteIds = remoteRows
+          .map((row) => row['id'] as String?)
+          .whereType<String>()
+          .toSet();
+      final queuedCropIds = (await _db.getPendingSyncItems())
+          .where((item) =>
+              item['table_name'] == AppConstants.cropsTable &&
+              (item['operation'] == 'UPSERT' ||
+                  item['operation'] == 'SOFT_DELETE'))
+          .map((item) => item['record_id'] as String?)
+          .whereType<String>()
+          .toSet();
 
       // Build a map of local updated_at by crop id so we only overwrite local
       // records when the remote version is strictly newer. This prevents a
@@ -138,15 +153,42 @@ class CropsProvider extends ChangeNotifier {
       final rowsToUpsert = remoteRows.where((remoteRow) {
         final id = (remoteRow['id'] as String?)?.trim() ?? '';
         if (id.isEmpty) return true;
+        if (queuedCropIds.contains(id)) return false;
         final localUpdatedAt = localUpdatedAtById[id] ?? '';
         final remoteUpdatedAt = (remoteRow['updated_at'] as String?) ?? '';
         // Upsert remote only when it is at least as new as the local copy.
+        final remoteDate = DateTime.tryParse(remoteUpdatedAt);
+        final localDate = DateTime.tryParse(localUpdatedAt);
+        if (remoteDate != null && localDate != null) {
+          return !remoteDate.isBefore(localDate);
+        }
         return remoteUpdatedAt.compareTo(localUpdatedAt) >= 0;
       }).toList();
+
+      // Local-only active crops are commonly edits waiting for their first
+      // successful sync. Preserve them and queue an idempotent cloud upsert so
+      // they survive a later reinstall and appear in the admin console.
+      var queuedMissingCrop = false;
+      for (final row in visibleLocalRows) {
+        final id = (row['id'] as String?)?.trim() ?? '';
+        if (id.isEmpty ||
+            remoteIds.contains(id) ||
+            queuedCropIds.contains(id)) {
+          continue;
+        }
+        final crop = CropModel.fromMap(row);
+        await _sync.queueUpsert(
+          tableName: AppConstants.cropsTable,
+          recordId: crop.id,
+          data: _remoteMap(crop),
+        );
+        queuedMissingCrop = true;
+      }
 
       if (rowsToUpsert.isNotEmpty) {
         await _db.upsertRows(AppConstants.cropsTable, rowsToUpsert);
       }
+      if (queuedMissingCrop) await _attemptSync();
 
       final mergedRows =
           await _db.queryByUserId(AppConstants.cropsTable, userId);
@@ -261,6 +303,27 @@ class CropsProvider extends ChangeNotifier {
             (item) => item?.id == cropId,
             orElse: () => null,
           );
+      CropModel? cropToDelete = crop;
+      if (cropToDelete == null && !kIsWeb) {
+        final localRow = await _db.queryById(AppConstants.cropsTable, cropId);
+        if (localRow != null) cropToDelete = CropModel.fromMap(localRow);
+      }
+      if (cropToDelete == null) {
+        final userId = _supabase.currentUser?.id;
+        if (userId != null) {
+          final remoteRow = await _supabase.getCropById(
+            userId: userId,
+            cropId: cropId,
+          );
+          if (remoteRow != null) cropToDelete = CropModel.fromMap(remoteRow);
+        }
+      }
+      if (cropToDelete == null) {
+        _error = 'Could not find this crop.';
+        notifyListeners();
+        return false;
+      }
+
       final localDb = await _db.database;
       final diagnosisRows = await localDb.query(
         AppConstants.diagnosesTable,
@@ -321,20 +384,16 @@ class CropsProvider extends ChangeNotifier {
       await _hardDeleteLocalRows(
           AppConstants.chatMessagesTable, chatMessageIds);
 
-      if (crop != null) {
-        final deletedCrop = crop.copyWith(
-          isDeleted: true,
-          updatedAt: DateTime.now(),
-        );
-        await _upsertLocallyAndQueue(
-          table: AppConstants.cropsTable,
-          recordId: deletedCrop.id,
-          localData: deletedCrop.toMap(),
-          remoteData: _remoteMap(deletedCrop),
-        );
-      } else {
-        await _db.softDelete(AppConstants.cropsTable, cropId);
-      }
+      final deletedCrop = cropToDelete.copyWith(
+        isDeleted: true,
+        updatedAt: DateTime.now(),
+      );
+      await _upsertLocallyAndQueue(
+        table: AppConstants.cropsTable,
+        recordId: deletedCrop.id,
+        localData: deletedCrop.toMap(),
+        remoteData: _remoteMap(deletedCrop),
+      );
       _crops.removeWhere((c) => c.id == cropId);
       notifyListeners();
       if (onLocalDelete != null) {
@@ -342,12 +401,10 @@ class CropsProvider extends ChangeNotifier {
           await onLocalDelete();
         } catch (_) {}
       }
-      if (crop != null) {
-        try {
-          await _deleteCropRemotely(crop);
-        } catch (_) {
-          // Local tombstones and queued deletes remain authoritative offline.
-        }
+      try {
+        await _deleteCropRemotely(cropToDelete);
+      } catch (_) {
+        // Local tombstones and queued deletes remain authoritative offline.
       }
       await _attemptSync();
       return true;

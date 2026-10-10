@@ -21,6 +21,11 @@ class _StaleCropSupabaseService extends SupabaseService {
       [remoteCrop];
 
   @override
+  Future<List<Map<String, dynamic>>> getCropsIncludingDeleted(
+          String userId) async =>
+      [remoteCrop];
+
+  @override
   Future<List<Map<String, dynamic>>> getDiagnosesByCrop(String cropId) async =>
       const [];
 

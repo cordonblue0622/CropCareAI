@@ -422,7 +422,7 @@ class DatabaseHelper {
     final db = await database;
     return db.query(
       AppConstants.syncQueueTable,
-      orderBy: 'created_at ASC',
+      orderBy: 'created_at ASC, id ASC',
     );
   }
 
@@ -545,7 +545,22 @@ class DatabaseHelper {
   Future<void> upsertRow(String table, Map<String, dynamic> data) async {
     if (_isDisabledOnPlatform) return;
     final db = await database;
-    await db.insert(table, data, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert(
+      table,
+      _normalizeSqliteRow(data),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Map<String, Object?> _normalizeSqliteRow(Map<String, dynamic> row) {
+    return row.map((key, value) => MapEntry(key, _normalizeSqliteValue(value)));
+  }
+
+  Object? _normalizeSqliteValue(Object? value) {
+    if (value is bool) return value ? 1 : 0;
+    if (value is DateTime) return value.toIso8601String();
+    if (value is List || value is Map) return jsonEncode(value);
+    return value;
   }
 
   Map<String, dynamic>? _parseMetadata(dynamic raw) {
@@ -584,7 +599,11 @@ class DatabaseHelper {
     final db = await database;
     final batch = db.batch();
     for (final row in items) {
-      batch.insert(table, row, conflictAlgorithm: ConflictAlgorithm.replace);
+      batch.insert(
+        table,
+        _normalizeSqliteRow(row),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     }
     await batch.commit(noResult: true);
   }
@@ -596,8 +615,17 @@ class DatabaseHelper {
   }) async {
     if (_isDisabledOnPlatform) return [];
     final db = await database;
-    final where =
-        includeDeleted ? 'user_id = ?' : 'user_id = ? AND is_deleted = 0';
+    const softDeleteTables = <String>{
+      AppConstants.cropsTable,
+      AppConstants.diagnosesTable,
+      AppConstants.treatmentsTable,
+      AppConstants.treatmentTasksTable,
+      AppConstants.progressUpdatesTable,
+      AppConstants.chatSessionsTable,
+    };
+    final where = includeDeleted || !softDeleteTables.contains(table)
+        ? 'user_id = ?'
+        : 'user_id = ? AND is_deleted = 0';
 
     String? orderBy;
     switch (table) {

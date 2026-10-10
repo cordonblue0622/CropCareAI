@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -10,10 +8,12 @@ import '../../../data/models/notification_model.dart';
 import '../../../data/models/treatment_task_model.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../services/notification_service.dart';
+import '../../../services/sync_service.dart';
 
 class NotificationsProvider extends ChangeNotifier {
   final SupabaseService _supabase;
   final DatabaseHelper _db;
+  final SyncService _sync;
 
   List<NotificationModel> _notifications = [];
   final Set<String> _locallyDeletedNotificationIds = <String>{};
@@ -23,11 +23,16 @@ class NotificationsProvider extends ChangeNotifier {
   List<TreatmentTaskModel> _upcomingTasks = [];
   List<TreatmentTaskModel> _pendingTasks = [];
   bool _isLoading = false;
+  bool _hasLoadedCache = false;
+  String? _loadedUserId;
 
-  NotificationsProvider(
-      {required SupabaseService supabase, required DatabaseHelper db})
-      : _supabase = supabase,
-        _db = db;
+  NotificationsProvider({
+    required SupabaseService supabase,
+    required DatabaseHelper db,
+    required SyncService sync,
+  })  : _supabase = supabase,
+        _db = db,
+        _sync = sync;
 
   List<NotificationModel> get notifications => _notifications;
   List<NotificationModel> get unread =>
@@ -43,17 +48,47 @@ class NotificationsProvider extends ChangeNotifier {
   // ─── Fetch ────────────────────────────────────────────────────────────────
 
   Future<void> fetchAll(String userId) async {
-    _isLoading = true;
+    if (_loadedUserId != userId) {
+      _notifications = [];
+      _locallyDeletedNotificationIds.clear();
+      _todayTasks = [];
+      _missedTasks = [];
+      _tomorrowTasks = [];
+      _upcomingTasks = [];
+      _pendingTasks = [];
+      _loadedUserId = userId;
+      _hasLoadedCache = false;
+    }
+    _isLoading = !_hasLoadedCache;
     notifyListeners();
 
-    await Future.wait([
-      _fetchNotifications(userId),
-      _fetchTasks(userId),
-    ]);
-
-    await _syncCropAttentionAlerts(userId);
-
+    await _loadLocalCache(userId);
+    _hasLoadedCache = true;
     _isLoading = false;
+    notifyListeners();
+
+    // Push queued offline edits before reading the cloud snapshot.
+    try {
+      await _sync.syncAll().timeout(const Duration(seconds: 12));
+    } catch (_) {
+      // Keep showing the cache; failed queue items remain available for retry.
+    }
+
+    try {
+      await Future.wait([
+        _fetchNotifications(userId).timeout(const Duration(seconds: 10)),
+        _fetchTasks(userId).timeout(const Duration(seconds: 10)),
+      ]);
+    } catch (_) {
+      // The individual fetchers retain the cached values on network failure.
+    }
+
+    try {
+      await _syncCropAttentionAlerts(userId);
+    } catch (_) {
+      // Alert generation retries on the next refresh.
+    }
+
     notifyListeners();
 
     final notificationsAllowed =
@@ -63,18 +98,72 @@ class NotificationsProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _fetchNotifications(String userId) async {
+  Future<void> _loadLocalCache(String userId) async {
     try {
-      final rows = await _supabase.getNotifications(userId);
       final deletedCropIds = await _deletedCropIds(userId);
       final pendingDeleteIds = await _pendingNotificationDeleteIds();
-      _notifications = rows
+      final notificationRows =
+          await _db.queryByUserId(AppConstants.notificationsTable, userId);
+      _notifications = notificationRows
           .map(NotificationModel.fromMap)
           .where((notification) =>
               (notification.cropId == null ||
                   !deletedCropIds.contains(notification.cropId)) &&
               !pendingDeleteIds.contains(notification.id))
+          .toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+      final taskRows = await _db.queryByUserId(
+        AppConstants.treatmentTasksTable,
+        userId,
+        includeDeleted: true,
+      );
+      final tasks = taskRows
+          .map(TreatmentTaskModel.fromMap)
+          .where((task) => !deletedCropIds.contains(task.cropId))
           .toList();
+      _pendingTasks = tasks
+          .where((task) => !task.isDeleted && task.status == TaskStatus.pending)
+          .toList(growable: false);
+      _bucketTasks(_pendingTasks);
+    } catch (_) {
+      // The local database can be unavailable on web or before initialization.
+    }
+  }
+
+  Future<void> _fetchNotifications(String userId) async {
+    try {
+      final rows = await _supabase.getNotifications(userId);
+      final localRows =
+          await _db.queryByUserId(AppConstants.notificationsTable, userId);
+      final deletedCropIds = await _deletedCropIds(userId);
+      final pendingDeleteIds = await _pendingNotificationDeleteIds();
+      final pendingUpserts = (await _db.getPendingSyncItems())
+          .where((item) =>
+              item['table_name'] == AppConstants.notificationsTable &&
+              item['operation'] == 'UPSERT')
+          .map((item) => item['record_id'] as String?)
+          .whereType<String>()
+          .toSet();
+      final merged = <String, NotificationModel>{};
+      for (final row in rows) {
+        final notification = NotificationModel.fromMap(row);
+        merged[notification.id] = notification;
+      }
+      for (final row in localRows) {
+        final notification = NotificationModel.fromMap(row);
+        if (pendingUpserts.contains(notification.id)) {
+          merged[notification.id] = notification;
+        }
+      }
+
+      _notifications = merged.values
+          .where((notification) =>
+              (notification.cropId == null ||
+                  !deletedCropIds.contains(notification.cropId)) &&
+              !pendingDeleteIds.contains(notification.id))
+          .toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
       await _db.upsertRows(
         AppConstants.notificationsTable,
         _notifications.map((notification) => notification.toMap()),
@@ -90,7 +179,8 @@ class NotificationsProvider extends ChangeNotifier {
               (notification.cropId == null ||
                   !deletedCropIds.contains(notification.cropId)) &&
               !pendingDeleteIds.contains(notification.id))
-          .toList();
+          .toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     }
   }
 
@@ -111,23 +201,79 @@ class NotificationsProvider extends ChangeNotifier {
 
   Future<void> _fetchTasks(String userId) async {
     try {
-      final rows = await _supabase.getTreatmentTasksByUser(userId);
+      final remoteRows = await _supabase.getAllTreatmentTasksByUser(userId);
+      final localRows = await _db.queryByUserId(
+        AppConstants.treatmentTasksTable,
+        userId,
+        includeDeleted: true,
+      );
+      final pendingTaskIds = (await _db.getPendingSyncItems())
+          .where((item) =>
+              item['table_name'] == AppConstants.treatmentTasksTable &&
+              (item['operation'] == 'UPSERT' ||
+                  item['operation'] == 'SOFT_DELETE'))
+          .map((item) => item['record_id'] as String?)
+          .whereType<String>()
+          .toSet();
+      final localById = <String, Map<String, dynamic>>{
+        for (final row in localRows)
+          if (row['id'] is String) row['id'] as String: row,
+      };
+      final remoteIds = <String>{};
+      final merged = <String, Map<String, dynamic>>{};
+      for (final remote in remoteRows) {
+        final id = remote['id'] as String?;
+        if (id == null || id.isEmpty) continue;
+        remoteIds.add(id);
+        final local = localById[id];
+        if (local != null &&
+            (pendingTaskIds.contains(id) || !_isAtLeastAsNew(remote, local))) {
+          merged[id] = local;
+        } else {
+          merged[id] = remote;
+        }
+      }
+
+      // Local-only tasks remain visible while their previous cloud write is
+      // retried. ID keyed merging prevents duplicate counts once synced.
+      var queuedLocalTasks = false;
+      for (final local in localRows) {
+        final id = local['id'] as String?;
+        if (id != null && id.isNotEmpty && !remoteIds.contains(id)) {
+          merged[id] = local;
+          final task = TreatmentTaskModel.fromMap(local);
+          if (!task.isDeleted && !pendingTaskIds.contains(id)) {
+            final remote = task.toMap()..['is_deleted'] = task.isDeleted;
+            await _sync.queueUpsert(
+              tableName: AppConstants.treatmentTasksTable,
+              recordId: id,
+              data: remote,
+            );
+            queuedLocalTasks = true;
+          }
+        }
+      }
+
+      final mergedRows = merged.values.toList(growable: false);
+      await _db.upsertRows(AppConstants.treatmentTasksTable, mergedRows);
       final deletedCropIds = await _deletedCropIds(userId);
-      final allTasks = rows
+      final allTasks = mergedRows
           .map(TreatmentTaskModel.fromMap)
           .where((task) => !deletedCropIds.contains(task.cropId))
           .toList();
-      await _db.upsertRows(
-        AppConstants.treatmentTasksTable,
-        allTasks.map((task) => task.toMap()),
-      );
       _pendingTasks = allTasks
           .where((task) => !task.isDeleted && task.status == TaskStatus.pending)
           .toList(growable: false);
       _bucketTasks(_pendingTasks);
+      if (queuedLocalTasks) {
+        await _sync.syncAll().timeout(const Duration(seconds: 12));
+      }
     } catch (_) {
-      final rows =
-          await _db.queryByUserId(AppConstants.treatmentTasksTable, userId);
+      final rows = await _db.queryByUserId(
+        AppConstants.treatmentTasksTable,
+        userId,
+        includeDeleted: true,
+      );
       final deletedCropIds = await _deletedCropIds(userId);
       final allTasks = rows
           .map(TreatmentTaskModel.fromMap)
@@ -138,6 +284,24 @@ class NotificationsProvider extends ChangeNotifier {
           .toList(growable: false);
       _bucketTasks(_pendingTasks);
     }
+  }
+
+  bool _isAtLeastAsNew(
+    Map<String, dynamic> candidate,
+    Map<String, dynamic> current,
+  ) {
+    final candidateDate = DateTime.tryParse(
+      candidate['updated_at'] as String? ?? '',
+    );
+    final currentDate = DateTime.tryParse(
+      current['updated_at'] as String? ?? '',
+    );
+    if (candidateDate != null && currentDate != null) {
+      return !candidateDate.isBefore(currentDate);
+    }
+    return (candidate['updated_at'] as String? ?? '')
+            .compareTo(current['updated_at'] as String? ?? '') >=
+        0;
   }
 
   Future<Set<String>> _deletedCropIds(String userId) async {
@@ -219,11 +383,10 @@ class NotificationsProvider extends ChangeNotifier {
         AppConstants.notificationsTable,
         notification.toMap(),
       );
-      await _db.addToSyncQueue(
+      await _sync.queueUpsert(
         tableName: AppConstants.notificationsTable,
         recordId: notification.id,
-        operation: 'UPSERT',
-        payload: jsonEncode(_remoteNotificationMap(notification)),
+        data: _remoteNotificationMap(notification),
       );
       try {
         await _supabase.upsertRecord(
@@ -283,11 +446,10 @@ class NotificationsProvider extends ChangeNotifier {
     final updated = _notifications[idx].copyWith(isRead: true);
     _notifications[idx] = updated;
     await _db.upsertRow(AppConstants.notificationsTable, updated.toMap());
-    await _db.addToSyncQueue(
+    await _sync.queueUpsert(
       tableName: AppConstants.notificationsTable,
       recordId: notificationId,
-      operation: 'UPSERT',
-      payload: jsonEncode(_remoteNotificationMap(updated)),
+      data: _remoteNotificationMap(updated),
     );
     notifyListeners();
     try {
@@ -315,10 +477,15 @@ class NotificationsProvider extends ChangeNotifier {
       );
     }
 
+    // A notification created or edited while offline can still have an older
+    // UPSERT queued. Remove those writes so they cannot recreate a dismissed
+    // notification after the DELETE is processed.
+    await _clearQueuedOperation(notificationId, 'UPSERT');
     await _queueDelete(notificationId);
     await _db.hardDelete(AppConstants.notificationsTable, notificationId);
     try {
       await _supabase.deleteNotification(notificationId);
+      await _sync.syncAll().timeout(const Duration(seconds: 12));
       await _clearQueuedDelete(notificationId);
       _locallyDeletedNotificationIds.remove(notificationId);
     } catch (_) {}
@@ -338,11 +505,9 @@ class NotificationsProvider extends ChangeNotifier {
   }
 
   Future<void> _queueDelete(String notificationId) async {
-    await _db.addToSyncQueue(
+    await _sync.queueDelete(
       tableName: AppConstants.notificationsTable,
       recordId: notificationId,
-      operation: 'DELETE',
-      payload: jsonEncode({'id': notificationId}),
     );
   }
 

@@ -326,7 +326,8 @@ class _CropCareAppState extends State<CropCareApp> {
       final resolvedCrop = crop;
       if (resolvedCrop == null) return;
       navigator.push(MaterialPageRoute(
-        builder: (_) => CropDetailScreen(crop: resolvedCrop, initialTabIndex: 1),
+        builder: (_) =>
+            CropDetailScreen(crop: resolvedCrop, initialTabIndex: 1),
       ));
       return;
     }
@@ -448,14 +449,15 @@ class _CropCareAppState extends State<CropCareApp> {
         ),
 
         // Notifications
-        ChangeNotifierProxyProvider2<SupabaseService, DatabaseHelper,
-            NotificationsProvider>(
+        ChangeNotifierProxyProvider3<SupabaseService, DatabaseHelper,
+            SyncService, NotificationsProvider>(
           create: (ctx) => NotificationsProvider(
             supabase: ctx.read<SupabaseService>(),
             db: ctx.read<DatabaseHelper>(),
+            sync: ctx.read<SyncService>(),
           ),
-          update: (_, svc, db, prev) =>
-              prev ?? NotificationsProvider(supabase: svc, db: db),
+          update: (_, svc, db, sync, prev) =>
+              prev ?? NotificationsProvider(supabase: svc, db: db, sync: sync),
         ),
 
         // Chat / AI

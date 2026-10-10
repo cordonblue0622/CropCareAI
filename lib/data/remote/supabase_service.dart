@@ -145,6 +145,19 @@ class SupabaseService {
     required String table,
     required String id,
   }) async {
+    if (table == 'notifications') {
+      final userId = currentUser?.id;
+      if (userId == null) {
+        throw StateError('Sign in before deleting a notification.');
+      }
+      await _client
+          .from(table)
+          .delete()
+          .eq('user_id', userId)
+          .eq('id', id)
+          .select('id');
+      return;
+    }
     await _client.from(table).delete().eq('id', id);
   }
 
@@ -163,12 +176,34 @@ class SupabaseService {
   // ─── Crops ────────────────────────────────────────────────────────────────
 
   Future<List<Map<String, dynamic>>> getCrops(String userId) async {
+    return _getCrops(userId, includeDeleted: false);
+  }
+
+  Future<List<Map<String, dynamic>>> getCropsIncludingDeleted(
+    String userId,
+  ) async {
+    return _getCrops(userId, includeDeleted: true);
+  }
+
+  Future<List<Map<String, dynamic>>> _getCrops(
+    String userId, {
+    required bool includeDeleted,
+  }) async {
+    var query = _client.from('crops').select().eq('user_id', userId);
+    if (!includeDeleted) query = query.eq('is_deleted', false);
+    return query.order('updated_at', ascending: false);
+  }
+
+  Future<Map<String, dynamic>?> getCropById({
+    required String userId,
+    required String cropId,
+  }) async {
     return _client
         .from('crops')
         .select()
         .eq('user_id', userId)
-        .eq('is_deleted', false)
-        .order('updated_at', ascending: false);
+        .eq('id', cropId)
+        .maybeSingle();
   }
 
   Future<void> upsertCrop(Map<String, dynamic> crop) async {
@@ -192,12 +227,22 @@ class SupabaseService {
   // ─── Diagnoses ────────────────────────────────────────────────────────────
 
   Future<List<Map<String, dynamic>>> getDiagnoses(String userId) async {
-    return _client
-        .from('diagnoses')
-        .select()
-        .eq('user_id', userId)
-        .eq('is_deleted', false)
-        .order('diagnosed_at', ascending: false);
+    return _getDiagnoses(userId, includeDeleted: false);
+  }
+
+  Future<List<Map<String, dynamic>>> getDiagnosesIncludingDeleted(
+    String userId,
+  ) async {
+    return _getDiagnoses(userId, includeDeleted: true);
+  }
+
+  Future<List<Map<String, dynamic>>> _getDiagnoses(
+    String userId, {
+    required bool includeDeleted,
+  }) async {
+    var query = _client.from('diagnoses').select().eq('user_id', userId);
+    if (!includeDeleted) query = query.eq('is_deleted', false);
+    return query.order('diagnosed_at', ascending: false);
   }
 
   Future<List<Map<String, dynamic>>> getDiagnosesByCrop(String cropId) async {
@@ -218,12 +263,22 @@ class SupabaseService {
   // ─── Treatments ───────────────────────────────────────────────────────────
 
   Future<List<Map<String, dynamic>>> getTreatments(String userId) async {
-    return _client
-        .from('treatments')
-        .select()
-        .eq('user_id', userId)
-        .eq('is_deleted', false)
-        .order('created_at', ascending: false);
+    return _getTreatments(userId, includeDeleted: false);
+  }
+
+  Future<List<Map<String, dynamic>>> getTreatmentsIncludingDeleted(
+    String userId,
+  ) async {
+    return _getTreatments(userId, includeDeleted: true);
+  }
+
+  Future<List<Map<String, dynamic>>> _getTreatments(
+    String userId, {
+    required bool includeDeleted,
+  }) async {
+    var query = _client.from('treatments').select().eq('user_id', userId);
+    if (!includeDeleted) query = query.eq('is_deleted', false);
+    return query.order('created_at', ascending: false);
   }
 
   Future<List<Map<String, dynamic>>> getTreatmentsByCrop(String cropId) async {
@@ -253,12 +308,22 @@ class SupabaseService {
 
   Future<List<Map<String, dynamic>>> getTreatmentTasksByUser(
       String userId) async {
-    return _client
-        .from('treatment_tasks')
-        .select()
-        .eq('user_id', userId)
-        .eq('is_deleted', false)
-        .order('due_at', ascending: true);
+    return _getTreatmentTasksByUser(userId, includeDeleted: false);
+  }
+
+  Future<List<Map<String, dynamic>>> getAllTreatmentTasksByUser(
+    String userId,
+  ) async {
+    return _getTreatmentTasksByUser(userId, includeDeleted: true);
+  }
+
+  Future<List<Map<String, dynamic>>> _getTreatmentTasksByUser(
+    String userId, {
+    required bool includeDeleted,
+  }) async {
+    var query = _client.from('treatment_tasks').select().eq('user_id', userId);
+    if (!includeDeleted) query = query.eq('is_deleted', false);
+    return query.order('due_at', ascending: true);
   }
 
   Future<void> upsertTreatmentTask(Map<String, dynamic> task) async {
@@ -453,13 +518,17 @@ class SupabaseService {
   }
 
   Future<void> markNotificationRead(String notificationId) async {
+    final userId = currentUser?.id;
+    if (userId == null) return;
     await _client
         .from('notifications')
-        .update({'is_read': true}).eq('id', notificationId);
+        .update({'is_read': true})
+        .eq('user_id', userId)
+        .eq('id', notificationId);
   }
 
   Future<void> deleteNotification(String notificationId) async {
-    await _client.from('notifications').delete().eq('id', notificationId);
+    await deleteRecord(table: 'notifications', id: notificationId);
   }
 
   // ─── Disease Knowledge Base ───────────────────────────────────────────────

@@ -32,7 +32,8 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenState extends State<DashboardScreen>
+    with WidgetsBindingObserver {
   final WeatherService _weatherService = WeatherService();
   final TextEditingController _searchCtrl = TextEditingController();
   List<DiseaseKnowledgeModel> _diseases = [];
@@ -41,10 +42,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _searchQuery = '';
   bool _isLoadingWeather = false;
   Timer? _weatherRefreshTimer;
+  int _weatherRequestId = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadDiseases());
     _weatherRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
       final location = _weatherLocationQuery;
@@ -54,9 +57,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _weatherRefreshTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    final location = _weatherLocationQuery;
+    if (location != null && location.isNotEmpty) _loadWeather(location);
   }
 
   Future<void> _loadDiseases() async {
@@ -81,6 +92,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _loadWeather(String locationQuery) async {
     if (!mounted) return;
+    final requestId = ++_weatherRequestId;
 
     setState(() {
       _weatherLocationQuery = locationQuery;
@@ -89,7 +101,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final weather = await _weatherService.fetchCurrentConditions(locationQuery);
 
-    if (!mounted) return;
+    if (!mounted || requestId != _weatherRequestId) return;
     setState(() {
       _weather = weather;
       _isLoadingWeather = false;
@@ -124,12 +136,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<String?> _previewImageFor(String cropId) async {
-    final localImage =
-        await context.read<DatabaseHelper>().getLatestCropImageUrl(cropId);
+    final db = context.read<DatabaseHelper>();
+    final supabase = context.read<SupabaseService>();
+    final localImage = await db.getLatestCropImageUrl(cropId);
     if (localImage != null) {
       return localImage;
     }
-    return context.read<SupabaseService>().getLatestCropImageUrl(cropId);
+    return supabase.getLatestCropImageUrl(cropId);
   }
 
   List<DiseaseKnowledgeModel> _dashboardDiseases(CropsProvider crops) {
@@ -220,23 +233,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     const color = Color(0xFFB9D8E5);
-    final condition = weather?.conditionLabel.toLowerCase() ?? '';
-    final code = weather?.weatherCode ?? -1;
-    final isNight = weather != null && !weather.isDay;
+    if (weather == null) {
+      return const Icon(Icons.cloud_off_outlined, color: color, size: 24);
+    }
+    final condition = weather.conditionLabel.toLowerCase();
+    final code = weather.weatherCode;
+    final isNight = !weather.isDay;
     if (condition.contains('thunder') || code >= 95) {
+      if (isNight) {
+        return const Stack(
+          alignment: Alignment.center,
+          children: [
+            Padding(
+              padding: EdgeInsets.only(left: 8, bottom: 8),
+              child: Icon(Icons.nights_stay_outlined, color: color, size: 18),
+            ),
+            Padding(
+              padding: EdgeInsets.only(top: 4, right: 4),
+              child: Icon(Icons.thunderstorm_outlined, color: color, size: 24),
+            ),
+          ],
+        );
+      }
       return const Icon(Icons.thunderstorm_outlined, color: color, size: 24);
     }
     if (condition.contains('snow') ||
         condition.contains('sleet') ||
         (code >= 71 && code <= 86)) {
-      return const Stack(
+      return Stack(
         alignment: Alignment.center,
         children: [
-          Padding(
+          if (isNight)
+            const Padding(
+              padding: EdgeInsets.only(left: 8, bottom: 7),
+              child: Icon(Icons.nights_stay_outlined, color: color, size: 18),
+            ),
+          const Padding(
             padding: EdgeInsets.only(top: 2),
             child: Icon(Icons.cloud_outlined, color: color, size: 24),
           ),
-          Padding(
+          const Padding(
             padding: EdgeInsets.only(top: 17),
             child: Icon(Icons.ac_unit, color: color, size: 11),
           ),
@@ -248,14 +284,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
         condition.contains('shower') ||
         (code >= 51 && code <= 67) ||
         (code >= 80 && code <= 82)) {
-      return const Stack(
+      return Stack(
         alignment: Alignment.center,
         children: [
-          Padding(
+          if (isNight)
+            const Padding(
+              padding: EdgeInsets.only(left: 8, bottom: 7),
+              child: Icon(Icons.nights_stay_outlined, color: color, size: 18),
+            ),
+          const Padding(
             padding: EdgeInsets.only(top: 0),
             child: Icon(Icons.cloud_outlined, color: color, size: 24),
           ),
-          Padding(
+          const Padding(
             padding: EdgeInsets.only(top: 18),
             child: Icon(Icons.water_drop_outlined, color: color, size: 12),
           ),
@@ -266,6 +307,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         condition.contains('mist') ||
         code == 45 ||
         code == 48) {
+      if (isNight) {
+        return const Stack(
+          alignment: Alignment.center,
+          children: [
+            Padding(
+              padding: EdgeInsets.only(left: 8, bottom: 7),
+              child: Icon(Icons.nights_stay_outlined, color: color, size: 18),
+            ),
+            Padding(
+              padding: EdgeInsets.only(top: 4, right: 4),
+              child: Icon(Icons.cloud_outlined, color: color, size: 23),
+            ),
+          ],
+        );
+      }
       return const Icon(Icons.cloud_outlined, color: color, size: 25);
     }
     if (condition.contains('partly') ||
@@ -569,7 +625,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         color: Colors.white.withValues(alpha: 0.14),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: _weatherGlyph(_weather),
+                      child: InkWell(
+                        onTap: () {
+                          final location = _weatherLocationQuery;
+                          if (location != null && location.isNotEmpty) {
+                            _loadWeather(location);
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(10),
+                        child: Center(child: _weatherGlyph(_weather)),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 2),

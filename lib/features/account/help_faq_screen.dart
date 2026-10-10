@@ -13,10 +13,9 @@ class HelpFaqScreen extends StatelessWidget {
     required String subject,
     required String body,
   }) async {
-    final uri = Uri(
-      scheme: 'mailto',
-      path: _supportEmail,
-      queryParameters: {'subject': subject, 'body': body},
+    final uri = Uri.parse(
+      'mailto:$_supportEmail?subject=${Uri.encodeComponent(subject)}'
+      '&body=${Uri.encodeComponent(body)}',
     );
     var launched = false;
     try {

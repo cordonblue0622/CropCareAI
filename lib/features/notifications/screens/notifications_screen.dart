@@ -22,57 +22,18 @@ class _NotificationsScreenState extends State<NotificationsScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabs;
   int _alertPage = 0;
-  int _taskPage = 0;
   int _reminderPage = 0;
 
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 3, vsync: this);
+    _tabs = TabController(length: 2, vsync: this);
   }
 
   @override
   void dispose() {
     _tabs.dispose();
     super.dispose();
-  }
-
-  Future<void> _openTask(TreatmentTaskModel task) async {
-    final crops = context.read<CropsProvider>();
-    CropModel? crop;
-
-    for (final candidate in crops.activeCrops) {
-      if (candidate.id == task.cropId) {
-        crop = candidate;
-        break;
-      }
-    }
-
-    crop ??= crops.crops.cast<CropModel?>().firstWhere(
-          (candidate) => candidate?.id == task.cropId,
-          orElse: () => null,
-        );
-
-    if (crop == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not find the linked crop for this task.'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => CropDetailScreen(
-          crop: crop!,
-          initialTabIndex: 1,
-          initialSelectedDate:
-              DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day),
-        ),
-      ),
-    );
   }
 
   Future<void> _openCropNotification(NotificationModel notification) async {
@@ -148,7 +109,6 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                   ),
               ]),
             ),
-            const Tab(text: 'Tasks'),
             const Tab(text: 'Reminders'),
           ],
         ),
@@ -170,12 +130,6 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                     onMarkRead: notifs.markRead,
                     onDelete: notifs.deleteNotification,
                     onOpenCrop: _openCropNotification),
-                _TasksTab(
-                    todayTasks: notifs.todayTasks,
-                    missedTasks: notifs.missedTasks,
-                    page: _taskPage,
-                    onPageChanged: (page) => setState(() => _taskPage = page),
-                    onOpenTask: _openTask),
                 _RemindersTab(
                   tomorrowTasks: notifs.tomorrowTasks,
                   page: _reminderPage,
@@ -247,57 +201,6 @@ class _AlertsTab extends StatelessWidget {
                       : null,
                 ),
               ),
-            )),
-        if (pageCount > 1)
-          _NotificationPager(
-            page: safePage,
-            pageCount: pageCount,
-            onChanged: onPageChanged,
-          ),
-      ],
-    );
-  }
-}
-
-// ─── Tasks Tab ────────────────────────────────────────────────────────────
-
-class _TasksTab extends StatelessWidget {
-  final List<TreatmentTaskModel> todayTasks;
-  final List<TreatmentTaskModel> missedTasks;
-  final int page;
-  final ValueChanged<int> onPageChanged;
-  final Future<void> Function(TreatmentTaskModel task) onOpenTask;
-  const _TasksTab({
-    required this.todayTasks,
-    required this.missedTasks,
-    required this.page,
-    required this.onPageChanged,
-    required this.onOpenTask,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final tasks = [...missedTasks, ...todayTasks];
-    if (tasks.isEmpty) {
-      return _emptyState(
-          icon: Icons.task_alt, message: 'No tasks due', sub: 'All caught up!');
-    }
-    final pageCount = (tasks.length / 10).ceil();
-    final safePage = page.clamp(0, pageCount - 1).toInt();
-    final visibleTasks = tasks.skip(safePage * 10).take(10);
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        _SectionLabel(
-            label: "Crop Attention",
-            count: tasks.length,
-            color: AppColors.primary),
-        const SizedBox(height: 8),
-        ...visibleTasks.map((t) => _TaskCard(
-              task: t,
-              isMissed: missedTasks.contains(t),
-              actionLabel: 'OPEN DAILY PLAN',
-              onAction: () => onOpenTask(t),
             )),
         if (pageCount > 1)
           _NotificationPager(

@@ -20,6 +20,9 @@ class SyncService {
       AiBackendService(supabase: supabaseService);
 
   bool _isSyncing = false;
+  Future<void>? _activeSync;
+  int _queueRevision = 0;
+  int _completedQueueRevision = 0;
 
   SyncService({
     required this.supabaseService,
@@ -51,6 +54,26 @@ class SyncService {
 
   /// Runs a full push + pull cycle.
   Future<void> syncAll() async {
+    final activeSync = _activeSync;
+    if (activeSync != null) {
+      await activeSync;
+      if (_completedQueueRevision < _queueRevision) await syncAll();
+      return;
+    }
+
+    final queueRevisionAtStart = _queueRevision;
+    final sync = _runSyncAll();
+    _activeSync = sync;
+    try {
+      await sync;
+    } finally {
+      _completedQueueRevision = queueRevisionAtStart;
+      if (identical(_activeSync, sync)) _activeSync = null;
+    }
+    if (_queueRevision > queueRevisionAtStart) await syncAll();
+  }
+
+  Future<void> _runSyncAll() async {
     await pushPendingChanges();
     final userId = supabaseService.currentUser?.id;
     if (userId == null) return;
@@ -243,10 +266,14 @@ class SyncService {
       await dbHelper.upsertUser(profile);
     }
 
-    final crops = await supabaseService.getCrops(userId);
-    final diagnoses = await supabaseService.getDiagnoses(userId);
-    final treatments = await supabaseService.getTreatments(userId);
-    final tasks = await supabaseService.getTreatmentTasksByUser(userId);
+    // Include tombstones so changes made from the admin console propagate to
+    // devices instead of leaving deleted rows active in the local cache.
+    final crops = await supabaseService.getCropsIncludingDeleted(userId);
+    final diagnoses =
+        await supabaseService.getDiagnosesIncludingDeleted(userId);
+    final treatments =
+        await supabaseService.getTreatmentsIncludingDeleted(userId);
+    final tasks = await supabaseService.getAllTreatmentTasksByUser(userId);
     final notifications = await supabaseService.getNotifications(userId);
     final sessions = await supabaseService.getChatSessions(userId);
 
@@ -333,7 +360,11 @@ class SyncService {
       final prepared = Map<String, dynamic>.from(row);
       for (final key in prepared.keys.toList()) {
         final value = prepared[key];
-        if (value is List || value is Map) {
+        if (value is bool) {
+          prepared[key] = value ? 1 : 0;
+        } else if (value is DateTime) {
+          prepared[key] = value.toIso8601String();
+        } else if (value is List || value is Map) {
           prepared[key] = jsonEncode(value);
         }
       }
@@ -351,6 +382,13 @@ class SyncService {
       userId,
       includeDeleted: true,
     );
+    final queuedRows = (await dbHelper.getPendingSyncItems()).where((item) =>
+        item['table_name'] == table &&
+        (item['operation'] == 'UPSERT' || item['operation'] == 'SOFT_DELETE'));
+    final pendingIds = queuedRows
+        .map((item) => item['record_id'] as String?)
+        .whereType<String>()
+        .toSet();
     final localUpdatedAt = <String, String>{
       for (final row in localRows)
         if ((row['id'] as String?)?.trim().isNotEmpty ?? false)
@@ -359,6 +397,7 @@ class SyncService {
     return remoteRows.where((remoteRow) {
       final id = (remoteRow['id'] as String?)?.trim() ?? '';
       if (id.isEmpty) return true;
+      if (pendingIds.contains(id)) return false;
       final localTimestamp = localUpdatedAt[id];
       if (localTimestamp == null) return true;
       final remoteTimestamp = (remoteRow['updated_at'] as String?) ?? '';
@@ -476,6 +515,7 @@ class SyncService {
       operation: 'UPSERT',
       payload: jsonEncode(data),
     );
+    _queueRevision++;
   }
 
   Future<void> queueDelete({
@@ -488,6 +528,7 @@ class SyncService {
       operation: 'DELETE',
       payload: jsonEncode({'id': recordId}),
     );
+    _queueRevision++;
   }
 
   Future<void> queueSoftDelete({
@@ -500,5 +541,6 @@ class SyncService {
       operation: 'SOFT_DELETE',
       payload: jsonEncode({'id': recordId}),
     );
+    _queueRevision++;
   }
 }

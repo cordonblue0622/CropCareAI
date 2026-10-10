@@ -5,6 +5,9 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../data/models/diagnosis_model.dart';
 import '../../../data/remote/supabase_service.dart';
+import '../../../data/local/database_helper.dart';
+import '../../../core/constants/app_constants.dart';
+import '../../../services/sync_service.dart';
 import '../auth/providers/auth_provider.dart';
 import '../../../core/utils/label_formatter.dart';
 import '../chat/screens/chat_screen.dart';
@@ -31,23 +34,114 @@ class _DiagnosticHistoryScreenState extends State<DiagnosticHistoryScreen> {
   Future<void> _loadHistory() async {
     final user = context.read<AuthProvider>().currentUser;
     if (user == null) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
       return;
     }
+
+    if (mounted) {
+      setState(() {
+        _loading = _diagnoses.isEmpty;
+        _error = null;
+      });
+    }
+
+    final db = context.read<DatabaseHelper>();
+    final sync = context.read<SyncService>();
+    final supabase = context.read<SupabaseService>();
+    final localById = <String, DiagnosisModel>{};
     try {
-      final rows = await context.read<SupabaseService>().getDiagnoses(user.id);
+      final localRows = await db.queryByUserId(
+        AppConstants.diagnosesTable,
+        user.id,
+        includeDeleted: true,
+      );
+      for (final row in localRows) {
+        final diagnosis = DiagnosisModel.fromMap(row);
+        localById[diagnosis.id] = diagnosis;
+      }
       if (mounted) {
         setState(() {
-          _diagnoses = rows.map(DiagnosisModel.fromMap).toList()
+          _diagnoses = localById.values
+              .where((diagnosis) => !diagnosis.isDeleted)
+              .toList()
             ..sort((a, b) => b.diagnosedAt.compareTo(a.diagnosedAt));
           _loading = false;
         });
       }
-    } catch (e) {
+    } catch (_) {
+      // The remote history below remains available when local storage is not.
+    }
+
+    try {
+      await sync.syncAll().timeout(const Duration(seconds: 12));
+    } catch (_) {
+      // Keep the local history visible while failed uploads remain queued.
+    }
+
+    try {
+      final remoteRows = await supabase
+          .getDiagnosesIncludingDeleted(user.id)
+          .timeout(const Duration(seconds: 10));
+      final pendingIds = (await db.getPendingSyncItems())
+          .where((item) =>
+              item['table_name'] == AppConstants.diagnosesTable &&
+              (item['operation'] == 'UPSERT' ||
+                  item['operation'] == 'SOFT_DELETE'))
+          .map((item) => item['record_id'] as String?)
+          .whereType<String>()
+          .toSet();
+      final merged = Map<String, DiagnosisModel>.from(localById);
+      final remoteIds = <String>{};
+      for (final row in remoteRows) {
+        final remote = DiagnosisModel.fromMap(row);
+        remoteIds.add(remote.id);
+        final local = merged[remote.id];
+        if (local == null ||
+            (!pendingIds.contains(remote.id) &&
+                !remote.updatedAt.isBefore(local.updatedAt))) {
+          merged[remote.id] = remote;
+        }
+      }
+
+      // Requeue local-only active rows: they should survive reinstall and be
+      // visible to the admin console once the connection is available.
+      var queuedLocalRows = false;
+      for (final local in localById.values) {
+        if (local.isDeleted ||
+            remoteIds.contains(local.id) ||
+            pendingIds.contains(local.id)) {
+          continue;
+        }
+        await sync.queueUpsert(
+          tableName: AppConstants.diagnosesTable,
+          recordId: local.id,
+          data: local.toMap(),
+        );
+        queuedLocalRows = true;
+      }
+      await db.upsertRows(
+        AppConstants.diagnosesTable,
+        merged.values.map((diagnosis) => diagnosis.toMap()),
+      );
+      if (queuedLocalRows) {
+        await sync.syncAll().timeout(const Duration(seconds: 12));
+      }
+
       if (mounted) {
         setState(() {
-          _error = e.toString();
+          _diagnoses = merged.values
+              .where((diagnosis) => !diagnosis.isDeleted)
+              .toList()
+            ..sort((a, b) => b.diagnosedAt.compareTo(a.diagnosedAt));
           _loading = false;
+          _error = null;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          if (_diagnoses.isEmpty) _error = null;
         });
       }
     }
