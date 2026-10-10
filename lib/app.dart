@@ -324,7 +324,6 @@ class _CropCareAppState extends State<CropCareApp> {
         }
       }
       final resolvedCrop = crop;
-      if (resolvedCrop == null) return;
       navigator.push(MaterialPageRoute(
         builder: (_) =>
             CropDetailScreen(crop: resolvedCrop, initialTabIndex: 1),
@@ -380,7 +379,6 @@ class _CropCareAppState extends State<CropCareApp> {
     }
 
     final resolvedCrop = crop;
-    if (resolvedCrop == null) return;
 
     navigator.push(
       MaterialPageRoute(
@@ -457,7 +455,12 @@ class _CropCareAppState extends State<CropCareApp> {
             sync: ctx.read<SyncService>(),
           ),
           update: (_, svc, db, sync, prev) =>
-              prev ?? NotificationsProvider(supabase: svc, db: db, sync: sync),
+              prev ??
+              NotificationsProvider(
+                supabase: svc,
+                db: db,
+                sync: sync,
+              ),
         ),
 
         // Chat / AI
