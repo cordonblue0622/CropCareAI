@@ -1,11 +1,11 @@
 {
-    "name": "cropcare_ai",
-    "short_name": "cropcare_ai",
+    "name": "CropCare AI",
+    "short_name": "CropCare AI",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "CropCare AI - Precision diagnostics for a flourishing harvest.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

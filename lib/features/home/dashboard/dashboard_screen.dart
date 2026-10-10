@@ -19,6 +19,7 @@ import '../../crops/providers/crops_provider.dart';
 import '../../notifications/providers/notifications_provider.dart';
 import '../../notifications/screens/notifications_screen.dart';
 import '../../crops/screens/crop_detail_screen.dart';
+import 'widgets/farm_weather_sheet.dart';
 import '../../library/library_screen.dart';
 import '../../chat/screens/chat_screen.dart';
 import '../../account/nav_drawer.dart';
@@ -32,8 +33,7 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen>
-    with WidgetsBindingObserver {
+class _DashboardScreenState extends State<DashboardScreen> {
   final WeatherService _weatherService = WeatherService();
   final TextEditingController _searchCtrl = TextEditingController();
   List<DiseaseKnowledgeModel> _diseases = [];
@@ -42,12 +42,10 @@ class _DashboardScreenState extends State<DashboardScreen>
   String _searchQuery = '';
   bool _isLoadingWeather = false;
   Timer? _weatherRefreshTimer;
-  int _weatherRequestId = 0;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadDiseases());
     _weatherRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
       final location = _weatherLocationQuery;
@@ -57,17 +55,9 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _weatherRefreshTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) return;
-    final location = _weatherLocationQuery;
-    if (location != null && location.isNotEmpty) _loadWeather(location);
   }
 
   Future<void> _loadDiseases() async {
@@ -90,9 +80,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     return null;
   }
 
-  Future<void> _loadWeather(String locationQuery) async {
-    if (!mounted) return;
-    final requestId = ++_weatherRequestId;
+  Future<FarmWeatherSnapshot?> _loadWeather(String locationQuery) async {
+    if (!mounted) return null;
 
     setState(() {
       _weatherLocationQuery = locationQuery;
@@ -101,11 +90,30 @@ class _DashboardScreenState extends State<DashboardScreen>
 
     final weather = await _weatherService.fetchCurrentConditions(locationQuery);
 
-    if (!mounted || requestId != _weatherRequestId) return;
+    if (!mounted) return weather;
     setState(() {
       _weather = weather;
       _isLoadingWeather = false;
     });
+    return weather;
+  }
+
+  Future<void> _showWeatherForecast() async {
+    final location =
+        (_weatherLocationQuery ?? _weather?.locationLabel ?? '').trim();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: AppColors.primaryDark.withValues(alpha: 0.36),
+      builder: (_) => FarmWeatherSheet(
+        locationQuery: location.isEmpty ? 'Farm location' : location,
+        initialWeather: _weather,
+        loadWeather: () => location.isEmpty
+            ? Future<FarmWeatherSnapshot?>.value()
+            : _loadWeather(location),
+      ),
+    );
   }
 
   void _ensureWeatherLoaded(String? locationQuery) {
@@ -136,13 +144,12 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   Future<String?> _previewImageFor(String cropId) async {
-    final db = context.read<DatabaseHelper>();
-    final supabase = context.read<SupabaseService>();
-    final localImage = await db.getLatestCropImageUrl(cropId);
+    final localImage =
+        await context.read<DatabaseHelper>().getLatestCropImageUrl(cropId);
     if (localImage != null) {
       return localImage;
     }
-    return supabase.getLatestCropImageUrl(cropId);
+    return context.read<SupabaseService>().getLatestCropImageUrl(cropId);
   }
 
   List<DiseaseKnowledgeModel> _dashboardDiseases(CropsProvider crops) {
@@ -227,54 +234,58 @@ class _DashboardScreenState extends State<DashboardScreen>
         height: 18,
         child: CircularProgressIndicator(
           strokeWidth: 2,
-          color: Color(0xFFB9D8E5),
+          color: Colors.white,
         ),
       );
     }
 
-    const color = Color(0xFFB9D8E5);
-    if (weather == null) {
-      return const Icon(Icons.cloud_off_outlined, color: color, size: 24);
-    }
-    final condition = weather.conditionLabel.toLowerCase();
-    final code = weather.weatherCode;
-    final isNight = !weather.isDay;
+    final condition = weather?.conditionLabel.toLowerCase() ?? '';
+    final code = weather?.weatherCode ?? -1;
+    final isNight = weather != null && !weather.isDay;
     if (condition.contains('thunder') || code >= 95) {
-      if (isNight) {
-        return const Stack(
-          alignment: Alignment.center,
-          children: [
-            Padding(
-              padding: EdgeInsets.only(left: 8, bottom: 8),
-              child: Icon(Icons.nights_stay_outlined, color: color, size: 18),
+      return const Stack(
+        alignment: Alignment.center,
+        children: [
+          Padding(
+            padding: EdgeInsets.only(top: 1),
+            child: Icon(
+              Icons.cloud_outlined,
+              color: Color(0xFFB9C1C9),
+              size: 25,
             ),
-            Padding(
-              padding: EdgeInsets.only(top: 4, right: 4),
-              child: Icon(Icons.thunderstorm_outlined, color: color, size: 24),
+          ),
+          Padding(
+            padding: EdgeInsets.only(top: 11, left: 2),
+            child: Icon(
+              Icons.flash_on_rounded,
+              color: Color(0xFFFFC247),
+              size: 15,
             ),
-          ],
-        );
-      }
-      return const Icon(Icons.thunderstorm_outlined, color: color, size: 24);
+          ),
+        ],
+      );
     }
     if (condition.contains('snow') ||
         condition.contains('sleet') ||
         (code >= 71 && code <= 86)) {
-      return Stack(
+      return const Stack(
         alignment: Alignment.center,
         children: [
-          if (isNight)
-            const Padding(
-              padding: EdgeInsets.only(left: 8, bottom: 7),
-              child: Icon(Icons.nights_stay_outlined, color: color, size: 18),
-            ),
-          const Padding(
+          Padding(
             padding: EdgeInsets.only(top: 2),
-            child: Icon(Icons.cloud_outlined, color: color, size: 24),
+            child: Icon(
+              Icons.cloud_outlined,
+              color: Colors.white,
+              size: 24,
+            ),
           ),
-          const Padding(
+          Padding(
             padding: EdgeInsets.only(top: 17),
-            child: Icon(Icons.ac_unit, color: color, size: 11),
+            child: Icon(
+              Icons.ac_unit,
+              color: Color(0xFF8ED8F8),
+              size: 11,
+            ),
           ),
         ],
       );
@@ -284,21 +295,24 @@ class _DashboardScreenState extends State<DashboardScreen>
         condition.contains('shower') ||
         (code >= 51 && code <= 67) ||
         (code >= 80 && code <= 82)) {
-      return Stack(
+      return const Stack(
         alignment: Alignment.center,
         children: [
-          if (isNight)
-            const Padding(
-              padding: EdgeInsets.only(left: 8, bottom: 7),
-              child: Icon(Icons.nights_stay_outlined, color: color, size: 18),
-            ),
-          const Padding(
+          Padding(
             padding: EdgeInsets.only(top: 0),
-            child: Icon(Icons.cloud_outlined, color: color, size: 24),
+            child: Icon(
+              Icons.cloud_outlined,
+              color: Color(0xFFB9C1C9),
+              size: 24,
+            ),
           ),
-          const Padding(
+          Padding(
             padding: EdgeInsets.only(top: 18),
-            child: Icon(Icons.water_drop_outlined, color: color, size: 12),
+            child: Icon(
+              Icons.water_drop_rounded,
+              color: Color(0xFF56B4E9),
+              size: 12,
+            ),
           ),
         ],
       );
@@ -307,22 +321,11 @@ class _DashboardScreenState extends State<DashboardScreen>
         condition.contains('mist') ||
         code == 45 ||
         code == 48) {
-      if (isNight) {
-        return const Stack(
-          alignment: Alignment.center,
-          children: [
-            Padding(
-              padding: EdgeInsets.only(left: 8, bottom: 7),
-              child: Icon(Icons.nights_stay_outlined, color: color, size: 18),
-            ),
-            Padding(
-              padding: EdgeInsets.only(top: 4, right: 4),
-              child: Icon(Icons.cloud_outlined, color: color, size: 23),
-            ),
-          ],
-        );
-      }
-      return const Icon(Icons.cloud_outlined, color: color, size: 25);
+      return const Icon(
+        Icons.cloud_outlined,
+        color: Color(0xFFB9C1C9),
+        size: 25,
+      );
     }
     if (condition.contains('partly') ||
         condition.contains('mostly cloudy') ||
@@ -337,13 +340,22 @@ class _DashboardScreenState extends State<DashboardScreen>
             padding: const EdgeInsets.only(left: 7, bottom: 7),
             child: Icon(
               isNight ? Icons.nights_stay_outlined : Icons.wb_sunny_outlined,
-              color: color,
+              color:
+                  isNight ? const Color(0xFFA9D6F5) : const Color(0xFFFFC247),
               size: 20,
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.only(top: 5, right: 5),
-            child: Icon(Icons.cloud_outlined, color: color, size: 22),
+          Padding(
+            padding: const EdgeInsets.only(top: 5, right: 5),
+            child: Icon(
+              Icons.cloud_outlined,
+              color: condition.contains('mainly clear') ||
+                      condition.contains('few clouds') ||
+                      code == 1
+                  ? Colors.white
+                  : const Color(0xFFB9C1C9),
+              size: 22,
+            ),
           ),
         ],
       );
@@ -357,21 +369,41 @@ class _DashboardScreenState extends State<DashboardScreen>
           children: [
             Padding(
               padding: EdgeInsets.only(left: 7, bottom: 7),
-              child: Icon(Icons.nights_stay_outlined, color: color, size: 19),
+              child: Icon(
+                Icons.nights_stay_outlined,
+                color: Color(0xFFA9D6F5),
+                size: 19,
+              ),
             ),
             Padding(
               padding: EdgeInsets.only(top: 5, right: 5),
-              child: Icon(Icons.cloud_outlined, color: color, size: 23),
+              child: Icon(
+                Icons.cloud_outlined,
+                color: Color(0xFFB9C1C9),
+                size: 23,
+              ),
             ),
           ],
         );
       }
-      return const Icon(Icons.cloud_outlined, color: color, size: 25);
+      return const Icon(
+        Icons.cloud_outlined,
+        color: Color(0xFFB9C1C9),
+        size: 25,
+      );
     }
     if (isNight) {
-      return const Icon(Icons.nights_stay_outlined, color: color, size: 24);
+      return const Icon(
+        Icons.nights_stay_outlined,
+        color: Color(0xFFA9D6F5),
+        size: 24,
+      );
     }
-    return const Icon(Icons.wb_sunny_outlined, color: color, size: 24);
+    return const Icon(
+      Icons.wb_sunny_rounded,
+      color: Color(0xFFFFC247),
+      size: 24,
+    );
   }
 
   _SmartTipContent _buildSmartTipContent({
@@ -616,24 +648,18 @@ class _DashboardScreenState extends State<DashboardScreen>
                     message: _weather == null
                         ? _isLoadingWeather
                             ? 'Loading farm weather'
-                            : 'Farm weather unavailable'
+                            : 'View farm weather forecast'
                         : '${_weather!.conditionLabel}, ${_weather!.temperatureC.toStringAsFixed(0)}°C',
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
+                    child: Material(
+                      color: Colors.transparent,
                       child: InkWell(
-                        onTap: () {
-                          final location = _weatherLocationQuery;
-                          if (location != null && location.isNotEmpty) {
-                            _loadWeather(location);
-                          }
-                        },
-                        borderRadius: BorderRadius.circular(10),
-                        child: Center(child: _weatherGlyph(_weather)),
+                        onTap: _showWeatherForecast,
+                        customBorder: const CircleBorder(),
+                        child: SizedBox(
+                          width: 36,
+                          height: 36,
+                          child: Center(child: _weatherGlyph(_weather)),
+                        ),
                       ),
                     ),
                   ),
@@ -703,7 +729,11 @@ class _DashboardScreenState extends State<DashboardScreen>
                             _showVitalityDialog(context, allRecentActiveCrops),
                   ),
                   const SizedBox(height: 8),
-                  _buildVitality(crops, dashboardActiveCrops),
+                  _buildVitality(
+                    crops,
+                    dashboardActiveCrops,
+                    allRecentActiveCrops,
+                  ),
                   const SizedBox(height: 24),
 
                   // Active Crops
@@ -788,6 +818,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   Widget _buildVitality(
     CropsProvider crops,
     List<CropModel> activeCrops,
+    List<CropModel> allActiveCrops,
   ) {
     if (crops.isLoading) {
       return const Padding(
@@ -800,6 +831,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
     return _FarmVitalityChart(
       crops: activeCrops,
+      allActiveCrops: allActiveCrops,
       onCropTap: (crop) => _openCropProgress(context, crop),
     );
   }
@@ -1389,9 +1421,14 @@ class _VitalityLabel extends StatelessWidget {
 
 class _FarmVitalityChart extends StatelessWidget {
   final List<CropModel> crops;
+  final List<CropModel> allActiveCrops;
   final ValueChanged<CropModel> onCropTap;
 
-  const _FarmVitalityChart({required this.crops, required this.onCropTap});
+  const _FarmVitalityChart({
+    required this.crops,
+    required this.allActiveCrops,
+    required this.onCropTap,
+  });
 
   static const _barColors = [
     Color(0xFF24A148),
@@ -1403,7 +1440,7 @@ class _FarmVitalityChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final measuredScores = crops
+    final measuredScores = allActiveCrops
         .map((crop) => crop.latestHealthScore)
         .whereType<double>()
         .map((score) => score.clamp(0, 100).toDouble())
@@ -1460,7 +1497,7 @@ class _FarmVitalityChart extends StatelessWidget {
                       Text(
                         averageScore == null
                             ? 'Add a health check to begin tracking.'
-                            : 'Average across ${measuredScores.length} of ${crops.length} crops',
+                            : 'Average across ${measuredScores.length} of ${allActiveCrops.length} crops',
                         style: const TextStyle(
                             fontSize: 12, color: AppColors.textGray),
                       ),

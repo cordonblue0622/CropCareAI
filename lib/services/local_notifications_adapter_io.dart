@@ -54,7 +54,7 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
       },
     );
 
-    // Create the three notification channels up-front.
+    // Create the notification channels up-front so sound behavior is stable.
     final androidImpl = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
     if (androidImpl != null) {
@@ -63,9 +63,7 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
           AndroidNotificationChannel(
             '${kind.channelId}_sound',
             kind.channelName,
-            importance: kind == ReminderKind.overdue
-                ? Importance.defaultImportance
-                : Importance.high,
+            importance: Importance.high,
             playSound: true,
             enableVibration: true,
           ),
@@ -74,9 +72,7 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
           AndroidNotificationChannel(
             '${kind.channelId}_quiet',
             '${kind.channelName} (quiet)',
-            importance: kind == ReminderKind.overdue
-                ? Importance.defaultImportance
-                : Importance.high,
+            importance: Importance.high,
             playSound: false,
             enableVibration: false,
           ),
@@ -141,9 +137,7 @@ class _IoLocalNotificationsAdapter implements LocalNotificationsAdapter {
     final androidDetails = AndroidNotificationDetails(
       '${kind.channelId}_${playSound ? 'sound' : 'quiet'}',
       '${kind.channelName}${playSound ? '' : ' (quiet)'}',
-      importance: kind == ReminderKind.overdue
-          ? Importance.defaultImportance
-          : Importance.high,
+      importance: Importance.high,
       priority: Priority.high,
       playSound: playSound,
       enableVibration: playSound,

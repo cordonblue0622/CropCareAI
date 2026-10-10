@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -25,6 +27,7 @@ class NotificationsProvider extends ChangeNotifier {
   bool _isLoading = false;
   bool _hasLoadedCache = false;
   String? _loadedUserId;
+  Timer? _overdueRefreshTimer;
 
   NotificationsProvider({
     required SupabaseService supabase,
@@ -33,6 +36,12 @@ class NotificationsProvider extends ChangeNotifier {
   })  : _supabase = supabase,
         _db = db,
         _sync = sync;
+
+  @override
+  void dispose() {
+    _overdueRefreshTimer?.cancel();
+    super.dispose();
+  }
 
   List<NotificationModel> get notifications => _notifications;
   List<NotificationModel> get unread =>
@@ -44,6 +53,16 @@ class NotificationsProvider extends ChangeNotifier {
   List<TreatmentTaskModel> get pendingTasks => _pendingTasks;
   bool get isLoading => _isLoading;
   int get unreadCount => unread.length;
+  int get alertCount {
+    final alerts = _notifications.where((notification) =>
+        notification.type == NotificationType.general ||
+        notification.type == NotificationType.progressAlert ||
+        notification.type == NotificationType.treatmentReminder);
+    return alerts
+        .map((notification) => notification.cropId ?? notification.id)
+        .toSet()
+        .length;
+  }
 
   // ─── Fetch ────────────────────────────────────────────────────────────────
 
@@ -84,7 +103,9 @@ class NotificationsProvider extends ChangeNotifier {
     }
 
     try {
-      await _syncCropAttentionAlerts(userId);
+      final cropTypes = await _cropTypesById(userId);
+      await _syncDailyCropAlerts(userId, cropTypes);
+      await _syncCropAttentionAlerts(userId, cropTypes);
     } catch (_) {
       // Alert generation retries on the next refresh.
     }
@@ -94,7 +115,10 @@ class NotificationsProvider extends ChangeNotifier {
     final notificationsAllowed =
         await NotificationService.instance.requestPermission();
     if (notificationsAllowed) {
-      await NotificationService.instance.scheduleForTasks(_pendingTasks);
+      await NotificationService.instance.scheduleForTasks(
+        _pendingTasks,
+        cropNames: await _cropTypesById(userId),
+      );
     }
   }
 
@@ -321,6 +345,137 @@ class NotificationsProvider extends ChangeNotifier {
     }
   }
 
+  Future<Map<String, String>> _cropTypesById(String userId) async {
+    try {
+      final rows = await _db.queryByUserId(
+        AppConstants.cropsTable,
+        userId,
+        includeDeleted: true,
+      );
+      return {
+        for (final row in rows)
+          if (row['id'] is String &&
+              row['crop_type'] is String &&
+              row['is_deleted'] != true &&
+              row['is_deleted'] != 1)
+            row['id'] as String: row['crop_type'] as String,
+      };
+    } catch (_) {
+      return <String, String>{};
+    }
+  }
+
+  String _dateKey(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+
+  String _dailyAlertDismissalKey(String userId) =>
+      'dismissed_daily_crop_task_alerts_$userId';
+
+  bool _isDailyTaskAlert(NotificationModel notification) {
+    final title = notification.title;
+    return notification.type == NotificationType.treatmentReminder &&
+        (title.startsWith('A new task awaits for your ') ||
+            title.startsWith('New tasks await for your '));
+  }
+
+  Future<void> _rememberDismissedDailyAlert(
+    NotificationModel notification,
+  ) async {
+    final cropId = notification.cropId;
+    if (cropId == null) return;
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final key = _dailyAlertDismissalKey(notification.userId);
+      final dismissed = preferences.getStringList(key) ?? <String>[];
+      final date = notification.scheduledFor ?? notification.createdAt;
+      final dismissal = '${_dateKey(date)}|$cropId';
+      if (!dismissed.contains(dismissal)) dismissed.add(dismissal);
+      final cutoff = DateTime.now().subtract(const Duration(days: 30));
+      dismissed.removeWhere((value) {
+        final separator = value.indexOf('|');
+        final dateKey = separator < 0 ? null : value.substring(0, separator);
+        final date = dateKey == null ? null : DateTime.tryParse(dateKey);
+        return date == null || date.isBefore(cutoff);
+      });
+      await preferences.setStringList(key, dismissed);
+    } catch (_) {
+      // The notification remains dismissible for the current session.
+    }
+  }
+
+  Future<void> _syncDailyCropAlerts(
+    String userId,
+    Map<String, String> cropTypes,
+  ) async {
+    final now = DateTime.now();
+    final morning = DateTime(now.year, now.month, now.day, 4);
+    if (now.isBefore(morning)) return;
+
+    final tasksByCrop = <String, List<TreatmentTaskModel>>{};
+    for (final task in _todayTasks) {
+      tasksByCrop
+          .putIfAbsent(task.cropId, () => <TreatmentTaskModel>[])
+          .add(task);
+    }
+    if (tasksByCrop.isEmpty) return;
+
+    final preferences = await SharedPreferences.getInstance();
+    final dismissalKey = _dailyAlertDismissalKey(userId);
+    final dismissed =
+        (preferences.getStringList(dismissalKey) ?? <String>[]).toSet();
+    final currentDate = _dateKey(now);
+    final pendingDeleteIds = await _pendingNotificationDeleteIds();
+
+    for (final entry in tasksByCrop.entries) {
+      if (dismissed.contains('$currentDate|${entry.key}')) continue;
+      final id = const Uuid().v5(
+        Namespace.url.value,
+        'cropcareai:daily-task-alert:$userId:${entry.key}:$currentDate',
+      );
+      if (pendingDeleteIds.contains(id) ||
+          _notifications.any((notification) => notification.id == id)) {
+        continue;
+      }
+
+      final rawCropType = cropTypes[entry.key] ?? 'crop';
+      final cropType = rawCropType.isEmpty
+          ? 'crop'
+          : rawCropType[0].toLowerCase() + rawCropType.substring(1);
+      final taskCount = entry.value.length;
+      final notification = NotificationModel(
+        id: id,
+        userId: userId,
+        cropId: entry.key,
+        treatmentId: entry.value.first.treatmentId,
+        type: NotificationType.treatmentReminder,
+        title: taskCount == 1
+            ? 'A new task awaits for your $cropType crop'
+            : 'New tasks await for your $cropType crop',
+        body:
+            'Visit your crop now to see ${taskCount == 1 ? "today's task" : "today's tasks"}.',
+        scheduledFor: morning,
+        createdAt: now,
+      );
+      _notifications.insert(0, notification);
+      await _db.upsertRow(
+        AppConstants.notificationsTable,
+        notification.toMap(),
+      );
+      await _sync.queueUpsert(
+        tableName: AppConstants.notificationsTable,
+        recordId: notification.id,
+        data: _remoteNotificationMap(notification),
+      );
+      try {
+        await _supabase.upsertRecord(
+          table: AppConstants.notificationsTable,
+          data: _remoteNotificationMap(notification),
+        );
+        await _clearQueuedOperation(notification.id, 'UPSERT');
+      } catch (_) {}
+    }
+  }
+
   String _dismissedCropAlertsKey(String userId) =>
       'dismissed_crop_attention_alerts_$userId';
 
@@ -338,7 +493,10 @@ class NotificationsProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _syncCropAttentionAlerts(String userId) async {
+  Future<void> _syncCropAttentionAlerts(
+    String userId,
+    Map<String, String> cropTypes,
+  ) async {
     final overdueByCrop = <String, TreatmentTaskModel>{};
     for (final task in _missedTasks) {
       overdueByCrop.putIfAbsent(task.cropId, () => task);
@@ -367,14 +525,18 @@ class NotificationsProvider extends ChangeNotifier {
       if (existing) continue;
 
       final now = DateTime.now();
+      final rawCropType = cropTypes[entry.key] ?? 'crop';
+      final cropType = rawCropType.isEmpty
+          ? 'crop'
+          : rawCropType[0].toLowerCase() + rawCropType.substring(1);
       final notification = NotificationModel(
         id: const Uuid().v4(),
         userId: userId,
         cropId: entry.key,
         treatmentId: entry.value.treatmentId,
         type: NotificationType.progressAlert,
-        title: 'Your crop needs attention',
-        body: 'Visit the app to see what needs attention for this crop.',
+        title: 'Your $cropType crop needs attention',
+        body: 'Visit your crop now to review its overdue care plan.',
         scheduledFor: now,
         createdAt: now,
       );
@@ -404,31 +566,37 @@ class NotificationsProvider extends ChangeNotifier {
     final todayEnd = todayStart.add(const Duration(days: 1));
     final tomorrowEnd = todayEnd.add(const Duration(days: 1));
     final sevenDaysOut = todayStart.add(const Duration(days: 7));
+    final overdueCutoffReached =
+        !now.isBefore(DateTime(now.year, now.month, now.day, 19));
 
     _todayTasks = allTasks
         .where((task) =>
-            !task.dueAt.isBefore(todayStart) &&
-            task.dueAt.isBefore(todayEnd) &&
+            !task.dueAt.toLocal().isBefore(todayStart) &&
+            task.dueAt.toLocal().isBefore(todayEnd) &&
+            !overdueCutoffReached &&
             task.status == TaskStatus.pending)
         .toList();
 
     _missedTasks = allTasks
         .where((task) =>
-            task.dueAt.isBefore(todayStart) &&
+            (task.dueAt.toLocal().isBefore(todayStart) ||
+                (overdueCutoffReached &&
+                    !task.dueAt.toLocal().isBefore(todayStart) &&
+                    task.dueAt.toLocal().isBefore(todayEnd))) &&
             task.status == TaskStatus.pending)
         .toList();
 
     _tomorrowTasks = allTasks
         .where((task) =>
-            !task.dueAt.isBefore(todayEnd) &&
-            task.dueAt.isBefore(tomorrowEnd) &&
+            !task.dueAt.toLocal().isBefore(todayEnd) &&
+            task.dueAt.toLocal().isBefore(tomorrowEnd) &&
             task.status == TaskStatus.pending)
         .toList();
 
     _upcomingTasks = allTasks
         .where((task) =>
-            !task.dueAt.isBefore(todayStart) &&
-            task.dueAt.isBefore(sevenDaysOut) &&
+            !task.dueAt.toLocal().isBefore(todayStart) &&
+            task.dueAt.toLocal().isBefore(sevenDaysOut) &&
             task.status == TaskStatus.pending)
         .toList();
 
@@ -436,6 +604,19 @@ class NotificationsProvider extends ChangeNotifier {
     _missedTasks.sort((a, b) => a.dueAt.compareTo(b.dueAt));
     _tomorrowTasks.sort((a, b) => a.dueAt.compareTo(b.dueAt));
     _upcomingTasks.sort((a, b) => a.dueAt.compareTo(b.dueAt));
+
+    _overdueRefreshTimer?.cancel();
+    if (allTasks
+        .any((task) => !task.isDeleted && task.status == TaskStatus.pending)) {
+      final nextCutoff = DateTime(now.year, now.month, now.day, 19);
+      final nextCheck = nextCutoff.isAfter(now)
+          ? nextCutoff
+          : nextCutoff.add(const Duration(days: 1));
+      _overdueRefreshTimer = Timer(nextCheck.difference(now), () {
+        _bucketTasks(_pendingTasks);
+        notifyListeners();
+      });
+    }
   }
 
   // ─── Actions ──────────────────────────────────────────────────────────────
@@ -476,6 +657,9 @@ class NotificationsProvider extends ChangeNotifier {
         notification.cropId!,
       );
     }
+    if (_isDailyTaskAlert(notification)) {
+      await _rememberDismissedDailyAlert(notification);
+    }
 
     // A notification created or edited while offline can still have an older
     // UPSERT queued. Remove those writes so they cannot recreate a dismissed
@@ -498,10 +682,16 @@ class NotificationsProvider extends ChangeNotifier {
     _tomorrowTasks.removeWhere((task) => task.cropId == cropId);
     _upcomingTasks.removeWhere((task) => task.cropId == cropId);
     _pendingTasks.removeWhere((task) => task.cropId == cropId);
+    _bucketTasks(_pendingTasks);
 
     // Publish the pruned counts before awaiting OS reminder rescheduling.
     notifyListeners();
-    await NotificationService.instance.scheduleForTasks(_pendingTasks);
+    await NotificationService.instance.scheduleForTasks(
+      _pendingTasks,
+      cropNames: _loadedUserId == null
+          ? const <String, String>{}
+          : await _cropTypesById(_loadedUserId!),
+    );
   }
 
   Future<void> _queueDelete(String notificationId) async {
@@ -581,6 +771,7 @@ class NotificationsProvider extends ChangeNotifier {
       _tomorrowTasks.removeWhere((task) => task.id == taskId);
       _upcomingTasks.removeWhere((task) => task.id == taskId);
       _pendingTasks.removeWhere((task) => task.id == taskId);
+      _bucketTasks(_pendingTasks);
 
       if (completedTask != null) {
         await _db.upsertRow(
@@ -590,7 +781,12 @@ class NotificationsProvider extends ChangeNotifier {
       }
 
       // Reschedule so the completed task no longer fires reminders.
-      await NotificationService.instance.scheduleForTasks(_pendingTasks);
+      await NotificationService.instance.scheduleForTasks(
+        _pendingTasks,
+        cropNames: _loadedUserId == null
+            ? const <String, String>{}
+            : await _cropTypesById(_loadedUserId!),
+      );
       notifyListeners();
 
       return completedTask?.cropId;
@@ -600,6 +796,8 @@ class NotificationsProvider extends ChangeNotifier {
   }
 
   void clear() {
+    _overdueRefreshTimer?.cancel();
+    _overdueRefreshTimer = null;
     _notifications = [];
     _locallyDeletedNotificationIds.clear();
     _todayTasks = [];

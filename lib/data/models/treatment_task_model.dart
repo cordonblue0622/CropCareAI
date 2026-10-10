@@ -16,6 +16,11 @@ class TreatmentTaskModel {
   final DateTime createdAt;
   final DateTime updatedAt;
 
+  DateTime get overdueAt {
+    final localDueAt = dueAt.toLocal();
+    return DateTime(localDueAt.year, localDueAt.month, localDueAt.day, 19);
+  }
+
   const TreatmentTaskModel({
     required this.id,
     required this.treatmentId,

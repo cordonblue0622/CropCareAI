@@ -69,8 +69,8 @@ class CalendarTracker extends StatelessWidget {
             calendarBuilders: CalendarBuilders(
               markerBuilder: (context, day, events) {
                 if (events.isEmpty) return null;
-                final color =
-                    _markerColorForTasks(events.cast<TreatmentTaskModel>(), day);
+                final color = _markerColorForTasks(
+                    events.cast<TreatmentTaskModel>(), day);
                 return Positioned(
                   bottom: 4,
                   child: Container(
@@ -90,8 +90,8 @@ class CalendarTracker extends StatelessWidget {
         const SizedBox(height: 16),
         _DayTaskList(
           date: selectedDate,
-          tasks: tasksByDay[
-                  DateTime(selectedDate.year, selectedDate.month, selectedDate.day)] ??
+          tasks: tasksByDay[DateTime(
+                  selectedDate.year, selectedDate.month, selectedDate.day)] ??
               const [],
           onTaskToggled: onTaskToggled,
         ),
@@ -103,7 +103,8 @@ class CalendarTracker extends StatelessWidget {
       List<TreatmentTaskModel> tasks) {
     final map = <DateTime, List<TreatmentTaskModel>>{};
     for (final t in tasks) {
-      final key = DateTime(t.dueAt.year, t.dueAt.month, t.dueAt.day);
+      final localDueAt = t.dueAt.toLocal();
+      final key = DateTime(localDueAt.year, localDueAt.month, localDueAt.day);
       (map[key] ??= []).add(t);
     }
     return map;
@@ -112,15 +113,14 @@ class CalendarTracker extends StatelessWidget {
   static Color _markerColorForTasks(
       List<TreatmentTaskModel> dayTasks, DateTime day) {
     final now = DateTime.now();
-    final dayEnd = DateTime(day.year, day.month, day.day, 23, 59, 59);
-    final fourHoursAfterDay =
-        dayEnd.add(const Duration(hours: 4));
-    final isPast = now.isAfter(fourHoursAfterDay);
+    final overdueAt = DateTime(day.year, day.month, day.day, 19);
+    final isPast = !now.isBefore(overdueAt);
 
-    final allCompleted = dayTasks.every((t) => t.status == TaskStatus.completed);
+    final allCompleted =
+        dayTasks.every((t) => t.status == TaskStatus.completed);
     if (allCompleted) return AppColors.primary; // green
-    final anyMissed = isPast &&
-        dayTasks.any((t) => t.status != TaskStatus.completed);
+    final anyMissed =
+        isPast && dayTasks.any((t) => t.status != TaskStatus.completed);
     if (anyMissed) return Colors.red;
     return Colors.orange; // some pending, none missed
   }
@@ -160,7 +160,8 @@ class _DayTaskList extends StatelessWidget {
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.textLightGray.withOpacity(0.4)),
+              border:
+                  Border.all(color: AppColors.textLightGray.withOpacity(0.4)),
             ),
             child: const Text(
               'No tasks scheduled for this day.',
@@ -172,75 +173,114 @@ class _DayTaskList extends StatelessWidget {
     }
 
     final now = DateTime.now();
+    final hasOverdueTask = tasks.any((task) =>
+        task.status != TaskStatus.completed && !now.isBefore(task.overdueAt));
+    final allCompleted =
+        tasks.every((task) => task.status == TaskStatus.completed);
+    final groupColor = allCompleted
+        ? AppColors.primary
+        : hasOverdueTask
+            ? Colors.red
+            : Colors.orange;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         header,
-        ...tasks.map((task) {
-          final isDone = task.status == TaskStatus.completed;
-          final overdue = !isDone &&
-              task.dueAt.add(const Duration(hours: 4)).isBefore(now);
-          final canToggle = !isDone && !date.isAfter(now);
-          return Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border(
-                left: BorderSide(
-                  color: isDone
-                      ? AppColors.primary
-                      : (overdue ? Colors.red : Colors.orange),
-                  width: 4,
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border(left: BorderSide(color: groupColor, width: 4)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              for (var index = 0; index < tasks.length; index++) ...[
+                _ProgressTaskRow(
+                  task: tasks[index],
+                  onTap: () => onTaskToggled(tasks[index]),
+                ),
+                if (index < tasks.length - 1)
+                  const Divider(height: 1, indent: 16, endIndent: 16),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProgressTaskRow extends StatelessWidget {
+  final TreatmentTaskModel task;
+  final VoidCallback onTap;
+
+  const _ProgressTaskRow({required this.task, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDone = task.status == TaskStatus.completed;
+    final now = DateTime.now();
+    final overdue = !isDone && !now.isBefore(task.overdueAt);
+    final statusColor = isDone
+        ? AppColors.primary
+        : overdue
+            ? Colors.red
+            : Colors.orange;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                isDone ? Icons.task_alt : Icons.circle_outlined,
+                size: 22,
+                color: statusColor,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      task.title,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textDark,
+                        decoration: isDone ? TextDecoration.lineThrough : null,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      isDone
+                          ? 'Completed ${task.completedAt != null ? DateFormat.jm().format(task.completedAt!) : ''}'
+                          : (overdue
+                              ? 'OVERDUE'
+                              : 'Due ${DateFormat.jm().format(task.dueAt)}'),
+                      style: TextStyle(fontSize: 12, color: statusColor),
+                    ),
+                  ],
                 ),
               ),
-            ),
-            child: Row(
-              children: [
-                Checkbox(
-                  value: isDone,
-                  onChanged: canToggle
-                      ? (_) => onTaskToggled(task)
-                      : null,
-                  activeColor: AppColors.primary,
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        task.title,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textDark,
-                          decoration:
-                              isDone ? TextDecoration.lineThrough : null,
-                        ),
-                      ),
-                      Text(
-                        isDone
-                            ? 'Done ${DateFormat.jm().format(task.completedAt!)}'
-                            : (overdue
-                                ? 'OVERDUE'
-                                : 'Due ${DateFormat.jm().format(task.dueAt)}'),
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: isDone
-                              ? AppColors.textGray
-                              : (overdue ? Colors.red : AppColors.textGray),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          );
-        }),
-      ],
+              const Icon(Icons.chevron_right, color: AppColors.textLightGray),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

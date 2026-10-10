@@ -6,27 +6,29 @@ import 'dart:async';
 import 'local_notifications_adapter_io.dart'
     if (dart.library.js) 'local_notifications_adapter_web.dart' as impl;
 
-/// Three reminder kinds per task. Used as channel ids on Android and as
-/// a discriminator inside [reminderIdFor].
-enum ReminderKind { thirtyMin, due, overdue }
+/// Notification kinds used by the local scheduling adapter.
+enum ReminderKind { thirtyMin, due, overdue, morning }
 
 extension ReminderKindX on ReminderKind {
   String get token => switch (this) {
         ReminderKind.thirtyMin => '30min',
         ReminderKind.due => 'due',
         ReminderKind.overdue => 'overdue',
+        ReminderKind.morning => 'morning',
       };
 
   String get channelId => switch (this) {
         ReminderKind.thirtyMin => 'task_30min',
         ReminderKind.due => 'task_due',
-        ReminderKind.overdue => 'task_overdue',
+        ReminderKind.overdue => 'task_overdue_v2',
+        ReminderKind.morning => 'crop_morning',
       };
 
   String get channelName => switch (this) {
         ReminderKind.thirtyMin => '30-minute task warning',
         ReminderKind.due => 'Task due reminders',
         ReminderKind.overdue => 'Overdue task reminders',
+        ReminderKind.morning => 'Daily crop task alerts',
       };
 }
 
@@ -72,16 +74,21 @@ abstract class LocalNotificationsAdapter {
 /// Build the singleton adapter for the current platform.
 LocalNotificationsAdapter createLocalNotificationsAdapter() => impl.create();
 
-/// Deterministic 32-bit non-negative reminder id for a (taskId, kind) pair.
+/// Deterministic 32-bit non-negative reminder id for a (key, kind) pair.
 ///
 /// `flutter_local_notifications` requires a 32-bit signed int. We pack the
-/// reminder kind into the low 2 bits and a 30-bit hash of the task id into
-/// the high bits, so the same task+kind always resolves to the same id and
-/// distinct (task, kind) tuples almost never collide.
+/// reminder kind into the low 2 bits and a 29-bit hash of the key into the
+/// high bits, so the same key+kind always resolves to the same id and
+/// distinct (key, kind) tuples almost never collide.
 int reminderIdFor(String taskId, String kind) {
-  // Use 29 bits of hash so that after the 2-bit left-shift the result fits
-  // in a 31-bit non-negative signed int (max 0x7FFFFFFF).
-  final base = taskId.hashCode & 0x1FFFFFFF; // 29 bits, always non-negative
+  // FNV-1a gives a stable value across app launches. Object.hashCode is only
+  // guaranteed to remain stable within one process.
+  var hash = 0x811C9DC5;
+  for (final unit in taskId.codeUnits) {
+    hash = ((hash ^ unit) * 0x01000193) & 0xFFFFFFFF;
+  }
+  // Use 29 bits so that the kind suffix fits a signed 31-bit notification id.
+  final base = hash & 0x1FFFFFFF;
   final suffix = switch (kind) {
     '30min' => 0,
     'due' => 1,
