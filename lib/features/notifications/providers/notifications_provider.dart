@@ -107,7 +107,10 @@ class NotificationsProvider extends ChangeNotifier {
       final cropTypes = await _cropTypesById(userId);
       await _syncDailyCropAlerts(userId, cropTypes);
       await _syncCropAttentionAlerts(userId, cropTypes);
-    } catch (_) {
+      await _sync.syncAll().timeout(const Duration(seconds: 12));
+    } catch (error, stackTrace) {
+      debugPrint('Could not sync generated crop alerts: $error');
+      debugPrintStack(stackTrace: stackTrace);
       // Alert generation retries on the next refresh.
     }
 
@@ -467,13 +470,6 @@ class NotificationsProvider extends ChangeNotifier {
         recordId: notification.id,
         data: _remoteNotificationMap(notification),
       );
-      try {
-        await _supabase.upsertRecord(
-          table: AppConstants.notificationsTable,
-          data: _remoteNotificationMap(notification),
-        );
-        await _clearQueuedOperation(notification.id, 'UPSERT');
-      } catch (_) {}
     }
   }
 
@@ -551,13 +547,6 @@ class NotificationsProvider extends ChangeNotifier {
         recordId: notification.id,
         data: _remoteNotificationMap(notification),
       );
-      try {
-        await _supabase.upsertRecord(
-          table: AppConstants.notificationsTable,
-          data: _remoteNotificationMap(notification),
-        );
-        await _clearQueuedOperation(notification.id, 'UPSERT');
-      } catch (_) {}
     }
   }
 

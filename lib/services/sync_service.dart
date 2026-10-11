@@ -60,19 +60,18 @@ class SyncService {
     await _removeCropChangesChannel();
 
     _subscribedCropUserId = userId;
-    final channel = supabaseService.client
-        .channel('crop-sync-$userId')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: AppConstants.cropsTable,
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.eq,
-            column: 'user_id',
-            value: userId,
-          ),
-          callback: (_) => unawaited(_refreshAfterRemoteCropChange()),
-        );
+    final channel =
+        supabaseService.client.channel('crop-sync-$userId').onPostgresChanges(
+              event: PostgresChangeEvent.all,
+              schema: 'public',
+              table: AppConstants.cropsTable,
+              filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: 'user_id',
+                value: userId,
+              ),
+              callback: (_) => unawaited(_refreshAfterRemoteCropChange()),
+            );
     _cropChangesChannel = channel;
     channel.subscribe((status, error) {
       if (status == RealtimeSubscribeStatus.channelError ||
@@ -160,6 +159,9 @@ class SyncService {
     try {
       final pending =
           orderPendingSyncItems(await dbHelper.getPendingSyncItems());
+      final failedCropIds = <String>{};
+      final failedChatSessionIds = <String>{};
+      final failedDiagnosisIds = <String>{};
       final syncedTreatmentIds = <String>{};
       final failedTreatmentIds = <String>{};
       for (final item in pending) {
@@ -169,8 +171,60 @@ class SyncService {
         final Map<String, dynamic> payload =
             jsonDecode(item['payload'] as String) as Map<String, dynamic>;
 
+        final cropId = payload['crop_id'] as String?;
+        final diagnosisId = payload['diagnosis_id'] as String?;
+        final chatSessionId = payload['chat_session_id'] as String?;
+        final treatmentId = payload['treatment_id'] as String?;
+        final sessionId = payload['session_id'] as String?;
+        final blockedByFailedParent =
+            (table == AppConstants.chatSessionsTable &&
+                    cropId != null &&
+                    failedCropIds.contains(cropId)) ||
+                (table == AppConstants.diagnosesTable &&
+                    ((cropId != null && failedCropIds.contains(cropId)) ||
+                        (chatSessionId != null &&
+                            failedChatSessionIds.contains(chatSessionId)))) ||
+                (table == AppConstants.treatmentsTable &&
+                    ((cropId != null && failedCropIds.contains(cropId)) ||
+                        (diagnosisId != null &&
+                            failedDiagnosisIds.contains(diagnosisId)))) ||
+                (table == AppConstants.notificationsTable &&
+                    ((cropId != null && failedCropIds.contains(cropId)) ||
+                        (treatmentId != null &&
+                            failedTreatmentIds.contains(treatmentId)))) ||
+                (table == AppConstants.treatmentTasksTable &&
+                    ((cropId != null && failedCropIds.contains(cropId)) ||
+                        (treatmentId != null &&
+                            failedTreatmentIds.contains(treatmentId)))) ||
+                (table == AppConstants.progressUpdatesTable &&
+                    ((cropId != null && failedCropIds.contains(cropId)) ||
+                        (treatmentId != null &&
+                            failedTreatmentIds.contains(treatmentId)) ||
+                        (diagnosisId != null &&
+                            failedDiagnosisIds.contains(diagnosisId)))) ||
+                (table == AppConstants.chatMessagesTable &&
+                    sessionId != null &&
+                    failedChatSessionIds.contains(sessionId));
+        if (blockedByFailedParent) {
+          debugPrint(
+            '[SyncService] Deferred $table record ${payload['id'] ?? item['record_id']} '
+            'because a queued parent failed to sync.',
+          );
+          final recordId =
+              payload['id'] as String? ?? item['record_id'] as String?;
+          if (recordId != null) {
+            if (table == AppConstants.chatSessionsTable) {
+              failedChatSessionIds.add(recordId);
+            } else if (table == AppConstants.diagnosesTable) {
+              failedDiagnosisIds.add(recordId);
+            } else if (table == AppConstants.treatmentsTable) {
+              failedTreatmentIds.add(recordId);
+            }
+          }
+          continue;
+        }
+
         if (table == AppConstants.treatmentTasksTable && op == 'UPSERT') {
-          final treatmentId = payload['treatment_id'] as String?;
           if (treatmentId == null || treatmentId.trim().isEmpty) {
             debugPrint(
               '[SyncService] Deferred task ${payload['id']} because it has '
@@ -186,6 +240,7 @@ class SyncService {
               treatmentId,
             );
             if (localTreatment == null) {
+              failedTreatmentIds.add(treatmentId);
               debugPrint(
                 '[SyncService] Deferred task ${payload['id']} because its '
                 'treatment $treatmentId is missing locally.',
@@ -240,16 +295,29 @@ class SyncService {
               break;
           }
           if (table == AppConstants.treatmentsTable && op == 'UPSERT') {
-            final treatmentId = payload['id'] as String? ??
-                item['record_id'] as String?;
+            final treatmentId =
+                payload['id'] as String? ?? item['record_id'] as String?;
             if (treatmentId != null) syncedTreatmentIds.add(treatmentId);
           }
           await dbHelper.markSyncItemDone(itemId);
         } catch (e) {
           if (table == AppConstants.treatmentsTable && op == 'UPSERT') {
-            final treatmentId = payload['id'] as String? ??
-                item['record_id'] as String?;
+            final treatmentId =
+                payload['id'] as String? ?? item['record_id'] as String?;
             if (treatmentId != null) failedTreatmentIds.add(treatmentId);
+          }
+          if (op == 'UPSERT') {
+            final recordId =
+                payload['id'] as String? ?? item['record_id'] as String?;
+            if (recordId != null) {
+              if (table == AppConstants.cropsTable) {
+                failedCropIds.add(recordId);
+              } else if (table == AppConstants.chatSessionsTable) {
+                failedChatSessionIds.add(recordId);
+              } else if (table == AppConstants.diagnosesTable) {
+                failedDiagnosisIds.add(recordId);
+              }
+            }
           }
           await dbHelper.incrementSyncAttempts(itemId, error: e.toString());
         }
@@ -279,10 +347,11 @@ class SyncService {
 
   static int _syncPriority(String table) {
     if (table == AppConstants.cropsTable) return 0;
-    if (table == AppConstants.diagnosesTable) return 1;
-    if (table == AppConstants.treatmentsTable) return 2;
-    if (table == AppConstants.treatmentTasksTable) return 3;
-    return 4;
+    if (table == AppConstants.chatSessionsTable) return 1;
+    if (table == AppConstants.diagnosesTable) return 2;
+    if (table == AppConstants.treatmentsTable) return 3;
+    if (table == AppConstants.treatmentTasksTable) return 4;
+    return 5;
   }
 
   Map<String, dynamic> _prepareLocalTreatmentForSync(

@@ -719,11 +719,43 @@ class CropsProvider extends ChangeNotifier {
       final normalizedDiseaseName = diseaseName.trim().isEmpty
           ? '${cropType.name[0].toUpperCase()}${cropType.name.substring(1)} condition'
           : diseaseName.trim();
+      String? linkedChatSessionId = chatSessionId;
+      if (!kIsWeb && chatSessionId != null && chatSessionId.isNotEmpty) {
+        final session = await _db.queryById(
+          AppConstants.chatSessionsTable,
+          chatSessionId,
+        );
+        if (session == null) {
+          linkedChatSessionId = null;
+          debugPrint(
+            '[CropsProvider] Chat session $chatSessionId was not found '
+            'locally; saving the diagnosis without a session link.',
+          );
+        } else {
+          final remoteSession = Map<String, dynamic>.from(session)
+            ..['crop_id'] = cropId
+            ..['is_offline_session'] = session['is_offline_session'] == true ||
+                    session['is_offline_session'] == 1
+                ? true
+                : false
+            ..['is_deleted'] =
+                session['is_deleted'] == true || session['is_deleted'] == 1
+                    ? true
+                    : false
+            ..['updated_at'] = now.toIso8601String();
+          await _sync.queueUpsert(
+            tableName: AppConstants.chatSessionsTable,
+            recordId: chatSessionId,
+            data: remoteSession,
+          );
+        }
+      }
+
       final diagnosis = DiagnosisModel(
         id: const Uuid().v4(),
         cropId: cropId,
         userId: userId,
-        chatSessionId: chatSessionId,
+        chatSessionId: linkedChatSessionId,
         diagnosisMode: diagnosisMode,
         labelKey: labelKey.isEmpty ? null : labelKey,
         diseaseName: normalizedDiseaseName,
@@ -1262,7 +1294,7 @@ class CropsProvider extends ChangeNotifier {
       notes: _mergeNotes(
         treatment.notes,
         'AI revised the remaining treatment after a worsening check-in '
-            '(${healthScore.toStringAsFixed(0)}% health). ${assessment.trim()}',
+        '(${healthScore.toStringAsFixed(0)}% health). ${assessment.trim()}',
       ),
       source: 'ai-progress-reassessment',
       syncVersion: treatment.syncVersion + 1,
