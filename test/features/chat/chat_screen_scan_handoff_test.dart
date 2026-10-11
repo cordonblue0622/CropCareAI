@@ -15,6 +15,7 @@ import 'package:cropcare_ai/features/auth/providers/auth_provider.dart';
 import 'package:cropcare_ai/features/chat/providers/chat_provider.dart';
 import 'package:cropcare_ai/features/chat/screens/chat_screen.dart';
 import 'package:cropcare_ai/services/connectivity_service.dart';
+import 'package:cropcare_ai/services/sync_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -42,12 +43,23 @@ class _FakeSupabaseService extends SupabaseService {
   Future<void> upsertChatSession(Map<String, dynamic> session) async {}
 }
 
+class _NoopSyncService extends SyncService {
+  _NoopSyncService({
+    required super.supabaseService,
+    required super.dbHelper,
+  });
+
+  @override
+  Future<void> pushPendingChanges() async {}
+}
+
 class _RecordingChatProvider extends ChatProvider {
   _RecordingChatProvider({
     required super.supabase,
     required super.db,
     required super.aiBackend,
     required super.connectivity,
+    required super.sync,
   });
 
   final List<ChatMessageModel> _messages = [];
@@ -219,6 +231,7 @@ void main() {
       db: database,
       aiBackend: AiBackendService(supabase: supabase),
       connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
     );
     addTearDown(authProvider.dispose);
     addTearDown(chatProvider.dispose);
@@ -301,6 +314,7 @@ void main() {
       db: database,
       aiBackend: AiBackendService(supabase: supabase),
       connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
     )..seedConversation(session, [savedMessage]);
     addTearDown(authProvider.dispose);
     addTearDown(chatProvider.dispose);

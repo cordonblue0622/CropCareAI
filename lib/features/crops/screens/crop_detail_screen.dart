@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 
 import '../../../core/constants/app_enums.dart';
@@ -27,7 +28,6 @@ import '../../../data/remote/supabase_service.dart';
 import '../../../services/health_score_service.dart';
 import '../../../services/connectivity_service.dart';
 import '../../../services/speech_recognition_service.dart';
-import '../../auth/providers/auth_provider.dart';
 import '../../chat/providers/chat_provider.dart';
 import '../../home/home_screen.dart';
 import '../providers/crops_provider.dart';
@@ -1607,14 +1607,16 @@ class _DailyPlanTab extends StatelessWidget {
     final activeDayIsFuture = activeDay != null &&
         DateUtils.dateOnly(activeDay)
             .isAfter(DateUtils.dateOnly(DateTime.now()));
-    final lockedUntilTomorrow = activeDay != null &&
-        (activeDayIsFuture ||
-            (!activeDayCheckedIn && _hasCheckInToday(activeTasks)));
+    final lockedUntilTomorrow = activeDayIsFuture;
+    final tomorrow = DateUtils.dateOnly(DateTime.now())
+        .add(const Duration(days: 1));
+    final activeDayIsTomorrow =
+        activeDay != null && DateUtils.isSameDay(activeDay, tomorrow);
     final lockLabel = activeDay == null
-        ? 'Available tomorrow'
-        : activeDayIsFuture
-            ? 'Available ${DateFormat('MMM d').format(activeDay)}'
-            : 'Available tomorrow';
+        ? 'Incoming tomorrow'
+        : activeDayIsTomorrow
+            ? 'Incoming tomorrow'
+            : 'Incoming ${DateFormat('MMM d').format(activeDay)}';
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
@@ -1799,19 +1801,6 @@ class _DailyPlanTab extends StatelessWidget {
           treatmentIds.contains(update.treatmentId) &&
           !update.createdAt.isBefore(latestCompletion),
     );
-  }
-
-  bool _hasCheckInToday(List<TreatmentTaskModel> dayTasks) {
-    final treatmentIds = dayTasks.map((task) => task.treatmentId).toSet();
-    final now = DateTime.now();
-    return progress.any((update) {
-      final date = update.updateDate.toLocal();
-      return !update.isDeleted &&
-          treatmentIds.contains(update.treatmentId) &&
-          date.year == now.year &&
-          date.month == now.month &&
-          date.day == now.day;
-    });
   }
 
   bool _isSameDay(DateTime left, DateTime right) =>
@@ -3117,7 +3106,6 @@ class _CheckInSheetState extends State<_CheckInSheet> {
     }
     setState(() => _submitting = true);
     try {
-      final user = context.read<AuthProvider>().currentUser;
       final aiBackend = context.read<AiBackendService>();
       final submittedAt = DateTime.now();
       final imageUrl = buildInlineImageDataUrl(_photoBytes!);
@@ -3190,11 +3178,11 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       }
 
       final progressUpdate = ProgressUpdateModel(
-        id: submittedAt.millisecondsSinceEpoch.toString(),
+        id: const Uuid().v4(),
         cropId: widget.crop.id,
         treatmentId: widget.activeTreatment?.id,
         diagnosisId: widget.latestDiagnosis?.id,
-        userId: user?.id ?? '',
+        userId: widget.crop.userId,
         updateSource: UpdateSource.image,
         healthScore: newScore,
         progressStatus: newStatus,

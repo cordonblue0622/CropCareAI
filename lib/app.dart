@@ -468,21 +468,23 @@ class _CropCareAppState extends State<CropCareApp> {
         ),
 
         // Chat / AI
-        ChangeNotifierProxyProvider4<SupabaseService, DatabaseHelper,
-            AiBackendService, ConnectivityService, ChatProvider>(
+        ChangeNotifierProxyProvider5<SupabaseService, DatabaseHelper,
+            AiBackendService, ConnectivityService, SyncService, ChatProvider>(
           create: (ctx) => ChatProvider(
             supabase: ctx.read<SupabaseService>(),
             db: ctx.read<DatabaseHelper>(),
             aiBackend: ctx.read<AiBackendService>(),
             connectivity: ctx.read<ConnectivityService>(),
+            sync: ctx.read<SyncService>(),
           ),
-          update: (_, svc, db, aiBackend, connectivity, prev) =>
+          update: (_, svc, db, aiBackend, connectivity, sync, prev) =>
               prev ??
               ChatProvider(
                 supabase: svc,
                 db: db,
                 aiBackend: aiBackend,
                 connectivity: connectivity,
+                sync: sync,
               ),
         ),
       ],

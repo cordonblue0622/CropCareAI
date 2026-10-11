@@ -7,6 +7,7 @@ import 'package:cropcare_ai/data/remote/supabase_service.dart';
 import 'package:cropcare_ai/features/chat/providers/chat_provider.dart';
 import 'package:cropcare_ai/services/connectivity_service.dart';
 import 'package:cropcare_ai/services/local_classifier_service.dart';
+import 'package:cropcare_ai/services/sync_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -42,6 +43,16 @@ class _FakeSupabaseService extends SupabaseService {
     required List<int> bytes,
   }) async =>
       null;
+}
+
+class _NoopSyncService extends SyncService {
+  _NoopSyncService({
+    required super.supabaseService,
+    required super.dbHelper,
+  });
+
+  @override
+  Future<void> pushPendingChanges() async {}
 }
 
 class _FakeLocalClassifierService extends LocalClassifierService {
@@ -162,6 +173,7 @@ void main() {
       db: database,
       aiBackend: backend,
       connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
     );
     addTearDown(provider.dispose);
 
@@ -189,6 +201,16 @@ void main() {
       expect(message.metadata?['disease_name'], isEmpty);
       expect(message.metadata?['crop_type'], isEmpty);
     }
+    final queuedTables = (await database.getPendingSyncItems())
+        .map((item) => item['table_name'])
+        .toSet();
+    expect(
+      queuedTables,
+      containsAll([
+        AppConstants.chatSessionsTable,
+        AppConstants.chatMessagesTable,
+      ]),
+    );
   });
 
   test('accepted offline chat image creates treatment and add-crop cards',
@@ -200,6 +222,7 @@ void main() {
       db: database,
       aiBackend: backend,
       connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
       localClassifier: _FakeLocalClassifierService(),
     );
     addTearDown(provider.dispose);
@@ -239,6 +262,7 @@ void main() {
       db: database,
       aiBackend: backend,
       connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
     );
     addTearDown(provider.dispose);
     final now = DateTime.now();
@@ -287,6 +311,7 @@ void main() {
       db: database,
       aiBackend: _TrackingAiBackendService(supabase: supabase),
       connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
       localClassifier: _UncertainLocalClassifierService(),
     );
     addTearDown(provider.dispose);
@@ -312,6 +337,7 @@ void main() {
       db: database,
       aiBackend: backend,
       connectivity: _OnlineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
     );
     addTearDown(provider.dispose);
 
@@ -350,6 +376,7 @@ void main() {
       db: database,
       aiBackend: backend,
       connectivity: _OnlineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
     );
     addTearDown(provider.dispose);
 
@@ -368,6 +395,78 @@ void main() {
     expect(
       provider.currentMessages.last.metadata?['type'],
       'add_crop_suggestion',
+    );
+  });
+
+  test('online photo review replaces the TFLite crop and disease', () async {
+    final supabase = _FakeSupabaseService();
+    final backend = _TrackingAiBackendService(supabase: supabase)
+      ..response = const AiBackendChatResponse(
+        answer:
+            'What it is: Eggplant Leaf Spot. Treatment: Remove affected leaves and improve airflow.',
+        recommendedActions: [
+          'Remove affected leaves.',
+          'Improve airflow around the eggplant.',
+        ],
+        warnings: [],
+        sources: ['openai-vision'],
+        model: 'test-online',
+        inAppCropScope: true,
+        showTreatmentUi: true,
+        verifiedCrop: 'eggplant',
+        verifiedDisease: 'Eggplant Leaf Spot',
+      );
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: backend,
+      connectivity: _OnlineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+    );
+    addTearDown(provider.dispose);
+    final now = DateTime.now();
+    final tfliteDiagnosis = DiagnosisModel(
+      id: 'tflite-diagnosis',
+      cropId: '',
+      userId: 'online-user',
+      diagnosisMode: DiagnosisMode.offline,
+      labelKey: 'tomato_leaf_mold',
+      diseaseName: 'Tomato Leaf Mold',
+      confidenceScore: 0.91,
+      severity: Severity.moderate,
+      summary: 'Preliminary local scanner result.',
+      modelName: 'test-tflite',
+      modelVersion: '1',
+      diagnosedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    await provider.sendMessage(
+      userId: 'online-user',
+      content:
+          'The TFLite scanner produced a preliminary result. Verify it against this photo.',
+      attachedDiagnosis: tfliteDiagnosis,
+      attachedImageBytes: const [1, 2, 3],
+      hintCropType: 'tomato',
+    );
+
+    final assistant = provider.currentMessages.firstWhere(
+      (message) => message.role == MessageRole.assistant,
+    );
+    final suggestion = provider.currentMessages.firstWhere(
+      (message) =>
+          message.role == MessageRole.system &&
+          message.metadata?['type'] == 'add_crop_suggestion',
+    );
+    expect(assistant.metadata?['crop_type'], 'eggplant');
+    expect(assistant.metadata?['disease_name'], 'Eggplant Leaf Spot');
+    expect(suggestion.metadata?['crop_type'], 'eggplant');
+    expect(suggestion.metadata?['disease_name'], 'Eggplant Leaf Spot');
+    expect(suggestion.metadata?['diagnosis_mode'], DiagnosisMode.online.value);
+    expect(
+      suggestion.metadata?['recommended_actions'],
+      backend.response.recommendedActions,
     );
   });
 }

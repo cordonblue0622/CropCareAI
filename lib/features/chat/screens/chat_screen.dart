@@ -194,7 +194,7 @@ class _ChatScreenState extends State<ChatScreen> {
           : '';
       await _sendMessage(
         diagnosis != null
-            ? 'The TFLite scanner\'s current best match is ${diagnosis.diseaseName}$confidenceText. Please verify that scan against the attached photo before answering. If the image suggests a different crop or condition, correct the scan result first, then explain the diagnosis and what the farmer should do.'
+            ? 'The TFLite scanner produced a preliminary result$confidenceText. Independently identify the crop and condition from the attached photo; the scanner result may be wrong. If the image shows a different supported crop or condition, use the image-verified result and give its appropriate treatment plan.'
             : 'Please analyze this crop photo and tell me what to do next.',
         hideMessageTextInUi: true,
         attachedDiagnosis: widget.initialDiagnosis,
@@ -1233,12 +1233,12 @@ class _MessageBubbleState extends State<_MessageBubble> {
                           cropName: '',
                         );
                         final cropNameCtrl = TextEditingController(
-                          text: labelKey.isNotEmpty
-                              ? labelKey.split('_').first.capitalize()
-                              : rawCropType.isNotEmpty
-                                  ? rawCropType.capitalize()
-                                  : inferredCropType != null
-                                      ? inferredCropType.name.capitalize()
+                          text: rawCropType.isNotEmpty
+                              ? rawCropType.capitalize()
+                              : inferredCropType != null
+                                  ? inferredCropType.name.capitalize()
+                                  : labelKey.isNotEmpty
+                                      ? labelKey.split('_').first.capitalize()
                                       : diseaseName.split(' ').first,
                         );
                         _showAddCropFromCardDialog(context,
@@ -1339,10 +1339,10 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   final cropsProvider = context.read<CropsProvider>();
                   final proposedName = cropNameCtrl.text.trim().isNotEmpty
                       ? cropNameCtrl.text.trim()
-                      : labelKey.isNotEmpty
-                          ? labelKey.split('_').first
-                          : rawCropType.isNotEmpty
-                              ? rawCropType
+                      : rawCropType.isNotEmpty
+                          ? rawCropType
+                          : labelKey.isNotEmpty
+                              ? labelKey.split('_').first
                               : 'My Crop';
                   final validationError = cropsProvider.validateUniqueCropName(
                     cropName: proposedName,

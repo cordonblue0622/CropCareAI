@@ -301,8 +301,20 @@ class KnowledgeService:
         label_key = payload.diagnosis.label_key if payload.diagnosis else None
         hint = (payload.hint_crop_type or "").strip().lower() or None
 
-        latest_crop = self._infer_crop_from_text(payload.user_message)
-        latest_matches = self._matching_inline_records(payload.user_message)
+        has_photo_diagnosis = bool(
+            (payload.image_data_url or payload.image_data_urls)
+            and payload.diagnosis
+        )
+        latest_crop = (
+            None
+            if has_photo_diagnosis
+            else self._infer_crop_from_text(payload.user_message)
+        )
+        latest_matches = (
+            []
+            if has_photo_diagnosis
+            else self._matching_inline_records(payload.user_message)
+        )
         if latest_crop:
             crop_type = latest_crop
             hint = latest_crop

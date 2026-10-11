@@ -53,6 +53,69 @@ def test_explicit_crop_hint_overrides_scanner_crop_and_rejects_conflict() -> Non
     )
 
 
+def test_photo_diagnosis_does_not_treat_scanner_crop_as_authoritative() -> None:
+    service = LlmService(Settings())
+    payload = ChatRequest(
+        user_message=(
+            "The TFLite scanner produced a preliminary tomato result. "
+            "Independently identify the crop from the attached photo."
+        ),
+        image_data_url="data:image/jpeg;base64,ZmFrZQ==",
+        diagnosis=DiagnosisContext(
+            crop_type="tomato",
+            disease_name="Tomato Leaf Mold",
+        ),
+    )
+
+    assert service._resolve_active_crop(payload, []) == ""
+    assert not service._should_reject_verified_crop_mismatch(
+        payload,
+        {"verified_crop": "eggplant"},
+    )
+
+
+def test_verified_photo_crop_can_override_hint_but_text_conflicts_still_reject() -> None:
+    service = LlmService(Settings())
+    photo_payload = ChatRequest(
+        user_message="Please verify this scan against the attached photo.",
+        hint_crop_type="tomato",
+        image_data_url="data:image/jpeg;base64,ZmFrZQ==",
+    )
+    text_payload = ChatRequest(
+        user_message="How do I treat my tomato?",
+        hint_crop_type="tomato",
+    )
+
+    assert not service._should_reject_verified_crop_mismatch(
+        photo_payload,
+        {"verified_crop": "eggplant"},
+    )
+    assert service._should_reject_verified_crop_mismatch(
+        text_payload,
+        {"verified_crop": "eggplant"},
+    )
+
+
+def test_treatment_fallback_does_not_use_another_crops_knowledge() -> None:
+    service = LlmService(Settings())
+    answer = "Treatment: Remove affected leaves and improve airflow."
+
+    actions = service._actions_from_knowledge(
+        [
+            {
+                "title": "Tomato Leaf Mold",
+                "crop_type": "tomato",
+                "treatment_steps": ["Use the tomato-specific treatment."],
+            }
+        ],
+        answer,
+        "eggplant",
+        disease_name="Eggplant Leaf Spot",
+    )
+
+    assert actions == ["Remove affected leaves and improve airflow."]
+
+
 def test_latest_crop_intent_overrides_stale_tomato_hint() -> None:
     service = LlmService(Settings())
     payload = ChatRequest(
@@ -98,6 +161,26 @@ def test_knowledge_intent_selects_squash_over_stale_tomato_hint() -> None:
     matches = service._matching_inline_records(payload.user_message)
 
     assert [label_key for label_key, _ in matches] == ["squash_powdery_mildew"]
+
+
+def test_photo_diagnosis_does_not_let_scanner_prompt_override_knowledge_label() -> None:
+    service = KnowledgeService(Settings())
+    payload = ChatRequest(
+        user_message=(
+            "The TFLite scanner produced a preliminary tomato result. "
+            "Independently identify the crop from the attached photo."
+        ),
+        image_data_url="data:image/jpeg;base64,ZmFrZQ==",
+        diagnosis=DiagnosisContext(
+            crop_type="eggplant",
+            label_key="eggplant_leaf_spot",
+            disease_name="Eggplant Leaf Spot",
+        ),
+    )
+
+    records = asyncio.run(service.fetch_relevant_records(payload))
+
+    assert [record["title"] for record in records] == ["Eggplant Leaf Spot"]
 
 
 def test_text_fallback_answers_matching_disease_instead_of_tomato_intro() -> None:

@@ -33,4 +33,17 @@ void main() {
       );
     });
   });
+
+  test('converts blank optional UUID references to null before upload', () {
+    final sanitized = SupabaseService.sanitizeOptionalUuidReferences(
+      'diagnoses',
+      {
+        'id': 'diagnosis-id',
+        'chat_session_id': ' ',
+      },
+    );
+
+    expect(sanitized['chat_session_id'], isNull);
+    expect(sanitized['id'], 'diagnosis-id');
+  });
 }

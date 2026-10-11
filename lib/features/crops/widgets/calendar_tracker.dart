@@ -113,14 +113,10 @@ class CalendarTracker extends StatelessWidget {
   static Color _markerColorForTasks(
       List<TreatmentTaskModel> dayTasks, DateTime day) {
     final now = DateTime.now();
-    final overdueAt = DateTime(day.year, day.month, day.day, 19);
-    final isPast = !now.isBefore(overdueAt);
-
     final allCompleted =
         dayTasks.every((t) => t.status == TaskStatus.completed);
     if (allCompleted) return AppColors.primary; // green
-    final anyMissed =
-        isPast && dayTasks.any((t) => t.status != TaskStatus.completed);
+    final anyMissed = dayTasks.any((task) => task.isOverdueAt(now));
     if (anyMissed) return Colors.red;
     return Colors.orange; // some pending, none missed
   }
@@ -173,8 +169,7 @@ class _DayTaskList extends StatelessWidget {
     }
 
     final now = DateTime.now();
-    final hasOverdueTask = tasks.any((task) =>
-        task.status != TaskStatus.completed && !now.isBefore(task.overdueAt));
+    final hasOverdueTask = tasks.any((task) => task.isOverdueAt(now));
     final allCompleted =
         tasks.every((task) => task.status == TaskStatus.completed);
     final groupColor = allCompleted
@@ -228,7 +223,7 @@ class _ProgressTaskRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDone = task.status == TaskStatus.completed;
     final now = DateTime.now();
-    final overdue = !isDone && !now.isBefore(task.overdueAt);
+    final overdue = task.isOverdueAt(now);
     final statusColor = isDone
         ? AppColors.primary
         : overdue

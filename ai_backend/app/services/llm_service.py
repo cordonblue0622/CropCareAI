@@ -317,10 +317,10 @@ class LlmService:
             )
             answer_body, meta = self._split_ccai_json(raw_answer)
 
-            selected_crop = self._normalize_verified_crop(
-                payload.hint_crop_type or ""
-            )
-            if self._has_verified_crop_mismatch(selected_crop, meta):
+            if self._should_reject_verified_crop_mismatch(payload, meta):
+                selected_crop = self._normalize_verified_crop(
+                    payload.hint_crop_type or ""
+                )
                 return ChatResponse(
                     answer=(
                         f"I cannot safely give {selected_crop} treatment from this result because "
@@ -452,6 +452,15 @@ class LlmService:
         payload: ChatRequest,
         knowledge_records: list[dict[str, Any]],
     ) -> str:
+        has_image = bool(payload.image_data_url or payload.image_data_urls)
+        if has_image and payload.diagnosis:
+            hint_crop = self._normalize_verified_crop(payload.hint_crop_type or "")
+            return (
+                hint_crop
+                if hint_crop in _SUPPORTED_TREATMENT_CARD_CROPS
+                else ""
+            )
+
         latest_crop = self._infer_crop_from_text(payload.user_message)
         if latest_crop:
             return latest_crop
@@ -503,6 +512,18 @@ class LlmService:
             and verified_crop in _SUPPORTED_TREATMENT_CARD_CROPS
             and verified_crop != active_crop
         )
+
+    def _should_reject_verified_crop_mismatch(
+        self,
+        payload: ChatRequest,
+        meta: dict[str, Any],
+    ) -> bool:
+        if payload.image_data_url or payload.image_data_urls:
+            return False
+        selected_crop = self._normalize_verified_crop(
+            payload.hint_crop_type or ""
+        )
+        return self._has_verified_crop_mismatch(selected_crop, meta)
 
     def _infer_crop_from_text(self, text: str) -> str:
         normalized = (text or "").strip().lower()
@@ -658,15 +679,25 @@ class LlmService:
         if crop_type not in _SUPPORTED_TREATMENT_CARD_CROPS:
             return []
         target_disease = (disease_name or "").strip().lower()
-        candidate_records = knowledge_records
+        candidate_records = []
+        for record in knowledge_records:
+            record_crop = self._normalize_verified_crop(
+                str(record.get("crop_type") or "")
+            )
+            if not record_crop:
+                record_crop = self._infer_crop_from_text(
+                    str(record.get("title") or "")
+                ) or ""
+            if not record_crop or record_crop == crop_type:
+                candidate_records.append(record)
+
         if target_disease:
             matching = []
-            for record in knowledge_records:
+            for record in candidate_records:
                 label = str(record.get("disease_name") or record.get("title") or "").strip().lower()
                 if target_disease in label or label in target_disease:
                     matching.append(record)
-            if matching:
-                candidate_records = matching
+            candidate_records = matching
 
         actions: list[str] = []
         for record in candidate_records:

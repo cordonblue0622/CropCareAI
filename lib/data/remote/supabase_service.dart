@@ -589,9 +589,35 @@ class SupabaseService {
     String table,
     Map<String, dynamic> data,
   ) {
-    final sanitized = normalizeRemoteTimestamps(data);
+    final sanitized = sanitizeOptionalUuidReferences(
+      table,
+      normalizeRemoteTimestamps(data),
+    );
     if (table == 'diagnoses' || table == 'disease_knowledge_base') {
       sanitized.remove('label_key');
+    }
+    return sanitized;
+  }
+
+  @visibleForTesting
+  static Map<String, dynamic> sanitizeOptionalUuidReferences(
+    String table,
+    Map<String, dynamic> data,
+  ) {
+    final sanitized = Map<String, dynamic>.from(data);
+    final optionalUuidFields = switch (table) {
+      'chat_sessions' => const ['crop_id'],
+      'diagnoses' => const ['chat_session_id'],
+      'treatments' => const ['diagnosis_id'],
+      'progress_updates' => const ['treatment_id', 'diagnosis_id'],
+      'notifications' => const ['crop_id', 'treatment_id'],
+      _ => const <String>[],
+    };
+    for (final field in optionalUuidFields) {
+      final value = sanitized[field];
+      if (value is String && value.trim().isEmpty) {
+        sanitized[field] = null;
+      }
     }
     return sanitized;
   }
