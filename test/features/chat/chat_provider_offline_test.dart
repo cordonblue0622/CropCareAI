@@ -100,6 +100,14 @@ class _TrackingAiBackendService extends AiBackendService {
   int sendCallCount = 0;
   String? lastCropId;
   String? lastHintCropType;
+  AiBackendChatResponse response = const AiBackendChatResponse(
+    answer: 'The image shows eggplant.',
+    recommendedActions: [],
+    warnings: [],
+    sources: ['openai-vision'],
+    model: 'test-online',
+    verifiedCrop: 'eggplant',
+  );
 
   @override
   String get baseUrl => 'http://offline.test';
@@ -120,14 +128,7 @@ class _TrackingAiBackendService extends AiBackendService {
     sendCallCount++;
     lastCropId = cropId;
     lastHintCropType = hintCropType;
-    return const AiBackendChatResponse(
-      answer: 'The image shows eggplant.',
-      recommendedActions: [],
-      warnings: [],
-      sources: ['openai-vision'],
-      model: 'test-online',
-      verifiedCrop: 'eggplant',
-    );
+    return response;
   }
 }
 
@@ -326,5 +327,47 @@ void main() {
     expect(backend.lastCropId, isNull);
     expect(backend.lastHintCropType, isNull);
     expect(provider.currentMessages.last.metadata?['crop_type'], 'eggplant');
+  });
+
+  test('online photo diagnosis can show add-crop when backend UI flag is false',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final backend = _TrackingAiBackendService(supabase: supabase)
+      ..response = const AiBackendChatResponse(
+        answer:
+            'Treatment: Remove affected leaves and inspect the plant daily.',
+        recommendedActions: [],
+        warnings: [],
+        sources: ['openai-vision'],
+        model: 'test-online',
+        inAppCropScope: true,
+        showTreatmentUi: false,
+        verifiedCrop: 'eggplant',
+        verifiedDisease: 'Eggplant Leaf Spot',
+      );
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: backend,
+      connectivity: _OnlineConnectivityService(),
+    );
+    addTearDown(provider.dispose);
+
+    await provider.sendMessage(
+      userId: 'online-user',
+      content: 'Diagnose this eggplant and tell me how to treat it.',
+      attachedImageBytes: const [1, 2, 3],
+      hintCropType: 'eggplant',
+    );
+
+    final assistant = provider.currentMessages.firstWhere(
+      (message) => message.role == MessageRole.assistant,
+    );
+    expect(assistant.metadata?['show_treatment_card'], isTrue);
+    expect(assistant.metadata?['recommended_actions'], isNotEmpty);
+    expect(
+      provider.currentMessages.last.metadata?['type'],
+      'add_crop_suggestion',
+    );
   });
 }

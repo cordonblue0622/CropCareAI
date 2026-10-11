@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/constants/app_constants.dart';
 import '../core/constants/app_enums.dart';
 import '../core/utils/image_reference.dart';
@@ -16,10 +19,15 @@ import '../data/remote/supabase_service.dart';
 class SyncService {
   final SupabaseService supabaseService;
   final DatabaseHelper dbHelper;
+  final StreamController<void> _remoteCropChanges =
+      StreamController<void>.broadcast();
   late final AiBackendService _aiBackend =
       AiBackendService(supabase: supabaseService);
 
   bool _isSyncing = false;
+  bool _isRefreshingRemoteCrops = false;
+  String? _subscribedCropUserId;
+  RealtimeChannel? _cropChangesChannel;
   Future<void>? _activeSync;
   int _queueRevision = 0;
   int _completedQueueRevision = 0;
@@ -30,12 +38,74 @@ class SyncService {
   }) {
     _listenForConnectivity();
     supabaseService.authStateChanges.listen((state) {
-      if (state.session != null) {
-        syncAll();
+      final userId = state.session?.user.id;
+      if (userId == null) {
+        unawaited(_removeCropChangesChannel());
+      } else {
+        unawaited(_subscribeToCropChanges(userId));
+        unawaited(syncAll());
       }
     });
     if (supabaseService.isSignedIn) {
+      final userId = supabaseService.currentUser?.id;
+      if (userId != null) unawaited(_subscribeToCropChanges(userId));
       Future<void>.microtask(syncAll);
+    }
+  }
+
+  Stream<void> get remoteCropChanges => _remoteCropChanges.stream;
+
+  Future<void> _subscribeToCropChanges(String userId) async {
+    if (_subscribedCropUserId == userId) return;
+    await _removeCropChangesChannel();
+
+    _subscribedCropUserId = userId;
+    final channel = supabaseService.client
+        .channel('crop-sync-$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: AppConstants.cropsTable,
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'user_id',
+            value: userId,
+          ),
+          callback: (_) => unawaited(_refreshAfterRemoteCropChange()),
+        );
+    _cropChangesChannel = channel;
+    channel.subscribe((status, error) {
+      if (status == RealtimeSubscribeStatus.channelError ||
+          status == RealtimeSubscribeStatus.timedOut) {
+        debugPrint(
+          '[SyncService] Crop realtime subscription $status: $error',
+        );
+      }
+    });
+  }
+
+  Future<void> _removeCropChangesChannel() async {
+    final channel = _cropChangesChannel;
+    _cropChangesChannel = null;
+    _subscribedCropUserId = null;
+    if (channel != null) {
+      await supabaseService.client.removeChannel(channel);
+    }
+  }
+
+  Future<void> _refreshAfterRemoteCropChange() async {
+    if (_isRefreshingRemoteCrops) return;
+    _isRefreshingRemoteCrops = true;
+    try {
+      await syncAll();
+      _remoteCropChanges.add(null);
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[SyncService] Could not refresh after a remote crop change: '
+        '$error\n$stackTrace',
+      );
+    } finally {
+      _isRefreshingRemoteCrops = false;
     }
   }
 
@@ -401,8 +471,23 @@ class SyncService {
       final localTimestamp = localUpdatedAt[id];
       if (localTimestamp == null) return true;
       final remoteTimestamp = (remoteRow['updated_at'] as String?) ?? '';
-      return remoteTimestamp.compareTo(localTimestamp) >= 0;
+      return remoteTimestampIsAtLeastAsNew(
+        remoteTimestamp: remoteTimestamp,
+        localTimestamp: localTimestamp,
+      );
     }).toList();
+  }
+
+  static bool remoteTimestampIsAtLeastAsNew({
+    required String remoteTimestamp,
+    required String localTimestamp,
+  }) {
+    final remoteDate = DateTime.tryParse(remoteTimestamp);
+    final localDate = DateTime.tryParse(localTimestamp);
+    if (remoteDate != null && localDate != null) {
+      return !remoteDate.isBefore(localDate);
+    }
+    return remoteTimestamp.compareTo(localTimestamp) >= 0;
   }
 
   Future<List<Map<String, dynamic>>> _remoteRowsMissingLocally({

@@ -364,10 +364,50 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           );
         }
 
+        TreatmentPlanRevisionResult? planRevision;
+        final treatmentId = update.treatmentId;
+        if (isMostRecent &&
+            newStatus == ProgressStatus.worsening &&
+            treatmentId != null &&
+            aiResponse.nextSteps.isNotEmpty) {
+          TreatmentModel? treatment;
+          for (final candidate in _treatments) {
+            if (candidate.id == treatmentId) {
+              treatment = candidate;
+              break;
+            }
+          }
+          if (treatment != null) {
+            try {
+              planRevision =
+                  await cropsProvider.reviseRemainingTreatmentPlan(
+                treatment: treatment,
+                tasks: _tasks,
+                recommendedActions: aiResponse.nextSteps,
+                assessment: aiResponse.assessment,
+                healthScore: aiResponse.healthScore,
+                assessedAt: update.updateDate,
+              );
+            } catch (error, stackTrace) {
+              debugPrint(
+                '[CropDetail] Could not revise treatment plan: $error\n$stackTrace',
+              );
+            }
+          }
+        }
+
         if (mounted) {
           setState(() {
             final idx = _progress.indexWhere((u) => u.id == updatedRecord.id);
             if (idx != -1) _progress[idx] = updatedRecord;
+            if (planRevision != null) {
+              _tasks = planRevision.tasks;
+              _treatments = _treatments
+                  .map((treatment) => treatment.id == planRevision!.treatment.id
+                      ? planRevision.treatment
+                      : treatment)
+                  .toList();
+            }
             if (isMostRecent) {
               _crop = _crop.copyWith(
                 latestHealthScore: aiResponse.healthScore,
@@ -523,6 +563,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     double? submittedScore;
     ProgressStatus? submittedStatus;
     ProgressUpdateModel? submittedUpdate;
+    TreatmentPlanRevisionResult? submittedPlanRevision;
+    var planRevisionFailed = false;
     final didSubmit = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -540,7 +582,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           activeTreatment: _treatmentForTask(task),
           latestDiagnosis: _diagnosisForTask(task),
           previousUpdate: previousUpdate,
-          onSubmitted: (newScore, newStatus, update) async {
+          onSubmitted: (newScore, newStatus, update, aiNextSteps) async {
             submittedScore = newScore;
             submittedStatus = newStatus;
             submittedUpdate = update;
@@ -570,6 +612,27 @@ class _CropDetailScreenState extends State<CropDetailScreen>
               newStatus,
               syncNow: false,
             );
+            final treatmentForRevision = rebase?.treatment ?? activeTreatment;
+            if (newStatus == ProgressStatus.worsening &&
+                treatmentForRevision != null &&
+                aiNextSteps.isNotEmpty) {
+              try {
+                submittedPlanRevision =
+                    await cropsProvider.reviseRemainingTreatmentPlan(
+                  treatment: treatmentForRevision,
+                  tasks: rebase?.tasks ?? _tasks,
+                  recommendedActions: aiNextSteps,
+                  assessment: update.note ?? '',
+                  healthScore: newScore,
+                  assessedAt: update.updateDate,
+                );
+              } catch (error, stackTrace) {
+                planRevisionFailed = true;
+                debugPrint(
+                  '[CropDetail] Could not revise treatment plan: $error\n$stackTrace',
+                );
+              }
+            }
             if (!mounted) return;
             setState(() {
               if (rebase != null) {
@@ -579,6 +642,15 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                         : treatment)
                     .toList();
                 _tasks = rebase.tasks;
+              }
+              if (submittedPlanRevision != null) {
+                _tasks = submittedPlanRevision!.tasks;
+                _treatments = _treatments
+                    .map((treatment) =>
+                        treatment.id == submittedPlanRevision!.treatment.id
+                            ? submittedPlanRevision!.treatment
+                            : treatment)
+                    .toList();
               }
               _selectedDate = DateTime(
                 update.updateDate.year,
@@ -605,6 +677,16 @@ class _CropDetailScreenState extends State<CropDetailScreen>
 
     if (didSubmit == true && mounted) {
       await _showTaskCelebration('Daily check-in');
+      if (submittedPlanRevision != null || planRevisionFailed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(planRevisionFailed
+                ? 'Check-in saved, but the remaining treatment plan could not be updated.'
+                : 'AI updated the remaining treatment plan based on this check-in.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
 
       final latestScore = submittedScore;
       final latestStatus = submittedStatus;
@@ -2822,6 +2904,7 @@ class _CheckInSheet extends StatefulWidget {
     double score,
     ProgressStatus status,
     ProgressUpdateModel update,
+    List<String> aiNextSteps,
   ) onSubmitted;
 
   const _CheckInSheet({
@@ -3043,6 +3126,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       late final double newScore;
       late final ProgressStatus newStatus;
       late final String assessment;
+      var aiNextSteps = const <String>[];
       final connectivity = context.read<ConnectivityService>();
       final isOnline = await connectivity.isConnected;
       if (!isOnline) {
@@ -3091,6 +3175,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
           newScore = aiResponse.healthScore;
           newStatus = _progressStatusFromBackend(aiResponse.progressStatus);
           assessment = aiResponse.assessment;
+          aiNextSteps = aiResponse.nextSteps;
         } catch (_) {
           // Online but AI call failed (timeout, server error, etc.).
           // Save the check-in and let _analyzePendingCheckIns re-analyse later.
@@ -3125,7 +3210,12 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         updatedAt: submittedAt,
       );
 
-      await widget.onSubmitted(newScore, newStatus, progressUpdate);
+      await widget.onSubmitted(
+        newScore,
+        newStatus,
+        progressUpdate,
+        aiNextSteps,
+      );
       if (mounted) {
         Navigator.of(context).pop(true);
       }

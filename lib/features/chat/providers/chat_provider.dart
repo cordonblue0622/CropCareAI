@@ -485,10 +485,14 @@ class ChatProvider extends ChangeNotifier {
             !requiresMoreInput &&
             backendResponse.inAppCropScope &&
             inferredDiseaseName.isNotEmpty;
+        final hasPhotoGroundedDiagnosis = hasConversationImage &&
+            _supportedTreatmentCardCrops.contains(effectiveCropType) &&
+            inferredDiseaseName.isNotEmpty;
         final backendAllowsPlan = !requiresMoreInput &&
             backendResponse.inAppCropScope &&
             (backendResponse.showTreatmentUi ||
-                isOnlineConfirmationOfOfflineResult);
+                isOnlineConfirmationOfOfflineResult ||
+                hasPhotoGroundedDiagnosis);
         final normalizedActions = backendAllowsPlan
             ? (backendResponse.recommendedActions.isNotEmpty
                 ? backendResponse.recommendedActions
@@ -520,14 +524,16 @@ class ChatProvider extends ChangeNotifier {
         final showTreatmentCard = backendAllowsPlan &&
             backendResponse.inAppCropScope &&
             (!hasShownAddCropSuggestion ||
-                isOnlineConfirmationOfOfflineResult) &&
+                isOnlineConfirmationOfOfflineResult ||
+                hasAttachedImage) &&
             _shouldShowTreatmentCard(
               attachedDiagnosis: attachedDiagnosis,
               recommendedActions: effectiveActions,
               inferredDiseaseName: inferredDiseaseName,
               inferredCropType: effectiveCropType,
               aiContent: backendResponse.answer,
-              allowEmptyActions: isOnlineConfirmationOfOfflineResult,
+              allowEmptyActions: isOnlineConfirmationOfOfflineResult ||
+                  hasPhotoGroundedDiagnosis,
             );
         aiMetadata = {
           'model': backendResponse.model,

@@ -207,7 +207,7 @@ class SupabaseService {
   }
 
   Future<void> upsertCrop(Map<String, dynamic> crop) async {
-    await _client.from('crops').upsert(crop);
+    await upsertRecord(table: 'crops', data: crop);
   }
 
   Future<void> softDeleteCrop(String cropId) async {
@@ -220,7 +220,7 @@ class SupabaseService {
   }) async {
     await _client.from(table).update({
       'is_deleted': true,
-      'updated_at': DateTime.now().toIso8601String(),
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
     }).eq('id', id);
   }
 
@@ -589,10 +589,42 @@ class SupabaseService {
     String table,
     Map<String, dynamic> data,
   ) {
-    final sanitized = Map<String, dynamic>.from(data);
+    final sanitized = normalizeRemoteTimestamps(data);
     if (table == 'diagnoses' || table == 'disease_knowledge_base') {
       sanitized.remove('label_key');
     }
     return sanitized;
   }
+
+  static Map<String, dynamic> normalizeRemoteTimestamps(
+    Map<String, dynamic> data,
+  ) {
+    final normalized = Map<String, dynamic>.from(data);
+    for (final field in _timestampFields) {
+      final value = normalized[field];
+      if (value is DateTime) {
+        normalized[field] = value.toUtc().toIso8601String();
+      } else if (value is String) {
+        final parsed = DateTime.tryParse(value);
+        if (parsed != null) {
+          normalized[field] = parsed.toUtc().toIso8601String();
+        }
+      }
+    }
+    return normalized;
+  }
+
+  static const Set<String> _timestampFields = {
+    'created_at',
+    'updated_at',
+    'diagnosed_at',
+    'started_at',
+    'ended_at',
+    'last_checked_at',
+    'update_date',
+    'due_at',
+    'completed_at',
+    'scheduled_for',
+    'last_message_at',
+  };
 }

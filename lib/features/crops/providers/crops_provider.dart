@@ -1,8 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:csv/csv.dart';
-import 'package:uuid/enums.dart';
 import 'package:uuid/uuid.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
@@ -29,6 +29,7 @@ class CropsProvider extends ChangeNotifier {
   List<DiseaseKnowledgeModel> _diseaseKnowledge = [];
   bool _isLoading = false;
   String? _error;
+  late final StreamSubscription<void> _remoteCropChangesSubscription;
 
   CropsProvider({
     required SupabaseService supabase,
@@ -36,7 +37,18 @@ class CropsProvider extends ChangeNotifier {
     required SyncService sync,
   })  : _supabase = supabase,
         _db = db,
-        _sync = sync;
+        _sync = sync {
+    _remoteCropChangesSubscription = _sync.remoteCropChanges.listen((_) {
+      final userId = _supabase.currentUser?.id;
+      if (userId != null) unawaited(fetchCrops(userId));
+    });
+  }
+
+  @override
+  void dispose() {
+    unawaited(_remoteCropChangesSubscription.cancel());
+    super.dispose();
+  }
 
   List<CropModel> get crops => _crops;
   List<DiseaseKnowledgeModel> get diseaseKnowledge => _diseaseKnowledge;
@@ -157,13 +169,12 @@ class CropsProvider extends ChangeNotifier {
         if (queuedCropIds.contains(id)) return false;
         final localUpdatedAt = localUpdatedAtById[id] ?? '';
         final remoteUpdatedAt = (remoteRow['updated_at'] as String?) ?? '';
-        // Upsert remote only when it is at least as new as the local copy.
-        final remoteDate = DateTime.tryParse(remoteUpdatedAt);
-        final localDate = DateTime.tryParse(localUpdatedAt);
-        if (remoteDate != null && localDate != null) {
-          return !remoteDate.isBefore(localDate);
-        }
-        return remoteUpdatedAt.compareTo(localUpdatedAt) >= 0;
+        // Compare instants rather than ISO strings: device-local and UTC
+        // timestamps can represent the same moment with different offsets.
+        return SyncService.remoteTimestampIsAtLeastAsNew(
+          remoteTimestamp: remoteUpdatedAt,
+          localTimestamp: localUpdatedAt,
+        );
       }).toList();
 
       // Local-only active crops are commonly edits waiting for their first
@@ -615,12 +626,12 @@ class CropsProvider extends ChangeNotifier {
       return;
     }
 
-    await _db.upsertRow(table, localData);
     await _sync.queueUpsert(
       tableName: table,
       recordId: recordId,
       data: remoteData,
     );
+    await _db.upsertRow(table, localData);
   }
 
   Future<void> _attemptSync() async {
@@ -751,10 +762,11 @@ class CropsProvider extends ChangeNotifier {
       final protocolSteps = knowledge == null
           ? const <DiseaseTreatmentDayStepModel>[]
           : await _loadTreatmentProtocol(knowledge.id);
-      final usesReviewedProtocol = TreatmentPlanService.coversExpectedDuration(
-        daySteps: protocolSteps,
-        expectedDurationDays: expectedDurationDays,
-      );
+      final usesReviewedProtocol = normalizedTreatmentSteps.isEmpty &&
+          TreatmentPlanService.coversExpectedDuration(
+            daySteps: protocolSteps,
+            expectedDurationDays: expectedDurationDays,
+          );
 
       // Create treatment
       if (normalizedTreatmentSteps.isNotEmpty || usesReviewedProtocol) {
@@ -1200,6 +1212,126 @@ class CropsProvider extends ChangeNotifier {
 
     notifyListeners();
     await _attemptSync();
+  }
+
+  Future<TreatmentPlanRevisionResult?> reviseRemainingTreatmentPlan({
+    required TreatmentModel treatment,
+    required List<TreatmentTaskModel> tasks,
+    required List<String> recommendedActions,
+    required String assessment,
+    required double healthScore,
+    required DateTime assessedAt,
+  }) async {
+    final steps = _normalizeTreatmentSteps(recommendedActions);
+    final pendingTasks = tasks
+        .where((task) =>
+            task.treatmentId == treatment.id &&
+            !task.isDeleted &&
+            task.status == TaskStatus.pending)
+        .toList()
+      ..sort((a, b) => a.dueAt.compareTo(b.dueAt));
+    if (steps.isEmpty || pendingTasks.isEmpty) return null;
+
+    _error = null;
+    final now = DateTime.now();
+    final today = DateTime(assessedAt.year, assessedAt.month, assessedAt.day);
+    final lastPendingDay = pendingTasks
+        .map((task) => task.dueAt.toLocal())
+        .map((date) => DateTime(date.year, date.month, date.day))
+        .reduce((left, right) => left.isAfter(right) ? left : right);
+    final remainingDays =
+        math.max(1, lastPendingDay.difference(today).inDays + 1);
+    final durationDays =
+        math.max(remainingDays, steps.length).clamp(1, 42).toInt();
+    final plan = TreatmentPlanService.build(
+      treatmentSteps: steps,
+      startDate: today,
+      expectedDurationDays: durationDays,
+    );
+    final revisedTreatment = treatment.copyWith(
+      treatmentTitle: 'AI-updated Treatment Plan — ${treatment.diseaseName}',
+      treatmentSteps: plan.sourceSteps,
+      expectedDurationDays: plan.durationDays,
+      status: TreatmentStatus.ongoing,
+      reassessmentRequired: false,
+      notes: _mergeNotes(
+        treatment.notes,
+        'AI revised the remaining treatment after a worsening check-in '
+            '(${healthScore.toStringAsFixed(0)}% health). ${assessment.trim()}',
+      ),
+      source: 'ai-progress-reassessment',
+      syncVersion: treatment.syncVersion + 1,
+      startedAt: today,
+      updatedAt: now,
+    );
+    await _upsertLocallyAndQueue(
+      table: AppConstants.treatmentsTable,
+      recordId: revisedTreatment.id,
+      localData: revisedTreatment.toMap(),
+      remoteData: _treatmentRemoteMap(revisedTreatment),
+    );
+
+    final retiredTasks = <TreatmentTaskModel>[];
+    for (final task in pendingTasks) {
+      final retired = task.copyWith(
+        isDeleted: true,
+        syncVersion: task.syncVersion + 1,
+        updatedAt: now,
+      );
+      await _upsertLocallyAndQueue(
+        table: AppConstants.treatmentTasksTable,
+        recordId: retired.id,
+        localData: retired.toMap(),
+        remoteData: _treatmentTaskRemoteMap(retired),
+      );
+      retiredTasks.add(retired);
+    }
+
+    final replacementTasks = <TreatmentTaskModel>[];
+    for (var index = 0; index < plan.tasks.length; index++) {
+      final plannedTask = plan.tasks[index];
+      final task = TreatmentTaskModel(
+        id: const Uuid().v4(),
+        treatmentId: treatment.id,
+        cropId: treatment.cropId,
+        userId: treatment.userId,
+        title: plannedTask.title,
+        description: plannedTask.description,
+        dueAt: plannedTask.dueAt,
+        status: TaskStatus.pending,
+        taskOrder: index + 1,
+        createdAt: now,
+        updatedAt: now,
+      );
+      await _upsertLocallyAndQueue(
+        table: AppConstants.treatmentTasksTable,
+        recordId: task.id,
+        localData: task.toMap(),
+        remoteData: _treatmentTaskRemoteMap(task),
+      );
+      replacementTasks.add(task);
+    }
+
+    final retainedTasks = tasks.where((task) =>
+        task.treatmentId != treatment.id ||
+        task.isDeleted ||
+        task.status == TaskStatus.completed);
+    final revisedTasks = [
+      ...retainedTasks,
+      ...replacementTasks,
+    ]..sort((a, b) {
+        final dueCompare = a.dueAt.compareTo(b.dueAt);
+        if (dueCompare != 0) return dueCompare;
+        return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
+      });
+
+    notifyListeners();
+    await _attemptSync();
+    return TreatmentPlanRevisionResult(
+      treatment: revisedTreatment,
+      tasks: revisedTasks,
+      retiredTasks: retiredTasks,
+    );
   }
 
   Future<TreatmentExtensionResult?> extendTreatmentTracking({
@@ -1895,6 +2027,18 @@ class TreatmentExtensionResult {
     required this.previousTreatment,
     required this.treatment,
     required this.tasks,
+  });
+}
+
+class TreatmentPlanRevisionResult {
+  final TreatmentModel treatment;
+  final List<TreatmentTaskModel> tasks;
+  final List<TreatmentTaskModel> retiredTasks;
+
+  const TreatmentPlanRevisionResult({
+    required this.treatment,
+    required this.tasks,
+    required this.retiredTasks,
   });
 }
 

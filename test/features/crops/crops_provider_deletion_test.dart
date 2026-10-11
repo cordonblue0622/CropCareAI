@@ -2,6 +2,8 @@ import 'package:cropcare_ai/core/constants/app_constants.dart';
 import 'package:cropcare_ai/core/constants/app_enums.dart';
 import 'package:cropcare_ai/data/local/database_helper.dart';
 import 'package:cropcare_ai/data/models/crop_model.dart';
+import 'package:cropcare_ai/data/models/treatment_model.dart';
+import 'package:cropcare_ai/data/models/treatment_task_model.dart';
 import 'package:cropcare_ai/data/remote/supabase_service.dart';
 import 'package:cropcare_ai/features/crops/providers/crops_provider.dart';
 import 'package:cropcare_ai/services/sync_service.dart';
@@ -174,7 +176,7 @@ void main() {
       'id': 'task-1',
       'user_id': crop.userId,
       'crop_id': crop.id,
-      'treatment_id': null,
+      'treatment_id': 'treatment-1',
       'title': 'Water crop',
       'description': null,
       'due_at': now.toIso8601String(),
@@ -264,5 +266,96 @@ void main() {
     expect(operationsByRecord['message-1'], 'DELETE');
     expect(operationsByRecord['notification-1'], 'DELETE');
     expect(operationsByRecord['crop-1'], 'UPSERT');
+  });
+
+  test('AI plan revision keeps completed tasks and retires pending tasks',
+      () async {
+    final now = DateTime(2026, 10, 11, 10);
+    final treatment = TreatmentModel(
+      id: 'treatment-1',
+      cropId: 'crop-1',
+      userId: 'user-1',
+      diseaseName: 'Eggplant Leaf Spot',
+      treatmentTitle: 'Treatment Plan',
+      treatmentSteps: const ['Old treatment step'],
+      expectedDurationDays: 7,
+      status: TreatmentStatus.ongoing,
+      startedAt: now.subtract(const Duration(days: 4)),
+      createdAt: now.subtract(const Duration(days: 4)),
+      updatedAt: now.subtract(const Duration(days: 4)),
+    );
+    final completedTask = TreatmentTaskModel(
+      id: 'completed-task',
+      treatmentId: treatment.id,
+      cropId: treatment.cropId,
+      userId: treatment.userId,
+      title: 'Completed historical action',
+      dueAt: now.subtract(const Duration(days: 1)),
+      completedAt: now.subtract(const Duration(days: 1)),
+      status: TaskStatus.completed,
+      taskOrder: 1,
+      createdAt: now.subtract(const Duration(days: 1)),
+      updatedAt: now.subtract(const Duration(days: 1)),
+    );
+    final pendingTask = TreatmentTaskModel(
+      id: 'pending-task',
+      treatmentId: treatment.id,
+      cropId: treatment.cropId,
+      userId: treatment.userId,
+      title: 'Old future action',
+      dueAt: now.add(const Duration(days: 2)),
+      status: TaskStatus.pending,
+      taskOrder: 2,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await database.upsertRow(AppConstants.treatmentsTable, treatment.toMap());
+    await database.upsertRow(
+        AppConstants.treatmentTasksTable, completedTask.toMap());
+    await database.upsertRow(
+        AppConstants.treatmentTasksTable, pendingTask.toMap());
+
+    final supabase = _StaleCropSupabaseService(const {});
+    final provider = CropsProvider(
+      supabase: supabase,
+      db: database,
+      sync: _NoopSyncService(
+        supabaseService: supabase,
+        dbHelper: database,
+      ),
+    );
+    addTearDown(provider.dispose);
+
+    final revision = await provider.reviseRemainingTreatmentPlan(
+      treatment: treatment,
+      tasks: [completedTask, pendingTask],
+      recommendedActions: const [
+        'Remove badly affected leaves.',
+        'Inspect the plant daily for new spots.',
+      ],
+      assessment: 'The condition is spreading.',
+      healthScore: 38,
+      assessedAt: now,
+    );
+
+    expect(revision, isNotNull);
+    expect(revision!.treatment.source, 'ai-progress-reassessment');
+    expect(revision.treatment.treatmentSteps, [
+      'Remove badly affected leaves.',
+      'Inspect the plant daily for new spots.',
+    ]);
+    expect(revision.tasks.map((task) => task.id), contains('completed-task'));
+    expect(revision.tasks.map((task) => task.id), isNot(contains('pending-task')));
+    expect(
+      revision.tasks.any((task) => task.title == 'Old future action'),
+      isFalse,
+    );
+    final retired =
+        await database.queryById(AppConstants.treatmentTasksTable, 'pending-task');
+    expect(retired?['is_deleted'], 1);
+    expect(
+      revision.tasks.any((task) => task.title == 'Inspect the plant daily for new spots.'),
+      isTrue,
+    );
   });
 }

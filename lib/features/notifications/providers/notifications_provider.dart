@@ -55,9 +55,10 @@ class NotificationsProvider extends ChangeNotifier {
   int get unreadCount => unread.length;
   int get alertCount {
     final alerts = _notifications.where((notification) =>
-        notification.type == NotificationType.general ||
-        notification.type == NotificationType.progressAlert ||
-        notification.type == NotificationType.treatmentReminder);
+        !notification.isRead &&
+        (notification.type == NotificationType.general ||
+            notification.type == NotificationType.progressAlert ||
+            notification.type == NotificationType.treatmentReminder));
     return alerts
         .map((notification) => notification.cropId ?? notification.id)
         .toSet()
@@ -626,13 +627,13 @@ class NotificationsProvider extends ChangeNotifier {
     if (idx == -1) return;
     final updated = _notifications[idx].copyWith(isRead: true);
     _notifications[idx] = updated;
+    notifyListeners();
     await _db.upsertRow(AppConstants.notificationsTable, updated.toMap());
     await _sync.queueUpsert(
       tableName: AppConstants.notificationsTable,
       recordId: notificationId,
       data: _remoteNotificationMap(updated),
     );
-    notifyListeners();
     try {
       await _supabase.markNotificationRead(notificationId);
       await _clearQueuedOperation(notificationId, 'UPSERT');

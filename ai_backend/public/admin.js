@@ -799,17 +799,31 @@ function openTreatmentForm(disease = null) {
 }
 
 async function renderCropData() {
-  const [usersResponse, cropsResponse] = await Promise.all([
-    api("/v1/admin/users?per_page=100"),
-    api("/v1/admin/resources/crops?limit=100"),
+  const loadAllPages = async (urlForOffset, pageSize = 100) => {
+    const items = [];
+    for (let offset = 0; ; offset += pageSize) {
+      const response = await api(urlForOffset(offset));
+      const page = Array.isArray(response.items) ? response.items : [];
+      items.push(...page);
+      if (page.length < pageSize) return items;
+    }
+  };
+  const [allUsers, allCrops] = await Promise.all([
+    loadAllPages((page) => `/v1/admin/users?page=${page + 1}&per_page=100`),
+    loadAllPages((offset) => `/v1/admin/resources/crops?limit=100&offset=${offset}`),
   ]);
-  const ordinaryUsers = usersResponse.items.filter((user) => !user.admin_role && !user.admin_access_requested);
-  const cropsByUser = groupBy(cropsResponse.items, "user_id");
+  const users = allUsers.filter((user) => !user.admin_role && !user.admin_access_requested);
+  const crops = allCrops.map((crop) => (
+    crop.is_deleted === true || crop.is_deleted === 1
+      ? { ...crop, status: "deleted" }
+      : crop
+  ));
+  const cropsByUser = groupBy(crops, "user_id");
   const panel = element("section", "panel glass");
   panel.append(panelHeader(labels.crops[0], labels.crops[1]));
   const list = element("div", "user-crop-list");
-  if (!ordinaryUsers.length) list.append(element("div", "empty-state", "No ordinary users found."));
-  ordinaryUsers.forEach((user) => {
+  if (!users.length) list.append(element("div", "empty-state", "No ordinary users found."));
+  users.forEach((user) => {
     const item = element("article", "user-crop-item");
     const button = element("button", "user-crop-heading");
     button.type = "button";
@@ -833,6 +847,7 @@ async function renderCropData() {
 }
 
 function buildUserCropRow(crop) {
+  const isDeleted = crop.is_deleted === true || crop.is_deleted === 1;
   const row = element("article", "user-crop-row");
   row.tabIndex = 0;
   row.setAttribute("role", "button");
@@ -841,10 +856,10 @@ function buildUserCropRow(crop) {
   copy.append(
     element("span", "crop-row-icon", cropIcon(crop.crop_type)),
     element("h4", "", crop.crop_name || titleCase(crop.crop_type)),
-    element("small", "", [titleCase(crop.crop_type), crop.is_deleted ? "Archived" : null, crop.plot_code, crop.location_label].filter(Boolean).join(" · ")),
+    element("small", "", [titleCase(crop.crop_type), isDeleted ? "Deleted" : null, crop.plot_code, crop.location_label].filter(Boolean).join(" · ")),
   );
   const stats = element("div", "crop-stats");
-  [["Health score", formatValue(crop.latest_health_score, "latest_health_score")], ["Status", titleCase(crop.status || "unknown")], ["Progress", titleCase(crop.latest_progress_status || "insufficient data")], ["Last updated", formatValue(crop.updated_at || crop.last_checked_at, "updated_at")]].forEach(([label, value]) => {
+  [["Health score", formatValue(crop.latest_health_score, "latest_health_score")], ["Status", isDeleted ? "Deleted" : titleCase(crop.status || "unknown")], ["Progress", titleCase(crop.latest_progress_status || "insufficient data")], ["Last updated", formatValue(crop.updated_at || crop.last_checked_at, "updated_at")]].forEach(([label, value]) => {
     const stat = element("span");
     stat.append(element("small", "", label), element("strong", "", String(value)));
     stats.append(stat);
@@ -855,8 +870,8 @@ function buildUserCropRow(crop) {
   edit.addEventListener("click", () => openRecordDialog("crops", crop));
   const archive = element("button", "danger-button", "Archive");
   archive.type = "button";
-  archive.disabled = crop.is_deleted === true;
-  archive.textContent = crop.is_deleted === true ? "Archived" : "Archive";
+  archive.disabled = isDeleted;
+  archive.textContent = isDeleted ? "Deleted" : "Archive";
   archive.addEventListener("click", () => archiveRecord("crops", crop));
   actions.append(edit, archive);
   row.append(copy, stats, actions);
@@ -881,9 +896,12 @@ async function showCropActivity(crop) {
     const summary = element("section", "crop-activity-summary");
     const icon = element("span", "crop-activity-icon", cropIcon(response.crop.crop_type));
     const summaryCopy = element("div");
+    const cropStatus = response.crop.is_deleted === true || response.crop.is_deleted === 1
+      ? "Deleted"
+      : titleCase(response.crop.status || "unknown");
     summaryCopy.append(
       element("strong", "", response.crop.crop_name || titleCase(response.crop.crop_type)),
-      element("small", "", `${titleCase(response.crop.status || "unknown")} · ${response.crop.latest_health_score ?? "--"}% health`),
+      element("small", "", `${cropStatus} · ${response.crop.latest_health_score ?? "--"}% health`),
     );
     summary.append(icon, summaryCopy);
     body.append(summary);
