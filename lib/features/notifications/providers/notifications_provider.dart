@@ -567,24 +567,17 @@ class NotificationsProvider extends ChangeNotifier {
     final todayEnd = todayStart.add(const Duration(days: 1));
     final tomorrowEnd = todayEnd.add(const Duration(days: 1));
     final sevenDaysOut = todayStart.add(const Duration(days: 7));
-    final overdueCutoffReached =
-        !now.isBefore(DateTime(now.year, now.month, now.day, 19));
 
     _todayTasks = allTasks
         .where((task) =>
             !task.dueAt.toLocal().isBefore(todayStart) &&
             task.dueAt.toLocal().isBefore(todayEnd) &&
-            !overdueCutoffReached &&
+            !task.isOverdueAt(now) &&
             task.status == TaskStatus.pending)
         .toList();
 
     _missedTasks = allTasks
-        .where((task) =>
-            (task.dueAt.toLocal().isBefore(todayStart) ||
-                (overdueCutoffReached &&
-                    !task.dueAt.toLocal().isBefore(todayStart) &&
-                    task.dueAt.toLocal().isBefore(todayEnd))) &&
-            task.status == TaskStatus.pending)
+        .where((task) => task.isOverdueAt(now))
         .toList();
 
     _tomorrowTasks = allTasks

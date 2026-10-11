@@ -2010,12 +2010,14 @@ class _DashboardTaskRow extends StatelessWidget {
   }
 
   String _dueTimeLabel(DateTime dt) {
-    final h = dt.hour.toString().padLeft(2, '0');
-    final m = dt.minute.toString().padLeft(2, '0');
+    final localDueAt = dt.toLocal();
+    final h = localDueAt.hour.toString().padLeft(2, '0');
+    final m = localDueAt.minute.toString().padLeft(2, '0');
     return 'today at $h:$m';
   }
 
   String _dueDateLabel(DateTime dt) {
+    final localDueAt = dt.toLocal();
     const months = [
       'Jan',
       'Feb',
@@ -2030,7 +2032,7 @@ class _DashboardTaskRow extends StatelessWidget {
       'Nov',
       'Dec'
     ];
-    return '${months[dt.month - 1]} ${dt.day}';
+    return '${months[localDueAt.month - 1]} ${localDueAt.day}';
   }
 }
 

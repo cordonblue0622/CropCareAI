@@ -1092,8 +1092,12 @@ class CropsProvider extends ChangeNotifier {
     required DateTime toDate,
     bool syncNow = true,
   }) async {
-    final scheduledDay = DateTime(fromDate.year, fromDate.month, fromDate.day);
-    final submittedDay = DateTime(toDate.year, toDate.month, toDate.day);
+    final localFromDate = fromDate.toLocal();
+    final localToDate = toDate.toLocal();
+    final scheduledDay =
+        DateTime(localFromDate.year, localFromDate.month, localFromDate.day);
+    final submittedDay =
+        DateTime(localToDate.year, localToDate.month, localToDate.day);
     final shiftDays = submittedDay.difference(scheduledDay).inDays;
     if (shiftDays <= 0) {
       return TreatmentTimelineRebaseResult(treatment: treatment, tasks: tasks);
@@ -1107,8 +1111,9 @@ class CropsProvider extends ChangeNotifier {
         continue;
       }
 
+      final localDueAt = task.dueAt.toLocal();
       final taskDay =
-          DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
+          DateTime(localDueAt.year, localDueAt.month, localDueAt.day);
       final isSubmittedDay = taskDay == scheduledDay;
       if (taskDay.isBefore(scheduledDay) ||
           (task.status == TaskStatus.completed && !isSubmittedDay)) {
@@ -1117,7 +1122,7 @@ class CropsProvider extends ChangeNotifier {
       }
 
       final shifted = task.copyWith(
-        dueAt: task.dueAt.add(Duration(days: shiftDays)),
+        dueAt: localDueAt.add(Duration(days: shiftDays)),
         syncVersion: task.syncVersion + 1,
         updatedAt: now,
       );

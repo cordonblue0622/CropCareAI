@@ -379,8 +379,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           }
           if (treatment != null) {
             try {
-              planRevision =
-                  await cropsProvider.reviseRemainingTreatmentPlan(
+              planRevision = await cropsProvider.reviseRemainingTreatmentPlan(
                 treatment: treatment,
                 tasks: _tasks,
                 recommendedActions: aiResponse.nextSteps,
@@ -634,6 +633,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
               }
             }
             if (!mounted) return;
+            final localUpdateDate = update.updateDate.toLocal();
             setState(() {
               if (rebase != null) {
                 _treatments = _treatments
@@ -653,9 +653,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                     .toList();
               }
               _selectedDate = DateTime(
-                update.updateDate.year,
-                update.updateDate.month,
-                update.updateDate.day,
+                localUpdateDate.year,
+                localUpdateDate.month,
+                localUpdateDate.day,
               );
               _dailyPlanFocusDate = null;
               _crop = _crop.copyWith(
@@ -1042,8 +1042,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   }
 
   void _onTaskToggled(TreatmentTaskModel task) {
+    final localDueAt = task.dueAt.toLocal();
     final taskDate =
-        DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
+        DateTime(localDueAt.year, localDueAt.month, localDueAt.day);
     setState(() {
       _selectedDate = taskDate;
       _dailyPlanFocusDate = taskDate;
@@ -1596,7 +1597,7 @@ class _DailyPlanTab extends StatelessWidget {
     final activeTasks = activeDay == null
         ? const <TreatmentTaskModel>[]
         : orderedTasks
-            .where((task) => _isSameDay(task.dueAt, activeDay))
+            .where((task) => _isSameDay(task.dueAt.toLocal(), activeDay))
             .toList();
     final activeDayNumber =
         activeDay == null ? null : scheduledDays.indexOf(activeDay) + 1;
@@ -1757,7 +1758,8 @@ class _DailyPlanTab extends StatelessWidget {
   List<DateTime> _scheduledDays(List<TreatmentTaskModel> tasks) {
     final days = <DateTime>[];
     for (final task in tasks) {
-      final day = DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
+      final localDueAt = task.dueAt.toLocal();
+      final day = DateTime(localDueAt.year, localDueAt.month, localDueAt.day);
       if (!days.any((existing) => _isSameDay(existing, day))) {
         days.add(day);
       }
@@ -1770,8 +1772,9 @@ class _DailyPlanTab extends StatelessWidget {
     List<TreatmentTaskModel> orderedTasks,
   ) {
     for (final day in scheduledDays) {
-      final dayTasks =
-          orderedTasks.where((task) => _isSameDay(task.dueAt, day)).toList();
+      final dayTasks = orderedTasks
+          .where((task) => _isSameDay(task.dueAt.toLocal(), day))
+          .toList();
       if (dayTasks.any((task) => task.status != TaskStatus.completed) ||
           !_hasCheckInAfterTasks(dayTasks)) {
         return day;
@@ -1802,7 +1805,7 @@ class _DailyPlanTab extends StatelessWidget {
     final treatmentIds = dayTasks.map((task) => task.treatmentId).toSet();
     final now = DateTime.now();
     return progress.any((update) {
-      final date = update.updateDate;
+      final date = update.updateDate.toLocal();
       return !update.isDeleted &&
           treatmentIds.contains(update.treatmentId) &&
           date.year == now.year &&

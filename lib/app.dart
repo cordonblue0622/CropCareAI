@@ -379,14 +379,18 @@ class _CropCareAppState extends State<CropCareApp> {
     }
 
     final resolvedCrop = crop;
+    final localDueAt = task.dueAt.toLocal();
 
     navigator.push(
       MaterialPageRoute(
         builder: (_) => CropDetailScreen(
           crop: resolvedCrop,
           initialTabIndex: 1, // Progress tab
-          initialSelectedDate:
-              DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day),
+          initialSelectedDate: DateTime(
+            localDueAt.year,
+            localDueAt.month,
+            localDueAt.day,
+          ),
         ),
       ),
     );

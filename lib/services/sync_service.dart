@@ -158,13 +158,57 @@ class SyncService {
     if (_isSyncing) return;
     _isSyncing = true;
     try {
-      final pending = await dbHelper.getPendingSyncItems();
+      final pending =
+          orderPendingSyncItems(await dbHelper.getPendingSyncItems());
+      final syncedTreatmentIds = <String>{};
+      final failedTreatmentIds = <String>{};
       for (final item in pending) {
         final int itemId = item['id'] as int;
         final String table = item['table_name'] as String;
         final String op = item['operation'] as String;
         final Map<String, dynamic> payload =
             jsonDecode(item['payload'] as String) as Map<String, dynamic>;
+
+        if (table == AppConstants.treatmentTasksTable && op == 'UPSERT') {
+          final treatmentId = payload['treatment_id'] as String?;
+          if (treatmentId == null || treatmentId.trim().isEmpty) {
+            debugPrint(
+              '[SyncService] Deferred task ${payload['id']} because it has '
+              'no treatment_id.',
+            );
+            continue;
+          }
+          if (!syncedTreatmentIds.contains(treatmentId)) {
+            if (failedTreatmentIds.contains(treatmentId)) continue;
+
+            final localTreatment = await dbHelper.queryById(
+              AppConstants.treatmentsTable,
+              treatmentId,
+            );
+            if (localTreatment == null) {
+              debugPrint(
+                '[SyncService] Deferred task ${payload['id']} because its '
+                'treatment $treatmentId is missing locally.',
+              );
+              continue;
+            }
+
+            try {
+              await supabaseService.upsertRecord(
+                table: AppConstants.treatmentsTable,
+                data: _prepareLocalTreatmentForSync(localTreatment),
+              );
+              syncedTreatmentIds.add(treatmentId);
+            } catch (error) {
+              failedTreatmentIds.add(treatmentId);
+              debugPrint(
+                '[SyncService] Deferred tasks for treatment $treatmentId '
+                'because the treatment could not be synced: $error',
+              );
+              continue;
+            }
+          }
+        }
 
         try {
           switch (op) {
@@ -195,14 +239,73 @@ class SyncService {
               );
               break;
           }
+          if (table == AppConstants.treatmentsTable && op == 'UPSERT') {
+            final treatmentId = payload['id'] as String? ??
+                item['record_id'] as String?;
+            if (treatmentId != null) syncedTreatmentIds.add(treatmentId);
+          }
           await dbHelper.markSyncItemDone(itemId);
         } catch (e) {
+          if (table == AppConstants.treatmentsTable && op == 'UPSERT') {
+            final treatmentId = payload['id'] as String? ??
+                item['record_id'] as String?;
+            if (treatmentId != null) failedTreatmentIds.add(treatmentId);
+          }
           await dbHelper.incrementSyncAttempts(itemId, error: e.toString());
         }
       }
     } finally {
       _isSyncing = false;
     }
+  }
+
+  @visibleForTesting
+  static List<Map<String, dynamic>> orderPendingSyncItems(
+    Iterable<Map<String, dynamic>> items,
+  ) {
+    final pending = items.toList(growable: false);
+    final indices = List<int>.generate(pending.length, (index) => index);
+    indices.sort((leftIndex, rightIndex) {
+      final leftTable = pending[leftIndex]['table_name'] as String? ?? '';
+      final rightTable = pending[rightIndex]['table_name'] as String? ?? '';
+      final priorityDifference =
+          _syncPriority(leftTable) - _syncPriority(rightTable);
+      return priorityDifference != 0
+          ? priorityDifference
+          : leftIndex.compareTo(rightIndex);
+    });
+    return [for (final index in indices) pending[index]];
+  }
+
+  static int _syncPriority(String table) {
+    if (table == AppConstants.cropsTable) return 0;
+    if (table == AppConstants.diagnosesTable) return 1;
+    if (table == AppConstants.treatmentsTable) return 2;
+    if (table == AppConstants.treatmentTasksTable) return 3;
+    return 4;
+  }
+
+  Map<String, dynamic> _prepareLocalTreatmentForSync(
+    Map<String, dynamic> treatment,
+  ) {
+    final prepared = Map<String, dynamic>.from(treatment);
+    final rawSteps = prepared['treatment_steps'];
+    if (rawSteps is String && rawSteps.isNotEmpty) {
+      final decoded = jsonDecode(rawSteps);
+      if (decoded is! List) {
+        throw const FormatException('Treatment steps must be a JSON list.');
+      }
+      prepared['treatment_steps'] =
+          decoded.map((step) => step.toString()).toList();
+    } else if (rawSteps == null) {
+      prepared['treatment_steps'] = <String>[];
+    }
+    prepared['reassessment_required'] =
+        prepared['reassessment_required'] == true ||
+            prepared['reassessment_required'] == 1;
+    prepared['is_deleted'] =
+        prepared['is_deleted'] == true || prepared['is_deleted'] == 1;
+    return prepared;
   }
 
   Future<void> _cacheSyncedProgressImage({
