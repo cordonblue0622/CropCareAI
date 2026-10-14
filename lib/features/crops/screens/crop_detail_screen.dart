@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 
+import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/image_reference.dart';
@@ -28,6 +29,7 @@ import '../../../data/remote/supabase_service.dart';
 import '../../../services/health_score_service.dart';
 import '../../../services/connectivity_service.dart';
 import '../../../services/speech_recognition_service.dart';
+import '../../../services/sync_service.dart';
 import '../../chat/providers/chat_provider.dart';
 import '../../home/home_screen.dart';
 import '../providers/crops_provider.dart';
@@ -105,10 +107,18 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     super.dispose();
   }
 
-  Future<T> _runOrFallback<T>(Future<T> Function() action, T fallback) async {
+  Future<T> _runOrFallback<T>(
+    String source,
+    Future<T> Function() action,
+    T fallback,
+  ) async {
     try {
       return await action();
-    } catch (_) {
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[CropDetail] Could not load $source from Supabase: '
+        '$error\n$stackTrace',
+      );
       return fallback;
     }
   }
@@ -121,33 +131,13 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     for (final row in rows) {
       try {
         parsed.add(parser(row));
-      } catch (_) {
-        // Ignore malformed rows so one bad record does not block the screen.
+      } catch (error) {
+        debugPrint(
+          '[CropDetail] Could not parse record ${row['id']}: $error',
+        );
       }
     }
     return parsed;
-  }
-
-  List<Map<String, dynamic>> _mergeRowsById(
-    List<Map<String, dynamic>> localRows,
-    List<Map<String, dynamic>> remoteRows,
-  ) {
-    final merged = <String, Map<String, dynamic>>{};
-    for (final row in localRows) {
-      final id = (row['id'] as String?)?.trim();
-      if (id == null || id.isEmpty) {
-        continue;
-      }
-      merged[id] = Map<String, dynamic>.from(row);
-    }
-    for (final row in remoteRows) {
-      final id = (row['id'] as String?)?.trim();
-      if (id == null || id.isEmpty) {
-        continue;
-      }
-      merged[id] = Map<String, dynamic>.from(row);
-    }
-    return merged.values.toList(growable: false);
   }
 
   Future<void> _loadData() async {
@@ -159,25 +149,51 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       final localDx = await db.queryDiagnosesForCrop(_crop.id);
       final localTx = await db.queryTreatmentsForCrop(_crop.id);
       final localProgress = await db.queryProgressUpdatesForCrop(_crop.id);
-      final localTasks = await db.queryTasksForCrop(_crop.id);
+      final localTasks = await db.queryAllTasksForCrop(_crop.id);
       final localSessions = await db.queryChatSessionsByCrop(_crop.id);
+      final pendingRows = await db.getPendingSyncItems();
+      Set<String> pendingIdsFor(String table) => pendingRows
+          .where((item) =>
+              item['table_name'] == table &&
+              (item['operation'] == 'UPSERT' ||
+                  item['operation'] == 'SOFT_DELETE' ||
+                  item['operation'] == 'DELETE'))
+          .map((item) => item['record_id'] as String?)
+          .whereType<String>()
+          .toSet();
+      final pendingMessageIds = pendingIdsFor(AppConstants.chatMessagesTable);
 
       final remoteDx = await _runOrFallback(
+        'diagnoses',
         () => svc.getDiagnosesByCrop(_crop.id),
         <Map<String, dynamic>>[],
       );
       final remoteTx = await _runOrFallback(
+        'treatments',
         () => svc.getTreatmentsByCrop(_crop.id),
         <Map<String, dynamic>>[],
       );
       final remoteProgress = await _runOrFallback(
+        'progress updates',
         () => svc.getProgressUpdates(_crop.id),
         <Map<String, dynamic>>[],
       );
 
-      final rawDx = _mergeRowsById(localDx, remoteDx);
-      final rawTx = _mergeRowsById(localTx, remoteTx);
-      final rawProgress = _mergeRowsById(localProgress, remoteProgress);
+      final rawDx = SyncService.mergeLocalAndRemoteRows(
+        localRows: localDx,
+        remoteRows: remoteDx,
+        pendingLocalIds: pendingIdsFor(AppConstants.diagnosesTable),
+      );
+      final rawTx = SyncService.mergeLocalAndRemoteRows(
+        localRows: localTx,
+        remoteRows: remoteTx,
+        pendingLocalIds: pendingIdsFor(AppConstants.treatmentsTable),
+      );
+      final rawProgress = SyncService.mergeLocalAndRemoteRows(
+        localRows: localProgress,
+        remoteRows: remoteProgress,
+        pendingLocalIds: pendingIdsFor(AppConstants.progressUpdatesTable),
+      );
 
       final diagnoses = _safeParseRows(rawDx, DiagnosisModel.fromMap)
         ..removeWhere((diagnosis) => diagnosis.isDeleted)
@@ -187,31 +203,31 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       final progress = _safeParseRows(rawProgress, ProgressUpdateModel.fromMap)
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-      final taskRowsById = <String, Map<String, dynamic>>{};
-      for (final row in localTasks) {
-        final id = (row['id'] as String?)?.trim();
-        if (id != null && id.isNotEmpty) {
-          taskRowsById[id] = Map<String, dynamic>.from(row);
-        }
-      }
+      final remoteTaskRows = <Map<String, dynamic>>[];
       for (final treatment in treatments) {
         final rawTasks = await _runOrFallback(
+          'treatment tasks for ${treatment.id}',
           () => svc.getTreatmentTasks(treatment.id),
           <Map<String, dynamic>>[],
         );
-        for (final row in rawTasks) {
-          final id = (row['id'] as String?)?.trim();
-          if (id != null && id.isNotEmpty) {
-            taskRowsById[id] = Map<String, dynamic>.from(row);
-          }
-        }
+        remoteTaskRows.addAll(rawTasks);
       }
+      final mergedTaskRows = SyncService.mergeLocalAndRemoteRows(
+        localRows: localTasks,
+        remoteRows: remoteTaskRows,
+        pendingLocalIds: pendingIdsFor(AppConstants.treatmentTasksTable),
+      );
       final parsedTasks = _safeParseRows(
-        taskRowsById.values,
+        mergedTaskRows,
         TreatmentTaskModel.fromMap,
       )..removeWhere((task) => task.isDeleted);
-      final allTasks =
+      await db.upsertRows(AppConstants.diagnosesTable, rawDx);
+      await db.upsertRows(AppConstants.treatmentsTable, rawTx);
+      await db.upsertRows(AppConstants.progressUpdatesTable, rawProgress);
+      await db.upsertRows(AppConstants.treatmentTasksTable, mergedTaskRows);
+      final expandedTasks =
           await cropsProvider.expandLegacyProtocolTasks(parsedTasks);
+      final allTasks = expandedTasks;
       allTasks.sort((a, b) {
         final dueCompare = a.dueAt.compareTo(b.dueAt);
         if (dueCompare != 0) return dueCompare;
@@ -219,10 +235,15 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       });
 
       final remoteSessions = await _runOrFallback(
+        'chat sessions',
         () => svc.getChatSessionsByCrop(_crop.id),
         <Map<String, dynamic>>[],
       );
-      final rawSessions = _mergeRowsById(localSessions, remoteSessions);
+      final rawSessions = SyncService.mergeLocalAndRemoteRows(
+        localRows: localSessions,
+        remoteRows: remoteSessions,
+        pendingLocalIds: pendingIdsFor(AppConstants.chatSessionsTable),
+      );
       final sessions = _safeParseRows(rawSessions, ChatSessionModel.fromMap)
         ..removeWhere((session) => session.isDeleted);
       sessions.sort((a, b) => (b.lastMessageAt ?? b.createdAt)
@@ -237,13 +258,27 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           }
         }
         final rawMessages = await _runOrFallback(
+          'chat messages for ${session.id}',
           () => svc.getChatMessages(session.id),
           <Map<String, dynamic>>[],
         );
         for (final row in rawMessages) {
           final id = (row['id'] as String?)?.trim();
           if (id != null && id.isNotEmpty) {
-            messageRowsById[id] = Map<String, dynamic>.from(row);
+            final localMessage = messageRowsById[id];
+            final remoteIsNewer = localMessage == null ||
+                !pendingMessageIds.contains(id) &&
+                    SyncService.remoteTimestampIsAtLeastAsNew(
+                      remoteTimestamp: row['updated_at'] as String? ??
+                          row['created_at'] as String? ??
+                          '',
+                      localTimestamp: localMessage['updated_at'] as String? ??
+                          localMessage['created_at'] as String? ??
+                          '',
+                    );
+            if (remoteIsNewer) {
+              messageRowsById[id] = Map<String, dynamic>.from(row);
+            }
           }
         }
       }
@@ -251,6 +286,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         messageRowsById.values,
         ChatMessageModel.fromMap,
       )..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      await db.upsertRows(AppConstants.chatSessionsTable, rawSessions);
+      await db.upsertRows(AppConstants.chatMessagesTable, messageRowsById.values);
       final historyMessages = allMessages
           .where((message) => message.role != MessageRole.system)
           .toList(growable: false);
@@ -633,7 +670,6 @@ class _CropDetailScreenState extends State<CropDetailScreen>
               }
             }
             if (!mounted) return;
-            final localUpdateDate = update.updateDate.toLocal();
             setState(() {
               if (rebase != null) {
                 _treatments = _treatments
@@ -653,9 +689,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                     .toList();
               }
               _selectedDate = DateTime(
-                localUpdateDate.year,
-                localUpdateDate.month,
-                localUpdateDate.day,
+                update.updateDate.year,
+                update.updateDate.month,
+                update.updateDate.day,
               );
               _dailyPlanFocusDate = null;
               _crop = _crop.copyWith(
@@ -1042,9 +1078,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   }
 
   void _onTaskToggled(TreatmentTaskModel task) {
-    final localDueAt = task.dueAt.toLocal();
     final taskDate =
-        DateTime(localDueAt.year, localDueAt.month, localDueAt.day);
+        DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
     setState(() {
       _selectedDate = taskDate;
       _dailyPlanFocusDate = taskDate;
@@ -1597,7 +1632,7 @@ class _DailyPlanTab extends StatelessWidget {
     final activeTasks = activeDay == null
         ? const <TreatmentTaskModel>[]
         : orderedTasks
-            .where((task) => _isSameDay(task.dueAt.toLocal(), activeDay))
+            .where((task) => _isSameDay(task.dueAt, activeDay))
             .toList();
     final activeDayNumber =
         activeDay == null ? null : scheduledDays.indexOf(activeDay) + 1;
@@ -1760,8 +1795,7 @@ class _DailyPlanTab extends StatelessWidget {
   List<DateTime> _scheduledDays(List<TreatmentTaskModel> tasks) {
     final days = <DateTime>[];
     for (final task in tasks) {
-      final localDueAt = task.dueAt.toLocal();
-      final day = DateTime(localDueAt.year, localDueAt.month, localDueAt.day);
+      final day = DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
       if (!days.any((existing) => _isSameDay(existing, day))) {
         days.add(day);
       }
@@ -1774,9 +1808,8 @@ class _DailyPlanTab extends StatelessWidget {
     List<TreatmentTaskModel> orderedTasks,
   ) {
     for (final day in scheduledDays) {
-      final dayTasks = orderedTasks
-          .where((task) => _isSameDay(task.dueAt.toLocal(), day))
-          .toList();
+      final dayTasks =
+          orderedTasks.where((task) => _isSameDay(task.dueAt, day)).toList();
       if (dayTasks.any((task) => task.status != TaskStatus.completed) ||
           !_hasCheckInAfterTasks(dayTasks)) {
         return day;

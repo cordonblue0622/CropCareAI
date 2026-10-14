@@ -138,7 +138,16 @@ class SupabaseService {
     required String table,
     required Map<String, dynamic> data,
   }) async {
-    await _client.from(table).upsert(_sanitizeRemoteData(table, data));
+    final sanitizedData = _sanitizeRemoteData(table, data);
+    if (table == 'crops') {
+      final savedRow =
+          await _client.from(table).upsert(sanitizedData).select('id').single();
+      if (savedRow['id'] != sanitizedData['id']) {
+        throw StateError('Supabase did not confirm the crop upsert.');
+      }
+      return;
+    }
+    await _client.from(table).upsert(sanitizedData);
   }
 
   Future<void> deleteRecord({

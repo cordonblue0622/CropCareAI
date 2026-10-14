@@ -95,6 +95,40 @@ void main() {
 
   tearDown(() => database.deleteDatabaseFile());
 
+  test('new crop reports when cloud upload remains queued', () async {
+    final now = DateTime.now();
+    final supabase = _StaleCropSupabaseService(const {});
+    final provider = CropsProvider(
+      supabase: supabase,
+      db: database,
+      sync: _NoopSyncService(
+        supabaseService: supabase,
+        dbHelper: database,
+      ),
+    );
+    addTearDown(provider.dispose);
+
+    final saved = await provider.addCrop(
+      userId: 'user-1',
+      cropType: CropType.eggplant,
+      cropName: 'Backyard eggplant',
+      plantedAt: now,
+    );
+
+    expect(saved, isTrue);
+    expect(provider.crops, hasLength(1));
+    expect(provider.error, contains('cloud sync is still pending'));
+    final pending = await database.getPendingSyncItems();
+    expect(
+      pending.any(
+        (item) =>
+            item['table_name'] == AppConstants.cropsTable &&
+            item['record_id'] == provider.crops.single.id,
+      ),
+      isTrue,
+    );
+  });
+
   test('refresh does not resurrect a newer local crop deletion', () async {
     final createdAt = DateTime.utc(2026, 9, 1);
     final remoteUpdatedAt = DateTime.utc(2026, 9, 10);
@@ -340,21 +374,27 @@ void main() {
 
     expect(revision, isNotNull);
     expect(revision!.treatment.source, 'ai-progress-reassessment');
+    expect(
+      revision.treatment.startedAt,
+      DateTime(2026, 10, 12),
+    );
     expect(revision.treatment.treatmentSteps, [
       'Remove badly affected leaves.',
       'Inspect the plant daily for new spots.',
     ]);
     expect(revision.tasks.map((task) => task.id), contains('completed-task'));
-    expect(revision.tasks.map((task) => task.id), isNot(contains('pending-task')));
+    expect(
+        revision.tasks.map((task) => task.id), isNot(contains('pending-task')));
     expect(
       revision.tasks.any((task) => task.title == 'Old future action'),
       isFalse,
     );
-    final retired =
-        await database.queryById(AppConstants.treatmentTasksTable, 'pending-task');
+    final retired = await database.queryById(
+        AppConstants.treatmentTasksTable, 'pending-task');
     expect(retired?['is_deleted'], 1);
     expect(
-      revision.tasks.any((task) => task.title == 'Inspect the plant daily for new spots.'),
+      revision.tasks.any(
+          (task) => task.title == 'Inspect the plant daily for new spots.'),
       isTrue,
     );
   });

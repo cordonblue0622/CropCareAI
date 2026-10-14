@@ -227,6 +227,7 @@ class CropsProvider extends ChangeNotifier {
     DateTime? plantedAt,
   }) async {
     try {
+      _error = null;
       _error = validateUniqueCropName(cropName: cropName);
       if (_error != null) {
         notifyListeners();
@@ -258,6 +259,17 @@ class CropsProvider extends ChangeNotifier {
       _crops.insert(0, crop);
       notifyListeners();
       await _attemptSync();
+      final pending = await _pendingCropSyncItems(crop.id);
+      if (pending.isNotEmpty) {
+        _error =
+            'Crop is saved on this device, but cloud sync is still pending.';
+        final lastError = pending.last['last_error'] as String?;
+        debugPrint(
+          '[CropsProvider] Crop ${crop.id} is still waiting to sync.'
+          '${lastError == null || lastError.isEmpty ? '' : ' Last error: $lastError'}',
+        );
+        notifyListeners();
+      }
       return true;
     } catch (e) {
       _error = e.toString();
@@ -634,14 +646,47 @@ class CropsProvider extends ChangeNotifier {
     await _db.upsertRow(table, localData);
   }
 
+  Future<bool> retryCropSync(String cropId) async {
+    await _attemptSync();
+    final pending = await _pendingCropSyncItems(cropId);
+    _error = pending.isEmpty
+        ? null
+        : 'Crop is saved on this device, but cloud sync is still pending.';
+    if (pending.isNotEmpty) {
+      final lastError = pending.last['last_error'] as String?;
+      debugPrint(
+        '[CropsProvider] Crop $cropId is still waiting to sync.'
+        '${lastError == null || lastError.isEmpty ? '' : ' Last error: $lastError'}',
+      );
+    }
+    notifyListeners();
+    return pending.isEmpty;
+  }
+
+  Future<List<Map<String, dynamic>>> _pendingCropSyncItems(
+    String cropId,
+  ) async {
+    if (kIsWeb) return const [];
+    return (await _db.getPendingSyncItems())
+        .where(
+          (item) =>
+              item['table_name'] == AppConstants.cropsTable &&
+              item['record_id'] == cropId,
+        )
+        .toList(growable: false);
+  }
+
   Future<void> _attemptSync() async {
     if (!_supabase.isSignedIn) {
       return;
     }
     try {
       await _sync.syncAll();
-    } catch (_) {
+    } catch (error, stackTrace) {
       // Local state is already committed; the queue will retry later.
+      debugPrint(
+        '[CropsProvider] Cloud sync attempt failed: $error\n$stackTrace',
+      );
     }
   }
 
@@ -676,6 +721,7 @@ class CropsProvider extends ChangeNotifier {
     DateTime? plantedAt,
   }) async {
     try {
+      _error = null;
       _error = validateUniqueCropName(cropName: cropName);
       if (_error != null) {
         notifyListeners();
@@ -870,6 +916,17 @@ class CropsProvider extends ChangeNotifier {
 
       notifyListeners();
       await _attemptSync();
+      final pending = await _pendingCropSyncItems(crop.id);
+      if (pending.isNotEmpty) {
+        _error =
+            'Crop is saved on this device, but cloud sync is still pending.';
+        final lastError = pending.last['last_error'] as String?;
+        debugPrint(
+          '[CropsProvider] Crop ${crop.id} is still waiting to sync.'
+          '${lastError == null || lastError.isEmpty ? '' : ' Last error: $lastError'}',
+        );
+        notifyListeners();
+      }
       return cropId;
     } catch (e) {
       _error = e.toString();
@@ -1124,12 +1181,8 @@ class CropsProvider extends ChangeNotifier {
     required DateTime toDate,
     bool syncNow = true,
   }) async {
-    final localFromDate = fromDate.toLocal();
-    final localToDate = toDate.toLocal();
-    final scheduledDay =
-        DateTime(localFromDate.year, localFromDate.month, localFromDate.day);
-    final submittedDay =
-        DateTime(localToDate.year, localToDate.month, localToDate.day);
+    final scheduledDay = DateTime(fromDate.year, fromDate.month, fromDate.day);
+    final submittedDay = DateTime(toDate.year, toDate.month, toDate.day);
     final shiftDays = submittedDay.difference(scheduledDay).inDays;
     if (shiftDays <= 0) {
       return TreatmentTimelineRebaseResult(treatment: treatment, tasks: tasks);
@@ -1143,9 +1196,8 @@ class CropsProvider extends ChangeNotifier {
         continue;
       }
 
-      final localDueAt = task.dueAt.toLocal();
       final taskDay =
-          DateTime(localDueAt.year, localDueAt.month, localDueAt.day);
+          DateTime(task.dueAt.year, task.dueAt.month, task.dueAt.day);
       final isSubmittedDay = taskDay == scheduledDay;
       if (taskDay.isBefore(scheduledDay) ||
           (task.status == TaskStatus.completed && !isSubmittedDay)) {
@@ -1154,7 +1206,7 @@ class CropsProvider extends ChangeNotifier {
       }
 
       final shifted = task.copyWith(
-        dueAt: localDueAt.add(Duration(days: shiftDays)),
+        dueAt: task.dueAt.add(Duration(days: shiftDays)),
         syncVersion: task.syncVersion + 1,
         updatedAt: now,
       );

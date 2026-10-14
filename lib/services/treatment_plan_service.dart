@@ -152,34 +152,31 @@ class TreatmentPlanService {
     required DateTime originalStartAt,
     required DateTime newStartAt,
   }) {
-    final localDueAt = originalDueAt.toLocal();
-    final localStartAt = originalStartAt.toLocal();
-    final localNewStartAt = newStartAt.toLocal();
     final originalDay = DateTime(
-      localDueAt.year,
-      localDueAt.month,
-      localDueAt.day,
+      originalDueAt.year,
+      originalDueAt.month,
+      originalDueAt.day,
     );
     final originalStartDay = DateTime(
-      localStartAt.year,
-      localStartAt.month,
-      localStartAt.day,
+      originalStartAt.year,
+      originalStartAt.month,
+      originalStartAt.day,
     );
     final newStartDay = DateTime(
-      localNewStartAt.year,
-      localNewStartAt.month,
-      localNewStartAt.day,
+      newStartAt.year,
+      newStartAt.month,
+      newStartAt.day,
     );
     final dayOffset = originalDay.difference(originalStartDay).inDays;
     return DateTime(
       newStartDay.year,
       newStartDay.month,
       newStartDay.day,
-      localDueAt.hour,
-      localDueAt.minute,
-      localDueAt.second,
-      localDueAt.millisecond,
-      localDueAt.microsecond,
+      originalDueAt.hour,
+      originalDueAt.minute,
+      originalDueAt.second,
+      originalDueAt.millisecond,
+      originalDueAt.microsecond,
     ).add(Duration(days: dayOffset < 0 ? 0 : dayOffset));
   }
 

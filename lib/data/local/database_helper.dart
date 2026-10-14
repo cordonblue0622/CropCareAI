@@ -710,6 +710,17 @@ class DatabaseHelper {
     );
   }
 
+  Future<List<Map<String, dynamic>>> queryAllTasksForCrop(String cropId) async {
+    if (_isDisabledOnPlatform) return [];
+    final db = await database;
+    return db.query(
+      AppConstants.treatmentTasksTable,
+      where: 'crop_id = ?',
+      whereArgs: [cropId],
+      orderBy: 'task_order ASC, due_at ASC',
+    );
+  }
+
   Future<List<Map<String, dynamic>>> queryTreatmentsForCrop(
       String cropId) async {
     if (_isDisabledOnPlatform) return [];

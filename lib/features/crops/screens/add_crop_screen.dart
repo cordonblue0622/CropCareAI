@@ -56,7 +56,7 @@ class _AddCropScreenState extends State<AddCropScreen> {
     try {
       final cropsProvider = context.read<CropsProvider>();
       if (widget.existing == null) {
-        await cropsProvider.addCrop(
+        final saved = await cropsProvider.addCrop(
           userId: user.id,
           cropName: _nameCtrl.text.trim(),
           cropType: _selectedType,
@@ -68,7 +68,46 @@ class _AddCropScreenState extends State<AddCropScreen> {
           notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
           plantedAt: _plantedAt,
         );
-        if (mounted) Navigator.pop(context);
+        if (!saved) {
+          throw StateError(
+            cropsProvider.error ??
+                'Could not save this crop. Please try again.',
+          );
+        }
+
+        final syncWarning = cropsProvider.error;
+        final savedCrop = cropsProvider.crops.firstWhere(
+          (crop) => crop.cropName == _nameCtrl.text.trim(),
+        );
+        if (mounted) {
+          final messenger = ScaffoldMessenger.of(context);
+          Navigator.pop(context);
+          if (syncWarning != null) {
+            messenger.showSnackBar(
+              SnackBar(
+                content: Text(syncWarning),
+                duration: const Duration(seconds: 8),
+                action: SnackBarAction(
+                  label: 'Retry',
+                  onPressed: () async {
+                    final synced =
+                        await cropsProvider.retryCropSync(savedCrop.id);
+                    if (!messenger.mounted) return;
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          synced
+                              ? 'Crop synced to your account.'
+                              : 'Crop is still saved only on this device. Keep the app installed and try again later.',
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            );
+          }
+        }
       } else {
         final updatedCrop = widget.existing!.copyWith(
           cropName: _nameCtrl.text.trim(),
@@ -96,8 +135,7 @@ class _AddCropScreenState extends State<AddCropScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Could not save this crop. Please try again.')),
+          SnackBar(content: Text(e.toString())),
         );
       }
     } finally {

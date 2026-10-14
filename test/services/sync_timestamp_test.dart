@@ -46,4 +46,50 @@ void main() {
     expect(sanitized['chat_session_id'], isNull);
     expect(sanitized['id'], 'diagnosis-id');
   });
+
+  test('keeps newer or queued local changes when merging remote rows', () {
+    final merged = SyncService.mergeLocalAndRemoteRows(
+      localRows: const [
+        {
+          'id': 'queued',
+          'status': 'completed',
+          'updated_at': '2026-10-12T01:00:00+08:00',
+        },
+        {
+          'id': 'newer-local',
+          'status': 'completed',
+          'updated_at': '2026-10-12T01:00:00+08:00',
+        },
+      ],
+      remoteRows: const [
+        {
+          'id': 'queued',
+          'status': 'pending',
+          'updated_at': '2026-10-12T00:59:00+08:00',
+        },
+        {
+          'id': 'newer-local',
+          'status': 'pending',
+          'updated_at': '2026-10-12T00:59:00+08:00',
+        },
+        {
+          'id': 'remote-only',
+          'status': 'pending',
+          'updated_at': '2026-10-12T01:00:00Z',
+        },
+        {
+          'id': 'pending-delete',
+          'status': 'pending',
+          'updated_at': '2026-10-12T01:00:00Z',
+        },
+      ],
+      pendingLocalIds: {'queued', 'pending-delete'},
+    );
+
+    final byId = {for (final row in merged) row['id']: row};
+    expect(byId['queued']?['status'], 'completed');
+    expect(byId['newer-local']?['status'], 'completed');
+    expect(byId['remote-only']?['status'], 'pending');
+    expect(byId.containsKey('pending-delete'), isFalse);
+  });
 }

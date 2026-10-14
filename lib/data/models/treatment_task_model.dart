@@ -21,11 +21,6 @@ class TreatmentTaskModel {
     return DateTime(localDueAt.year, localDueAt.month, localDueAt.day, 19);
   }
 
-  bool isOverdueAt(DateTime now) =>
-      !isDeleted &&
-      status == TaskStatus.pending &&
-      !now.toLocal().isBefore(overdueAt);
-
   const TreatmentTaskModel({
     required this.id,
     required this.treatmentId,

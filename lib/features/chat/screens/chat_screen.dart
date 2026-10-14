@@ -1388,13 +1388,42 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     await context
                         .read<ChatProvider>()
                         .linkCurrentSessionToCrop(cropId);
+                    final syncWarning = cropsProvider.error;
+                    final messenger = ScaffoldMessenger.of(context);
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: const Text('Crop added to My Crops!'),
-                        backgroundColor: AppColors.primary,
+                        content: Text(
+                          syncWarning ??
+                              'Crop added to My Crops and synced to your account.',
+                        ),
+                        backgroundColor: syncWarning == null
+                            ? AppColors.primary
+                            : null,
+                        duration: syncWarning == null
+                            ? const Duration(seconds: 4)
+                            : const Duration(seconds: 8),
                         behavior: SnackBarBehavior.floating,
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10)),
+                        action: syncWarning == null
+                            ? null
+                            : SnackBarAction(
+                                label: 'Retry',
+                                onPressed: () async {
+                                  final synced = await cropsProvider
+                                      .retryCropSync(cropId);
+                                  if (!messenger.mounted) return;
+                                  messenger.showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        synced
+                                            ? 'Crop synced to your account.'
+                                            : 'Crop is still saved only on this device. Keep the app installed and try again later.',
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
                       ),
                     );
                   } else {

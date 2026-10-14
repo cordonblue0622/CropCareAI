@@ -300,7 +300,7 @@ class SyncService {
             if (treatmentId != null) syncedTreatmentIds.add(treatmentId);
           }
           await dbHelper.markSyncItemDone(itemId);
-        } catch (e) {
+        } catch (e, stackTrace) {
           if (table == AppConstants.treatmentsTable && op == 'UPSERT') {
             final treatmentId =
                 payload['id'] as String? ?? item['record_id'] as String?;
@@ -319,6 +319,10 @@ class SyncService {
               }
             }
           }
+          debugPrint(
+            '[SyncService] Failed to sync $op $table record '
+            '${payload['id'] ?? item['record_id']}: $e\n$stackTrace',
+          );
           await dbHelper.incrementSyncAttempts(itemId, error: e.toString());
         }
       }
@@ -660,6 +664,42 @@ class SyncService {
       return !remoteDate.isBefore(localDate);
     }
     return remoteTimestamp.compareTo(localTimestamp) >= 0;
+  }
+
+  static List<Map<String, dynamic>> mergeLocalAndRemoteRows({
+    required Iterable<Map<String, dynamic>> localRows,
+    required Iterable<Map<String, dynamic>> remoteRows,
+    Set<String> pendingLocalIds = const {},
+  }) {
+    final merged = <String, Map<String, dynamic>>{};
+    for (final row in localRows) {
+      final id = (row['id'] as String?)?.trim();
+      if (id != null && id.isNotEmpty) {
+        merged[id] = Map<String, dynamic>.from(row);
+      }
+    }
+    for (final row in remoteRows) {
+      final id = (row['id'] as String?)?.trim();
+      if (id == null || id.isEmpty) continue;
+      final local = merged[id];
+      if (pendingLocalIds.contains(id)) {
+        continue;
+      }
+      if (local == null) {
+        merged[id] = Map<String, dynamic>.from(row);
+        continue;
+      }
+
+      final localTimestamp = local['updated_at'] as String? ?? '';
+      final remoteTimestamp = row['updated_at'] as String? ?? '';
+      if (remoteTimestampIsAtLeastAsNew(
+        remoteTimestamp: remoteTimestamp,
+        localTimestamp: localTimestamp,
+      )) {
+        merged[id] = Map<String, dynamic>.from(row);
+      }
+    }
+    return merged.values.toList(growable: false);
   }
 
   Future<List<Map<String, dynamic>>> _remoteRowsMissingLocally({
