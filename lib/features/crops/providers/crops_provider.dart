@@ -27,6 +27,8 @@ class CropsProvider extends ChangeNotifier {
 
   List<CropModel> _crops = [];
   List<DiseaseKnowledgeModel> _diseaseKnowledge = [];
+  final Set<String> _planRevisionCheckInsInProgress = {};
+  final Set<String> _revisedPlanCheckInIds = {};
   bool _isLoading = false;
   String? _error;
   late final StreamSubscription<void> _remoteCropChangesSubscription;
@@ -1310,9 +1312,29 @@ class CropsProvider extends ChangeNotifier {
     required String assessment,
     required double healthScore,
     required DateTime assessedAt,
+    required ProgressStatus progressStatus,
+    required String checkInId,
   }) async {
+    if (checkInId.trim().isEmpty ||
+        _revisedPlanCheckInIds.contains(checkInId) ||
+        !_planRevisionCheckInsInProgress.add(checkInId)) {
+      return null;
+    }
+
+    try {
     final steps = _normalizeTreatmentSteps(recommendedActions);
-    final pendingTasks = tasks
+    final tasksById = {for (final task in tasks) task.id: task};
+    for (final row in await _db.queryAllTasksForCrop(treatment.cropId)) {
+      final localTask = TreatmentTaskModel.fromMap(row);
+      final existingTask = tasksById[localTask.id];
+      if (existingTask == null ||
+          localTask.updatedAt.isAfter(existingTask.updatedAt)) {
+        tasksById[localTask.id] = localTask;
+      }
+    }
+
+    final allTreatmentTasks = tasksById.values.toList(growable: false);
+    final pendingTasks = allTreatmentTasks
         .where((task) =>
             task.treatmentId == treatment.id &&
             !task.isDeleted &&
@@ -1345,7 +1367,8 @@ class CropsProvider extends ChangeNotifier {
       reassessmentRequired: false,
       notes: _mergeNotes(
         treatment.notes,
-        'AI revised the remaining treatment after a worsening check-in '
+        'AI revised the remaining treatment after a '
+        '${progressStatus.value} check-in '
         '(${healthScore.toStringAsFixed(0)}% health). ${assessment.trim()}',
       ),
       source: 'ai-progress-reassessment',
@@ -1401,7 +1424,7 @@ class CropsProvider extends ChangeNotifier {
       replacementTasks.add(task);
     }
 
-    final retainedTasks = tasks.where((task) =>
+    final retainedTasks = allTreatmentTasks.where((task) =>
         task.treatmentId != treatment.id ||
         task.isDeleted ||
         task.status == TaskStatus.completed);
@@ -1416,11 +1439,15 @@ class CropsProvider extends ChangeNotifier {
 
     notifyListeners();
     await _attemptSync();
+    _revisedPlanCheckInIds.add(checkInId);
     return TreatmentPlanRevisionResult(
       treatment: revisedTreatment,
       tasks: revisedTasks,
       retiredTasks: retiredTasks,
     );
+    } finally {
+      _planRevisionCheckInsInProgress.remove(checkInId);
+    }
   }
 
   Future<TreatmentExtensionResult?> extendTreatmentTracking({
@@ -1579,9 +1606,11 @@ class CropsProvider extends ChangeNotifier {
 
   List<String> _normalizeTreatmentSteps(List<String> treatmentSteps) {
     final normalized = <String>[];
+    final seen = <String>{};
     for (final step in treatmentSteps) {
       final trimmed = step.trim();
-      if (trimmed.isEmpty || normalized.contains(trimmed)) {
+      final key = trimmed.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+      if (trimmed.isEmpty || !seen.add(key)) {
         continue;
       }
       normalized.add(trimmed);

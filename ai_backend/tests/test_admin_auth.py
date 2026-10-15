@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from datetime import UTC, datetime
 
@@ -25,15 +26,28 @@ class _FakeSupabase:
 
 
 class _FakeAuthService:
-    def __init__(self, role: str):
+    def __init__(self, role: str, assurance_level: str = "aal2"):
         self.role = role
+        self.assurance_level = assurance_level
 
     async def verify_access_token(self, _token: str) -> AuthenticatedUser:
-        return AuthenticatedUser(id="user-1", email="user@example.com", role=self.role)
+        return AuthenticatedUser(
+            id="user-1",
+            email="user@example.com",
+            role=self.role,
+            assurance_level=self.assurance_level,
+        )
 
 
 def _credentials() -> HTTPAuthorizationCredentials:
     return HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
+
+
+def _token_with_assurance(assurance_level: str) -> str:
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"aal": assurance_level}).encode()
+    ).decode().rstrip("=")
+    return f"header.{payload}.signature"
 
 
 def test_auth_service_uses_admin_role_from_app_metadata() -> None:
@@ -51,6 +65,20 @@ def test_auth_service_uses_admin_role_from_app_metadata() -> None:
     user = asyncio.run(service.verify_access_token("token"))
 
     assert user.role == "admin"
+    assert user.assurance_level == "aal1"
+
+
+def test_auth_service_reads_assurance_level_from_verified_access_token() -> None:
+    service = AuthService(Settings())
+    service._supabase = _FakeSupabase(
+        {"id": "admin-1", "email": "admin@example.com", "app_metadata": {"admin_role": "admin"}}
+    )
+
+    user = asyncio.run(
+        service.verify_access_token(_token_with_assurance("aal2"))
+    )
+
+    assert user.assurance_level == "aal2"
 
 
 def test_admin_dependency_rejects_authenticated_user() -> None:
@@ -74,6 +102,20 @@ def test_admin_dependency_accepts_superadmin() -> None:
     )
 
     assert user.role == "superadmin"
+
+
+def test_admin_dependency_requires_second_factor() -> None:
+    auth_service = _FakeAuthService("admin", assurance_level="aal1")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            require_admin_user(
+                credentials=_credentials(),
+                auth_service=auth_service,
+            )
+        )
+
+    assert exc.value.status_code == 428
+    assert exc.value.detail == "Multi-factor verification is required."
 
 
 def test_superadmin_dependency_rejects_regular_admin() -> None:

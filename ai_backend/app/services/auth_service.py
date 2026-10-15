@@ -1,3 +1,7 @@
+import base64
+import binascii
+import json
+
 from fastapi import HTTPException, status
 
 from app.core.config import Settings
@@ -32,4 +36,15 @@ class AuthService:
             id=user_payload.get("id", ""),
             email=user_payload.get("email"),
             role=admin_role or "authenticated",
+            assurance_level=self._assurance_level(access_token),
         )
+
+    @staticmethod
+    def _assurance_level(access_token: str) -> str:
+        try:
+            payload = access_token.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload))
+        except (IndexError, ValueError, binascii.Error, json.JSONDecodeError):
+            return "aal1"
+        return "aal2" if isinstance(claims, dict) and claims.get("aal") == "aal2" else "aal1"

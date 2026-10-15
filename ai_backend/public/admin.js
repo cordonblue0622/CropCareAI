@@ -2,6 +2,8 @@
 
 const state = {
   token: "",
+  mfaFactorId: "",
+  mfaChallengeId: "",
   admin: null,
   config: null,
   catalog: {},
@@ -82,10 +84,174 @@ async function api(path, options = {}) {
   if (!response.ok) {
     let message = "The operation could not be completed.";
     try { message = (await response.json()).detail || message; } catch (_) {}
-    throw new Error(message);
+    const failure = new Error(message);
+    failure.status = response.status;
+    throw failure;
   }
   if (response.status === 204) return null;
   return response.json();
+}
+
+async function supabaseAuth(path, { method = "GET", body } = {}) {
+  const response = await fetch(`${state.config.supabaseUrl}/auth/v1/${path}`, {
+    method,
+    headers: {
+      "apikey": state.config.supabaseAnonKey,
+      "Authorization": `******`,
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let message = "Authenticator verification could not be completed.";
+    try {
+      const result = await response.json();
+      message = result.msg || result.message || result.error_description || message;
+    } catch (_) {}
+    throw new Error(message);
+  }
+  return response.status === 204 ? null : response.json();
+}
+
+async function finishAdminSignIn() {
+  const [admin, catalog] = await Promise.all([api("/v1/admin/me"), api("/v1/admin/resources")]);
+  state.admin = admin;
+  state.catalog = catalog;
+  $("#adminEmail").textContent = admin.email || "Administrator";
+  $("#adminRole").textContent = admin.role;
+  $("#adminInitial").textContent = (admin.email || "A").slice(0, 1).toUpperCase();
+  $("#loginView").classList.add("hidden");
+  $("#appView").classList.remove("hidden");
+  await selectSection("overview");
+}
+
+function showMfaForm({ enrollmentRequired = false } = {}) {
+  $("#loginForm").classList.add("hidden");
+  $("#registerForm").classList.add("hidden");
+  $("#mfaForm").classList.remove("hidden");
+  $("#authModeButton").classList.add("hidden");
+  $("#loginTitle").textContent = "Verify your administrator sign-in";
+  document.querySelector("#signInHeading .lede").textContent =
+    enrollmentRequired
+      ? "Set up an authenticator app to protect administrator access."
+      : "Complete the second step to access administrator tools.";
+  $("#mfaSetupFields").classList.add("hidden");
+  $("#mfaCodeFields").classList.add("hidden");
+  $("#mfaSubmitButton").textContent = "Preparing...";
+  $("#mfaSubmitButton").disabled = true;
+  $("#mfaError").textContent = "";
+  $("#mfaMessage").textContent = "";
+}
+
+async function beginMfaVerification() {
+  showMfaForm();
+  const factorResponse = await supabaseAuth("factors");
+  const factors = Array.isArray(factorResponse)
+    ? factorResponse
+    : Array.isArray(factorResponse?.all)
+      ? factorResponse.all
+      : Array.isArray(factorResponse?.totp)
+        ? factorResponse.totp
+        : [];
+  const totpFactors = factors.filter((factor) =>
+    (factor.factor_type || factor.type) === "totp"
+  );
+  const factor = totpFactors.find((item) => item.status === "verified");
+  if (factor) {
+    state.mfaFactorId = factor.id;
+    const challenge = await supabaseAuth(`factors/${encodeURIComponent(factor.id)}/challenge`, {
+      method: "POST",
+      body: {},
+    });
+    if (!challenge?.id) throw new Error("Supabase did not create an authenticator challenge.");
+    state.mfaChallengeId = challenge.id;
+    $("#mfaCodeFields").classList.remove("hidden");
+    $("#mfaSubmitButton").disabled = false;
+    $("#mfaSubmitButton").textContent = "Verify code";
+    $("#mfaMessage").textContent = "Enter the current code from your authenticator app.";
+    $("#mfaCode").focus();
+    return;
+  }
+  showMfaForm({ enrollmentRequired: true });
+  const unverifiedFactors = totpFactors.filter((item) => item.status === "unverified");
+  for (const unverified of unverifiedFactors) {
+    await supabaseAuth(`factors/${encodeURIComponent(unverified.id)}`, { method: "DELETE" });
+  }
+  const enrolled = await supabaseAuth("factors", {
+    method: "POST",
+    body: { factor_type: "totp", friendly_name: "CropCare AI Admin" },
+  });
+  if (!enrolled?.id || !enrolled.totp?.qr_code || !enrolled.totp?.secret) {
+    throw new Error("Supabase did not return authenticator setup details.");
+  }
+  state.mfaFactorId = enrolled.id;
+  $("#mfaQrCode").src = enrolled.totp.qr_code;
+  $("#mfaSecret").textContent = enrolled.totp.secret;
+  $("#mfaSetupFields").classList.remove("hidden");
+  $("#mfaMessage").textContent = "Scan the QR code, then enter the current code to enable MFA.";
+  const challenge = await supabaseAuth(`factors/${encodeURIComponent(state.mfaFactorId)}/challenge`, {
+    method: "POST",
+    body: {},
+  });
+  if (!challenge?.id) throw new Error("Supabase did not create an authenticator challenge.");
+  state.mfaChallengeId = challenge.id;
+  $("#mfaCodeFields").classList.remove("hidden");
+  $("#mfaSubmitButton").disabled = false;
+  $("#mfaSubmitButton").textContent = "Verify and enable";
+  $("#mfaCode").focus();
+}
+
+async function submitMfa(event) {
+  event.preventDefault();
+  const error = $("#mfaError");
+  const submit = $("#mfaSubmitButton");
+  error.textContent = "";
+  submit.disabled = true;
+  try {
+    if (!state.mfaFactorId) {
+      await beginMfaVerification();
+      return;
+    }
+    if (!state.mfaChallengeId) {
+      const challenge = await supabaseAuth(
+        `factors/${encodeURIComponent(state.mfaFactorId)}/challenge`,
+        { method: "POST", body: {} },
+      );
+      if (!challenge?.id) throw new Error("Supabase did not create an authenticator challenge.");
+      state.mfaChallengeId = challenge.id;
+      $("#mfaCodeFields").classList.remove("hidden");
+      $("#mfaSubmitButton").textContent = "Verify and enable";
+      $("#mfaMessage").textContent = "Enter the current code from your authenticator app.";
+      $("#mfaCode").focus();
+      return;
+    }
+    const result = await supabaseAuth(
+      `factors/${encodeURIComponent(state.mfaFactorId)}/verify`,
+      {
+        method: "POST",
+        body: { challenge_id: state.mfaChallengeId, code: $("#mfaCode").value.trim() },
+      },
+    );
+    if (!result?.access_token) throw new Error("MFA verification did not return a secure session.");
+    state.token = result.access_token;
+    state.mfaChallengeId = "";
+    await finishAdminSignIn();
+  } catch (failure) {
+    error.textContent = failure.message;
+    submit.textContent = state.mfaChallengeId
+      ? $("#mfaSetupFields").classList.contains("hidden")
+        ? "Verify code"
+        : "Verify and enable"
+      : "Try again";
+    submit.disabled = false;
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+function cancelMfa() {
+  void signOut(true);
 }
 
 async function signIn(event) {
@@ -112,18 +278,21 @@ async function signIn(event) {
     const session = await response.json();
     state.token = session.access_token || "";
     if (!state.token) throw new Error("A secure session could not be created.");
-    const [admin, catalog] = await Promise.all([api("/v1/admin/me"), api("/v1/admin/resources")]);
-    state.admin = admin;
-    state.catalog = catalog;
-    $("#adminEmail").textContent = admin.email || "Administrator";
-    $("#adminRole").textContent = admin.role;
-    $("#adminInitial").textContent = (admin.email || "A").slice(0, 1).toUpperCase();
-    $("#loginView").classList.add("hidden");
-    $("#appView").classList.remove("hidden");
-    await selectSection("overview");
+    try {
+      await finishAdminSignIn();
+    } catch (failure) {
+      if (failure.status !== 428) throw failure;
+      await beginMfaVerification();
+    }
   } catch (failure) {
-    state.token = "";
-    error.textContent = failure.message;
+    if ($("#mfaForm").classList.contains("hidden")) {
+      state.token = "";
+      error.textContent = failure.message;
+    } else {
+      $("#mfaError").textContent = failure.message;
+      $("#mfaSubmitButton").disabled = false;
+      if (!state.mfaFactorId) $("#mfaSubmitButton").textContent = "Try again";
+    }
   } finally {
     submit.disabled = false;
     submit.textContent = "Sign in securely";
@@ -308,11 +477,25 @@ async function completeInvitation(event) {
 async function signOut(callServer = true) {
   const token = state.token;
   state.token = "";
+  state.mfaFactorId = "";
+  state.mfaChallengeId = "";
   state.admin = null;
   state.rows = [];
   $("#appView").classList.add("hidden");
   $("#loginView").classList.remove("hidden");
   $("#loginForm").reset();
+  $("#mfaForm").reset();
+  $("#mfaForm").classList.add("hidden");
+  $("#loginTitle").textContent = "Administrator access";
+  document.querySelector("#signInHeading .lede").textContent =
+    "Secure operations for crop intelligence and account records.";
+  $("#mfaQrCode").removeAttribute("src");
+  $("#mfaSecret").textContent = "";
+  $("#mfaSetupFields").classList.add("hidden");
+  $("#mfaCodeFields").classList.add("hidden");
+  $("#mfaMessage").textContent = "";
+  $("#loginForm").classList.remove("hidden");
+  $("#authModeButton").classList.remove("hidden");
   if (callServer && token && state.config) {
     try {
       await fetch(`${state.config.supabaseUrl}/auth/v1/logout`, {
@@ -1329,6 +1512,8 @@ async function saveRecord(event) {
 }
 
 $("#loginForm").addEventListener("submit", signIn);
+$("#mfaForm").addEventListener("submit", submitMfa);
+$("#mfaCancelButton").addEventListener("click", cancelMfa);
 $("#registerForm").addEventListener("submit", registerAccount);
 $("#inviteForm").addEventListener("submit", completeInvitation);
 $("#authModeButton").addEventListener("click", () => {

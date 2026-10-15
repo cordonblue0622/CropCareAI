@@ -398,12 +398,61 @@ void main() {
     );
   });
 
+  test('uncertain AI diagnosis requests more evidence before crop handoff',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final backend = _TrackingAiBackendService(supabase: supabase)
+      ..response = const AiBackendChatResponse(
+        answer: 'What it is: Squash pest damage. '
+            'Treatment: Check under leaves. '
+            'The exact pest cannot be confirmed from this photo alone. '
+            'A clear close-up of both sides of the leaf would improve identification.',
+        recommendedActions: ['Check under leaves.'],
+        warnings: [],
+        sources: ['openai-vision'],
+        model: 'test-online',
+        inAppCropScope: true,
+        showTreatmentUi: true,
+        verifiedCrop: 'squash',
+        verifiedDisease: 'Squash pest damage',
+      );
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: backend,
+      connectivity: _OnlineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+    );
+    addTearDown(provider.dispose);
+
+    await provider.sendMessage(
+      userId: 'online-user',
+      content: 'Please diagnose this squash leaf.',
+      attachedImageBytes: const [1, 2, 3],
+      hintCropType: 'squash',
+    );
+
+    final assistant = provider.currentMessages.firstWhere(
+      (message) => message.role == MessageRole.assistant,
+    );
+    expect(assistant.metadata?['show_treatment_card'], isFalse);
+    expect(assistant.metadata?['recommended_actions'], isEmpty);
+    expect(
+      provider.currentMessages.any(
+        (message) =>
+            message.role == MessageRole.system &&
+            message.metadata?['type'] == 'add_crop_suggestion',
+      ),
+      isFalse,
+    );
+  });
+
   test('online photo review replaces the TFLite crop and disease', () async {
     final supabase = _FakeSupabaseService();
     final backend = _TrackingAiBackendService(supabase: supabase)
       ..response = const AiBackendChatResponse(
         answer:
-            'What it is: Eggplant Leaf Spot. Treatment: Remove affected leaves and improve airflow.',
+            'What it is: Severe Eggplant Leaf Spot. Treatment: Remove affected leaves and improve airflow.',
         recommendedActions: [
           'Remove affected leaves.',
           'Improve airflow around the eggplant.',
@@ -461,8 +510,19 @@ void main() {
     );
     expect(assistant.metadata?['crop_type'], 'eggplant');
     expect(assistant.metadata?['disease_name'], 'Eggplant Leaf Spot');
+    expect(assistant.metadata?['severity'], Severity.severe.value);
+    expect(assistant.metadata?['recommended_actions'], [
+      'Remove affected leaves.',
+      'Improve airflow around the eggplant.',
+    ]);
     expect(suggestion.metadata?['crop_type'], 'eggplant');
     expect(suggestion.metadata?['disease_name'], 'Eggplant Leaf Spot');
+    expect(suggestion.metadata?['severity'], Severity.severe.value);
+    expect(suggestion.metadata?['diagnosis_mode'], DiagnosisMode.online.value);
+    expect(suggestion.metadata?['recommended_actions'], [
+      'Remove affected leaves.',
+      'Improve airflow around the eggplant.',
+    ]);
     expect(suggestion.metadata?['diagnosis_mode'], DiagnosisMode.online.value);
     expect(
       suggestion.metadata?['recommended_actions'],

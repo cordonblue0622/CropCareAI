@@ -168,8 +168,16 @@ class SyncService {
         final int itemId = item['id'] as int;
         final String table = item['table_name'] as String;
         final String op = item['operation'] as String;
+        final payloadJson = await dbHelper.getPendingSyncItemPayload(itemId);
+        if (payloadJson == null) {
+          debugPrint(
+            '[SyncService] Pending $table record ${item['record_id']} '
+            'has no queue payload; leaving it queued.',
+          );
+          continue;
+        }
         final Map<String, dynamic> payload =
-            jsonDecode(item['payload'] as String) as Map<String, dynamic>;
+            jsonDecode(payloadJson) as Map<String, dynamic>;
 
         final cropId = payload['crop_id'] as String?;
         final diagnosisId = payload['diagnosis_id'] as String?;

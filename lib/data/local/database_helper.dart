@@ -422,8 +422,39 @@ class DatabaseHelper {
     final db = await database;
     return db.query(
       AppConstants.syncQueueTable,
+      columns: const [
+        'id',
+        'table_name',
+        'record_id',
+        'operation',
+        'created_at',
+        'attempts',
+        'last_error',
+      ],
       orderBy: 'created_at ASC, id ASC',
     );
+  }
+
+  Future<String?> getPendingSyncItemPayload(int id) async {
+    if (_isDisabledOnPlatform) return null;
+    final db = await database;
+    const chunkSize = 256 * 1024;
+    final payload = StringBuffer();
+    var offset = 1;
+
+    while (true) {
+      final rows = await db.rawQuery(
+        'SELECT substr(payload, ?, ?) AS payload_chunk '
+        'FROM ${AppConstants.syncQueueTable} WHERE id = ?',
+        [offset, chunkSize, id],
+      );
+      if (rows.isEmpty) return null;
+
+      final chunk = rows.first['payload_chunk'] as String? ?? '';
+      payload.write(chunk);
+      if (chunk.length < chunkSize) return payload.toString();
+      offset += chunk.runes.length;
+    }
   }
 
   Future<void> markSyncItemDone(int id) async {

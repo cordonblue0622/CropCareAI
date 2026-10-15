@@ -139,11 +139,16 @@ class SupabaseService {
     required Map<String, dynamic> data,
   }) async {
     final sanitizedData = _sanitizeRemoteData(table, data);
-    if (table == 'crops') {
+    if (table == 'crops' ||
+        table == 'treatments' ||
+        table == 'treatment_tasks') {
       final savedRow =
           await _client.from(table).upsert(sanitizedData).select('id').single();
       if (savedRow['id'] != sanitizedData['id']) {
-        throw StateError('Supabase did not confirm the crop upsert.');
+        throw StateError(
+          'Supabase did not confirm the $table upsert '
+          'for record ${sanitizedData['id']}.',
+        );
       }
       return;
     }
@@ -313,6 +318,17 @@ class SupabaseService {
         .eq('treatment_id', treatmentId)
         .eq('is_deleted', false)
         .order('task_order', ascending: true);
+  }
+
+  Future<List<Map<String, dynamic>>> getTreatmentTasksByCrop(
+    String cropId,
+  ) async {
+    return _client
+        .from('treatment_tasks')
+        .select()
+        .eq('crop_id', cropId)
+        .eq('is_deleted', false)
+        .order('due_at', ascending: true);
   }
 
   Future<List<Map<String, dynamic>>> getTreatmentTasksByUser(

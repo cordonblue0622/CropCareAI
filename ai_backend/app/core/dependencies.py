@@ -86,6 +86,11 @@ async def require_admin_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrator access is required.",
         )
+    if user.assurance_level != "aal2":
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail="Multi-factor verification is required.",
+        )
     return user
 
 

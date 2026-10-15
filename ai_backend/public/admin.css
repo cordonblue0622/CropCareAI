@@ -60,6 +60,8 @@ button { cursor: pointer; }
 
 .login-stage { position: relative; z-index: 1; min-height: 100vh; display: grid; place-items: center; padding: 24px; }
 .login-panel { width: min(440px, 100%); padding: 38px 42px; border-radius: 24px; background: rgba(244, 250, 234, .52); }
+.mfa-qr-code { display: block; width: 192px; height: 192px; max-width: 100%; margin: 14px auto; background: white; }
+.mfa-secret { display: block; overflow-wrap: anywhere; margin: 8px 0 16px; padding: 10px; border-radius: 8px; background: rgba(255,255,255,.6); color: var(--forest-deep); }
 .brand-logo { display: block; width: 58px; height: 58px; object-fit: contain; border-radius: 50%; filter: drop-shadow(0 8px 16px rgba(13, 70, 39, .18)); }
 .login-logo { width: 76px; height: 76px; margin: 0 0 22px; }
 .brand-logo.small { width: 40px; height: 40px; flex: 0 0 auto; }

@@ -203,15 +203,11 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       final progress = _safeParseRows(rawProgress, ProgressUpdateModel.fromMap)
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-      final remoteTaskRows = <Map<String, dynamic>>[];
-      for (final treatment in treatments) {
-        final rawTasks = await _runOrFallback(
-          'treatment tasks for ${treatment.id}',
-          () => svc.getTreatmentTasks(treatment.id),
-          <Map<String, dynamic>>[],
-        );
-        remoteTaskRows.addAll(rawTasks);
-      }
+      final remoteTaskRows = await _runOrFallback(
+        'treatment tasks for this crop',
+        () => svc.getTreatmentTasksByCrop(_crop.id),
+        <Map<String, dynamic>>[],
+      );
       final mergedTaskRows = SyncService.mergeLocalAndRemoteRows(
         localRows: localTasks,
         remoteRows: remoteTaskRows,
@@ -287,7 +283,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         ChatMessageModel.fromMap,
       )..sort((a, b) => a.createdAt.compareTo(b.createdAt));
       await db.upsertRows(AppConstants.chatSessionsTable, rawSessions);
-      await db.upsertRows(AppConstants.chatMessagesTable, messageRowsById.values);
+      await db.upsertRows(
+          AppConstants.chatMessagesTable, messageRowsById.values);
       final historyMessages = allMessages
           .where((message) => message.role != MessageRole.system)
           .toList(growable: false);
@@ -404,7 +401,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         TreatmentPlanRevisionResult? planRevision;
         final treatmentId = update.treatmentId;
         if (isMostRecent &&
-            newStatus == ProgressStatus.worsening &&
+            (newStatus == ProgressStatus.improving ||
+                newStatus == ProgressStatus.worsening) &&
             treatmentId != null &&
             aiResponse.nextSteps.isNotEmpty) {
           TreatmentModel? treatment;
@@ -423,6 +421,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                 assessment: aiResponse.assessment,
                 healthScore: aiResponse.healthScore,
                 assessedAt: update.updateDate,
+                progressStatus: newStatus,
+                checkInId: update.id,
               );
             } catch (error, stackTrace) {
               debugPrint(
@@ -649,7 +649,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
               syncNow: false,
             );
             final treatmentForRevision = rebase?.treatment ?? activeTreatment;
-            if (newStatus == ProgressStatus.worsening &&
+            if ((newStatus == ProgressStatus.improving ||
+                    newStatus == ProgressStatus.worsening) &&
                 treatmentForRevision != null &&
                 aiNextSteps.isNotEmpty) {
               try {
@@ -661,6 +662,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                   assessment: update.note ?? '',
                   healthScore: newScore,
                   assessedAt: update.updateDate,
+                  progressStatus: newStatus,
+                  checkInId: update.id,
                 );
               } catch (error, stackTrace) {
                 planRevisionFailed = true;
@@ -1643,8 +1646,8 @@ class _DailyPlanTab extends StatelessWidget {
         DateUtils.dateOnly(activeDay)
             .isAfter(DateUtils.dateOnly(DateTime.now()));
     final lockedUntilTomorrow = activeDayIsFuture;
-    final tomorrow = DateUtils.dateOnly(DateTime.now())
-        .add(const Duration(days: 1));
+    final tomorrow =
+        DateUtils.dateOnly(DateTime.now()).add(const Duration(days: 1));
     final activeDayIsTomorrow =
         activeDay != null && DateUtils.isSameDay(activeDay, tomorrow);
     final lockLabel = activeDay == null

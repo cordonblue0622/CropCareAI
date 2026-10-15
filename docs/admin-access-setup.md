@@ -47,6 +47,29 @@ In Supabase **Authentication > URL Configuration**, set the Site URL to
 The built-in Supabase sender is suitable for limited testing but is rate-limited;
 custom SMTP remains preferable for production delivery.
 
+## Require authenticator-app MFA for administrators
+
+The admin portal requires a Supabase `aal2` session before serving any
+administrator API route. On the first administrator sign-in, the portal
+enrolls an authenticator-app TOTP factor and displays its QR code and manual
+setup key. Later sign-ins require a fresh code from that factor. Ordinary user
+sign-in in the CropCare app is unchanged.
+
+Before using the admin portal:
+
+1. In Supabase **Authentication > Multi-Factor Authentication**, allow
+   authenticator-app (TOTP) factors.
+2. Each administrator installs any standards-compliant authenticator app,
+   such as Google Authenticator or Microsoft Authenticator.
+3. Deploy the backend and portal changes. Each admin scans the setup QR code
+   and verifies one code during their first login; subsequent logins require
+   a fresh code.
+
+TOTP does not require a paid SMS provider or email delivery service. The
+authenticator app generates codes offline. If an administrator loses access
+to their authenticator, a project owner must recover the factor through
+Supabase; do not disable the backend's `aal2` check to regain access.
+
 ## Who can access
 
 - `admin`: can manage users, disease guidance, treatments, crops, and diagnoses.

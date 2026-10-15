@@ -29,6 +29,22 @@
         <p id="loginError" class="form-error" role="alert"></p>
         <button class="primary-button" type="submit">Sign in securely</button>
       </form>
+      <form id="mfaForm" class="hidden" autocomplete="on">
+        <div id="mfaSetupFields" class="hidden">
+          <p class="approval-note">Scan this QR code with your authenticator app, then enter the code it generates.</p>
+          <img id="mfaQrCode" class="mfa-qr-code" alt="Authenticator app setup QR code">
+          <label for="mfaSecret">Or enter this setup key manually</label>
+          <code id="mfaSecret" class="mfa-secret"></code>
+        </div>
+        <div id="mfaCodeFields" class="hidden">
+          <label for="mfaCode">Authenticator code</label>
+          <input id="mfaCode" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code" required minlength="6" maxlength="8">
+        </div>
+        <p id="mfaError" class="form-error" role="alert"></p>
+        <p id="mfaMessage" class="form-success" role="status"></p>
+        <button id="mfaSubmitButton" class="primary-button" type="submit">Verify code</button>
+        <button id="mfaCancelButton" class="auth-mode-button" type="button">Back to sign in</button>
+      </form>
       <form id="registerForm" class="hidden" autocomplete="on">
         <div class="auth-name-fields">
           <div>

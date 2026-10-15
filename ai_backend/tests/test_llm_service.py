@@ -151,6 +151,36 @@ def test_image_fallback_does_not_repeat_unverified_scanner_diagnosis() -> None:
     assert response.show_treatment_ui is False
 
 
+def test_more_input_request_blocks_actions_even_with_diagnosis_sections() -> None:
+    service = LlmService(Settings())
+    answer = (
+        "What it is: Squash pest damage. Treatment: Check under leaves. "
+        "The exact pest cannot be confirmed from this photo alone. "
+        "A clear close-up would improve identification."
+    )
+
+    assert service._needs_more_input_response(answer)
+    assert service._build_recommended_actions(
+        ChatRequest(user_message="Diagnose this squash.", hint_crop_type="squash"),
+        [],
+        answer,
+        meta={
+            "in_app_crop_scope": True,
+            "show_treatment_ui": True,
+            "verified_crop": "squash",
+            "verified_disease": "Squash pest damage",
+            "treatment_actions": ["Check under leaves."],
+        },
+        is_follow_up=False,
+    ) == []
+    assert service._scope_flags_from_meta(
+        meta={"in_app_crop_scope": True, "show_treatment_ui": True},
+        is_follow_up=False,
+        recommended_actions=["Check under leaves."],
+        answer=answer,
+    ) == (True, False)
+
+
 def test_knowledge_intent_selects_squash_over_stale_tomato_hint() -> None:
     service = KnowledgeService(Settings())
     payload = ChatRequest(

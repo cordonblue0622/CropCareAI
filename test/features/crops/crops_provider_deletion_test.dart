@@ -95,6 +95,28 @@ void main() {
 
   tearDown(() => database.deleteDatabaseFile());
 
+  test('sync queue metadata reads avoid loading large payloads', () async {
+    final imagePayload =
+        '${'x' * (256 * 1024 - 1)}🌱${'x' * (3 * 1024 * 1024)}';
+    final queuePayload = '{"image":"$imagePayload"}';
+    final queueId = await database.addToSyncQueue(
+      tableName: AppConstants.progressUpdatesTable,
+      recordId: 'large-check-in',
+      operation: 'UPSERT',
+      payload: queuePayload,
+    );
+
+    final pending = await database.getPendingSyncItems();
+
+    expect(pending, hasLength(1));
+    expect(pending.single['id'], queueId);
+    expect(pending.single.containsKey('payload'), isFalse);
+    expect(
+      await database.getPendingSyncItemPayload(queueId),
+      queuePayload,
+    );
+  });
+
   test('new crop reports when cloud upload remains queued', () async {
     final now = DateTime.now();
     final supabase = _StaleCropSupabaseService(const {});
@@ -343,11 +365,18 @@ void main() {
       createdAt: now,
       updatedAt: now,
     );
+    final stalePendingTask = pendingTask.copyWith(
+      id: 'stale-pending-task',
+      title: 'Old duplicate action',
+      dueAt: now.add(const Duration(days: 3)),
+    );
     await database.upsertRow(AppConstants.treatmentsTable, treatment.toMap());
     await database.upsertRow(
         AppConstants.treatmentTasksTable, completedTask.toMap());
     await database.upsertRow(
         AppConstants.treatmentTasksTable, pendingTask.toMap());
+    await database.upsertRow(
+        AppConstants.treatmentTasksTable, stalePendingTask.toMap());
 
     final supabase = _StaleCropSupabaseService(const {});
     final provider = CropsProvider(
@@ -366,17 +395,21 @@ void main() {
       recommendedActions: const [
         'Remove badly affected leaves.',
         'Inspect the plant daily for new spots.',
+        ' inspect   THE PLANT DAILY FOR NEW SPOTS. ',
       ],
       assessment: 'The condition is spreading.',
       healthScore: 38,
       assessedAt: now,
+      progressStatus: ProgressStatus.worsening,
+      checkInId: 'progress-update-1',
     );
 
     expect(revision, isNotNull);
     expect(revision!.treatment.source, 'ai-progress-reassessment');
+    expect(revision.treatment.notes, contains('worsening check-in'));
     expect(
       revision.treatment.startedAt,
-      DateTime(2026, 10, 12),
+      DateTime(2026, 10, 11),
     );
     expect(revision.treatment.treatmentSteps, [
       'Remove badly affected leaves.',
@@ -393,9 +426,46 @@ void main() {
         AppConstants.treatmentTasksTable, 'pending-task');
     expect(retired?['is_deleted'], 1);
     expect(
+      (await database.queryById(AppConstants.treatmentTasksTable,
+          'stale-pending-task'))?['is_deleted'],
+      1,
+    );
+    expect(
       revision.tasks.any(
           (task) => task.title == 'Inspect the plant daily for new spots.'),
       isTrue,
+    );
+
+    final repeatedRevision = await provider.reviseRemainingTreatmentPlan(
+      treatment: revision.treatment,
+      tasks: revision.tasks,
+      recommendedActions: const ['Inspect the plant daily for new spots.'],
+      assessment: 'The condition is spreading.',
+      healthScore: 38,
+      assessedAt: now,
+      progressStatus: ProgressStatus.worsening,
+      checkInId: 'progress-update-1',
+    );
+    expect(repeatedRevision, isNull);
+
+    final improvingRevision = await provider.reviseRemainingTreatmentPlan(
+      treatment: revision.treatment,
+      tasks: revision.tasks,
+      recommendedActions: const ['Water the crop carefully.'],
+      assessment: 'The crop is recovering but needs steady moisture.',
+      healthScore: 74,
+      assessedAt: now.add(const Duration(days: 1)),
+      progressStatus: ProgressStatus.improving,
+      checkInId: 'progress-update-2',
+    );
+    expect(improvingRevision, isNotNull);
+    expect(
+      improvingRevision!.treatment.notes,
+      contains('improving check-in'),
+    );
+    expect(
+      improvingRevision.treatment.treatmentSteps,
+      contains('Water the crop carefully.'),
     );
   });
 }

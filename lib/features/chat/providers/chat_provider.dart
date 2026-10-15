@@ -1089,30 +1089,47 @@ class ChatProvider extends ChangeNotifier {
       return false;
     }
 
-    // If the response contains diagnosis template markers it is a complete
-    // diagnosis — never block the treatment card even when a secondary
-    // photo-suggestion phrase also appears in the same reply.
-    const diagnosisMarkers = [
-      'what it is:',
-      'immediate action:',
-      'key symptoms:',
-      'treatment:',
-    ];
-    if (diagnosisMarkers.any(normalized.contains)) {
-      return false;
-    }
-
     const phrases = [
       'clearer photo',
       'closer photo',
       'well-lit photo',
+      'clear close-up',
       'upload a clear',
       'retake the photo',
       'cannot verify',
       'can\'t verify',
       'cannot confirm',
       'can\'t confirm',
+      'cannot be confirmed',
+      'can\'t be confirmed',
+      'cannot determine',
+      'can\'t determine',
+      'cannot identify',
+      'can\'t identify',
+      'cannot diagnose',
+      'can\'t diagnose',
+      'not sure',
+      'not certain',
+      'uncertain',
+      'not confident',
+      'cannot be diagnosed',
+      'can\'t be diagnosed',
       'too unclear',
+      'photo alone',
+      'from this photo alone',
+      'need more information',
+      'need more details',
+      'need further information',
+      'need another angle',
+      'more photos',
+      'additional photo',
+      'additional information',
+      'would improve identification',
+      'would help identify',
+      'before i can diagnose',
+      'before diagnosing',
+      'please provide more',
+      'please send another',
       'not a crop plant',
       'not a live plant',
       'picture of bell peppers on a screen',
@@ -1959,11 +1976,18 @@ class ChatProvider extends ChangeNotifier {
       return Severity.healthy;
     }
 
-    if (attachedDiagnosis != null) {
+    final aiSeverity = _inferSeverityFromContent(aiContent);
+    if (aiSeverity != null) {
+      return aiSeverity;
+    }
+
+    final aiDisease = inferredDiseaseName.trim().toLowerCase();
+    if (attachedDiagnosis != null &&
+        aiDisease == attachedDiagnosis.diseaseName.trim().toLowerCase()) {
       return attachedDiagnosis.severity;
     }
 
-    return _inferSeverityFromContent(aiContent) ?? Severity.moderate;
+    return Severity.moderate;
   }
 
   Severity? _inferSeverityFromContent(String aiContent) {
