@@ -353,26 +353,40 @@ void main() {
       createdAt: now.subtract(const Duration(days: 1)),
       updatedAt: now.subtract(const Duration(days: 1)),
     );
+    final checkInDayTask = TreatmentTaskModel(
+      id: 'check-in-day-task',
+      treatmentId: treatment.id,
+      cropId: treatment.cropId,
+      userId: treatment.userId,
+      title: 'Today action',
+      dueAt: now,
+      status: TaskStatus.pending,
+      taskOrder: 2,
+      createdAt: now,
+      updatedAt: now,
+    );
     final pendingTask = TreatmentTaskModel(
       id: 'pending-task',
       treatmentId: treatment.id,
       cropId: treatment.cropId,
       userId: treatment.userId,
       title: 'Old future action',
-      dueAt: now.add(const Duration(days: 2)),
+      dueAt: now.add(const Duration(days: 3)),
       status: TaskStatus.pending,
-      taskOrder: 2,
+      taskOrder: 3,
       createdAt: now,
       updatedAt: now,
     );
     final stalePendingTask = pendingTask.copyWith(
       id: 'stale-pending-task',
       title: 'Old duplicate action',
-      dueAt: now.add(const Duration(days: 3)),
+      dueAt: now.add(const Duration(days: 4)),
     );
     await database.upsertRow(AppConstants.treatmentsTable, treatment.toMap());
     await database.upsertRow(
         AppConstants.treatmentTasksTable, completedTask.toMap());
+    await database.upsertRow(
+        AppConstants.treatmentTasksTable, checkInDayTask.toMap());
     await database.upsertRow(
         AppConstants.treatmentTasksTable, pendingTask.toMap());
     await database.upsertRow(
@@ -391,7 +405,7 @@ void main() {
 
     final revision = await provider.reviseRemainingTreatmentPlan(
       treatment: treatment,
-      tasks: [completedTask, pendingTask],
+      tasks: [completedTask, checkInDayTask, pendingTask],
       recommendedActions: const [
         'Remove badly affected leaves.',
         'Inspect the plant daily for new spots.',
@@ -409,13 +423,17 @@ void main() {
     expect(revision.treatment.notes, contains('worsening check-in'));
     expect(
       revision.treatment.startedAt,
-      DateTime(2026, 10, 11),
+      DateTime(2026, 10, 12, 9),
     );
     expect(revision.treatment.treatmentSteps, [
       'Remove badly affected leaves.',
       'Inspect the plant daily for new spots.',
     ]);
     expect(revision.tasks.map((task) => task.id), contains('completed-task'));
+    final completedCheckInTask =
+        revision.tasks.singleWhere((task) => task.id == 'check-in-day-task');
+    expect(completedCheckInTask.status, TaskStatus.completed);
+    expect(completedCheckInTask.completedAt, now);
     expect(
         revision.tasks.map((task) => task.id), isNot(contains('pending-task')));
     expect(
@@ -433,6 +451,14 @@ void main() {
     expect(
       revision.tasks.any(
           (task) => task.title == 'Inspect the plant daily for new spots.'),
+      isTrue,
+    );
+    expect(
+      revision.tasks
+          .where((task) => task.createdAt.isAtSameMomentAs(
+                revision.treatment.updatedAt,
+              ))
+          .every((task) => task.dueAt.isAfter(now)),
       isTrue,
     );
 

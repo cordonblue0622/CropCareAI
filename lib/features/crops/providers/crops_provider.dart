@@ -1322,129 +1322,167 @@ class CropsProvider extends ChangeNotifier {
     }
 
     try {
-    final steps = _normalizeTreatmentSteps(recommendedActions);
-    final tasksById = {for (final task in tasks) task.id: task};
-    for (final row in await _db.queryAllTasksForCrop(treatment.cropId)) {
-      final localTask = TreatmentTaskModel.fromMap(row);
-      final existingTask = tasksById[localTask.id];
-      if (existingTask == null ||
-          localTask.updatedAt.isAfter(existingTask.updatedAt)) {
-        tasksById[localTask.id] = localTask;
+      final steps = _normalizeTreatmentSteps(recommendedActions);
+      final tasksById = {for (final task in tasks) task.id: task};
+      for (final row in await _db.queryAllTasksForCrop(treatment.cropId)) {
+        final localTask = TreatmentTaskModel.fromMap(row);
+        final existingTask = tasksById[localTask.id];
+        if (existingTask == null ||
+            localTask.updatedAt.isAfter(existingTask.updatedAt)) {
+          tasksById[localTask.id] = localTask;
+        }
       }
-    }
 
-    final allTreatmentTasks = tasksById.values.toList(growable: false);
-    final pendingTasks = allTreatmentTasks
-        .where((task) =>
-            task.treatmentId == treatment.id &&
-            !task.isDeleted &&
-            task.status == TaskStatus.pending)
-        .toList()
-      ..sort((a, b) => a.dueAt.compareTo(b.dueAt));
-    if (steps.isEmpty || pendingTasks.isEmpty) return null;
+      final allTreatmentTasks = tasksById.values.toList(growable: false);
+      final pendingTasks = allTreatmentTasks
+          .where((task) =>
+              task.treatmentId == treatment.id &&
+              !task.isDeleted &&
+              task.status == TaskStatus.pending)
+          .toList()
+        ..sort((a, b) => a.dueAt.compareTo(b.dueAt));
+      if (steps.isEmpty || pendingTasks.isEmpty) return null;
 
-    _error = null;
-    final now = DateTime.now();
-    final today = DateTime(assessedAt.year, assessedAt.month, assessedAt.day);
-    final lastPendingDay = pendingTasks
-        .map((task) => task.dueAt.toLocal())
-        .map((date) => DateTime(date.year, date.month, date.day))
-        .reduce((left, right) => left.isAfter(right) ? left : right);
-    final remainingDays =
-        math.max(1, lastPendingDay.difference(today).inDays + 1);
-    final durationDays =
-        math.max(remainingDays, steps.length).clamp(1, 42).toInt();
-    final plan = TreatmentPlanService.build(
-      treatmentSteps: steps,
-      startDate: today,
-      expectedDurationDays: durationDays,
-    );
-    final revisedTreatment = treatment.copyWith(
-      treatmentTitle: 'AI-updated Treatment Plan — ${treatment.diseaseName}',
-      treatmentSteps: plan.sourceSteps,
-      expectedDurationDays: plan.durationDays,
-      status: TreatmentStatus.ongoing,
-      reassessmentRequired: false,
-      notes: _mergeNotes(
-        treatment.notes,
-        'AI revised the remaining treatment after a '
-        '${progressStatus.value} check-in '
-        '(${healthScore.toStringAsFixed(0)}% health). ${assessment.trim()}',
-      ),
-      source: 'ai-progress-reassessment',
-      syncVersion: treatment.syncVersion + 1,
-      startedAt: today,
-      updatedAt: now,
-    );
-    await _upsertLocallyAndQueue(
-      table: AppConstants.treatmentsTable,
-      recordId: revisedTreatment.id,
-      localData: revisedTreatment.toMap(),
-      remoteData: _treatmentRemoteMap(revisedTreatment),
-    );
-
-    final retiredTasks = <TreatmentTaskModel>[];
-    for (final task in pendingTasks) {
-      final retired = task.copyWith(
-        isDeleted: true,
-        syncVersion: task.syncVersion + 1,
+      _error = null;
+      final now = DateTime.now();
+      final assessedLocal = assessedAt.toLocal();
+      final today = DateTime(
+        assessedLocal.year,
+        assessedLocal.month,
+        assessedLocal.day,
+      );
+      final tomorrow = today.add(const Duration(days: 1));
+      final planStart =
+          DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 9);
+      final lastPendingDay = pendingTasks
+          .map((task) => task.dueAt.toLocal())
+          .map((date) => DateTime(date.year, date.month, date.day))
+          .reduce((left, right) => left.isAfter(right) ? left : right);
+      final remainingDays = math.max(
+        1,
+        lastPendingDay.difference(tomorrow).inDays + 1,
+      );
+      final durationDays =
+          math.max(remainingDays, steps.length).clamp(1, 42).toInt();
+      final plan = TreatmentPlanService.build(
+        treatmentSteps: steps,
+        startDate: planStart,
+        expectedDurationDays: durationDays,
+      );
+      final revisedTreatment = treatment.copyWith(
+        treatmentTitle: 'AI-updated Treatment Plan — ${treatment.diseaseName}',
+        treatmentSteps: plan.sourceSteps,
+        expectedDurationDays: plan.durationDays,
+        status: TreatmentStatus.ongoing,
+        reassessmentRequired: false,
+        notes: _mergeNotes(
+          treatment.notes,
+          'AI revised the remaining treatment after a '
+          '${progressStatus.value} check-in '
+          '(${healthScore.toStringAsFixed(0)}% health). ${assessment.trim()}',
+        ),
+        source: 'ai-progress-reassessment',
+        syncVersion: treatment.syncVersion + 1,
+        startedAt: planStart,
         updatedAt: now,
       );
       await _upsertLocallyAndQueue(
-        table: AppConstants.treatmentTasksTable,
-        recordId: retired.id,
-        localData: retired.toMap(),
-        remoteData: _treatmentTaskRemoteMap(retired),
+        table: AppConstants.treatmentsTable,
+        recordId: revisedTreatment.id,
+        localData: revisedTreatment.toMap(),
+        remoteData: _treatmentRemoteMap(revisedTreatment),
       );
-      retiredTasks.add(retired);
-    }
 
-    final replacementTasks = <TreatmentTaskModel>[];
-    for (var index = 0; index < plan.tasks.length; index++) {
-      final plannedTask = plan.tasks[index];
-      final task = TreatmentTaskModel(
-        id: const Uuid().v4(),
-        treatmentId: treatment.id,
-        cropId: treatment.cropId,
-        userId: treatment.userId,
-        title: plannedTask.title,
-        description: plannedTask.description,
-        dueAt: plannedTask.dueAt,
-        status: TaskStatus.pending,
-        taskOrder: index + 1,
-        createdAt: now,
-        updatedAt: now,
+      final completedCheckInDayTasks = <TreatmentTaskModel>[];
+      final retiredTasks = <TreatmentTaskModel>[];
+      for (final task in pendingTasks) {
+        final dueLocal = task.dueAt.toLocal();
+        final dueDay = DateTime(dueLocal.year, dueLocal.month, dueLocal.day);
+        if (dueDay == today) {
+          final completed = task.copyWith(
+            status: TaskStatus.completed,
+            completedAt: assessedAt,
+            syncVersion: task.syncVersion + 1,
+            updatedAt: now,
+          );
+          await _upsertLocallyAndQueue(
+            table: AppConstants.treatmentTasksTable,
+            recordId: completed.id,
+            localData: completed.toMap(),
+            remoteData: _treatmentTaskRemoteMap(completed),
+          );
+          completedCheckInDayTasks.add(completed);
+          continue;
+        }
+
+        final retired = task.copyWith(
+          isDeleted: true,
+          syncVersion: task.syncVersion + 1,
+          updatedAt: now,
+        );
+        await _upsertLocallyAndQueue(
+          table: AppConstants.treatmentTasksTable,
+          recordId: retired.id,
+          localData: retired.toMap(),
+          remoteData: _treatmentTaskRemoteMap(retired),
+        );
+        retiredTasks.add(retired);
+      }
+
+      final replacementTasks = <TreatmentTaskModel>[];
+      for (var index = 0; index < plan.tasks.length; index++) {
+        final plannedTask = plan.tasks[index];
+        final task = TreatmentTaskModel(
+          id: const Uuid().v4(),
+          treatmentId: treatment.id,
+          cropId: treatment.cropId,
+          userId: treatment.userId,
+          title: plannedTask.title,
+          description: plannedTask.description,
+          dueAt: plannedTask.dueAt,
+          status: TaskStatus.pending,
+          taskOrder: index + 1,
+          createdAt: now,
+          updatedAt: now,
+        );
+        await _upsertLocallyAndQueue(
+          table: AppConstants.treatmentTasksTable,
+          recordId: task.id,
+          localData: task.toMap(),
+          remoteData: _treatmentTaskRemoteMap(task),
+        );
+        replacementTasks.add(task);
+      }
+
+      final checkInDayTaskIds =
+          completedCheckInDayTasks.map((task) => task.id).toSet();
+      final retainedTasks = allTreatmentTasks
+          .where((task) =>
+              task.treatmentId != treatment.id ||
+              task.isDeleted ||
+              task.status == TaskStatus.completed ||
+              checkInDayTaskIds.contains(task.id))
+          .map((task) => checkInDayTaskIds.contains(task.id)
+              ? completedCheckInDayTasks
+                  .firstWhere((completed) => completed.id == task.id)
+              : task);
+      final revisedTasks = [
+        ...retainedTasks,
+        ...replacementTasks,
+      ]..sort((a, b) {
+          final dueCompare = a.dueAt.compareTo(b.dueAt);
+          if (dueCompare != 0) return dueCompare;
+          return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
+        });
+
+      notifyListeners();
+      await _attemptSync();
+      _revisedPlanCheckInIds.add(checkInId);
+      return TreatmentPlanRevisionResult(
+        treatment: revisedTreatment,
+        tasks: revisedTasks,
+        retiredTasks: retiredTasks,
       );
-      await _upsertLocallyAndQueue(
-        table: AppConstants.treatmentTasksTable,
-        recordId: task.id,
-        localData: task.toMap(),
-        remoteData: _treatmentTaskRemoteMap(task),
-      );
-      replacementTasks.add(task);
-    }
-
-    final retainedTasks = allTreatmentTasks.where((task) =>
-        task.treatmentId != treatment.id ||
-        task.isDeleted ||
-        task.status == TaskStatus.completed);
-    final revisedTasks = [
-      ...retainedTasks,
-      ...replacementTasks,
-    ]..sort((a, b) {
-        final dueCompare = a.dueAt.compareTo(b.dueAt);
-        if (dueCompare != 0) return dueCompare;
-        return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
-      });
-
-    notifyListeners();
-    await _attemptSync();
-    _revisedPlanCheckInIds.add(checkInId);
-    return TreatmentPlanRevisionResult(
-      treatment: revisedTreatment,
-      tasks: revisedTasks,
-      retiredTasks: retiredTasks,
-    );
     } finally {
       _planRevisionCheckInsInProgress.remove(checkInId);
     }
