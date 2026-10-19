@@ -101,7 +101,7 @@ async function supabaseAuth(path, { method = "GET", body } = {}) {
     method,
     headers: {
       "apikey": state.config.supabaseAnonKey,
-      "Authorization": `******`,
+      "Authorization": ["Bearer", state.mfaSessionToken].join(" "),
       ...(body ? { "Content-Type": "application/json" } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
