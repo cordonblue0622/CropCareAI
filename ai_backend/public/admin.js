@@ -151,14 +151,8 @@ function showMfaForm({ enrollmentRequired = false } = {}) {
 
 async function beginMfaVerification() {
   showMfaForm();
-  const factorResponse = await supabaseAuth("factors");
-  const factors = Array.isArray(factorResponse)
-    ? factorResponse
-    : Array.isArray(factorResponse?.all)
-      ? factorResponse.all
-      : Array.isArray(factorResponse?.totp)
-        ? factorResponse.totp
-        : [];
+  const user = await supabaseAuth("user");
+  const factors = Array.isArray(user?.factors) ? user.factors : [];
   const totpFactors = factors.filter((factor) =>
     (factor.factor_type || factor.type) === "totp"
   );

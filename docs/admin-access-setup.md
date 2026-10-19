@@ -79,6 +79,12 @@ authenticator app generates codes offline. If an administrator loses access
 to their authenticator, a project owner must recover the factor through
 Supabase; do not disable the backend's `aal2` check to regain access.
 
+The admin portal obtains the enrolled-factor list from the signed-in user's
+`/auth/v1/user` response. Supabase does not provide factor listing through
+`GET /auth/v1/factors`; that route returns `405 Method Not Allowed`. Factor
+enrollment, challenge, verification, and removal use their respective
+factor-specific endpoints.
+
 ## Who can access
 
 - `admin`: can manage users, disease guidance, treatments, crops, and diagnoses.
