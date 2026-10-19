@@ -672,6 +672,11 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                 );
               }
             }
+            final checkInDay = update.updateDate.toLocal();
+            final revisedPlanDay = submittedPlanRevision == null
+                ? null
+                : DateTime(checkInDay.year, checkInDay.month, checkInDay.day)
+                    .add(const Duration(days: 1));
             if (!mounted) return;
             setState(() {
               if (rebase != null) {
@@ -691,12 +696,13 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                             : treatment)
                     .toList();
               }
-              _selectedDate = DateTime(
-                update.updateDate.year,
-                update.updateDate.month,
-                update.updateDate.day,
-              );
-              _dailyPlanFocusDate = null;
+              _selectedDate = revisedPlanDay ??
+                  DateTime(
+                    checkInDay.year,
+                    checkInDay.month,
+                    checkInDay.day,
+                  );
+              _dailyPlanFocusDate = revisedPlanDay;
               _crop = _crop.copyWith(
                 latestHealthScore: newScore,
                 latestProgressStatus: newStatus,
