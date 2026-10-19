@@ -64,6 +64,15 @@ Before using the admin portal:
 3. Deploy the backend and portal changes. Each admin scans the setup QR code
    and verifies one code during their first login; subsequent logins require
    a fresh code.
+4. For an existing account, the QR code appears after password sign-in only
+   if that account has no verified TOTP factor. If a factor is already enrolled
+   but its authenticator is unavailable, the Supabase project owner must remove
+   that user's old factor from the Supabase Dashboard before the account can
+   enroll a replacement.
+
+Newly registered accounts do not receive a QR during registration. The owner
+must first confirm the email and a superadmin must approve the account's admin
+role. Then the account can sign in to the portal and enroll its authenticator.
 
 TOTP does not require a paid SMS provider or email delivery service. The
 authenticator app generates codes offline. If an administrator loses access

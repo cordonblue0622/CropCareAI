@@ -2,6 +2,7 @@
 
 const state = {
   token: "",
+  mfaSessionToken: "",
   mfaFactorId: "",
   mfaChallengeId: "",
   admin: null,
@@ -93,6 +94,9 @@ async function api(path, options = {}) {
 }
 
 async function supabaseAuth(path, { method = "GET", body } = {}) {
+  if (!state.mfaSessionToken) {
+    throw new Error("Your sign-in session is missing. Go back and sign in again.");
+  }
   const response = await fetch(`${state.config.supabaseUrl}/auth/v1/${path}`, {
     method,
     headers: {
@@ -104,18 +108,19 @@ async function supabaseAuth(path, { method = "GET", body } = {}) {
     cache: "no-store",
   });
   if (!response.ok) {
-    let message = "Authenticator verification could not be completed.";
+    let message = `Authenticator request failed (${response.status}).`;
     try {
       const result = await response.json();
-      message = result.msg || result.message || result.error_description || message;
+      message = result.msg || result.message || result.error_description || result.error || message;
     } catch (_) {}
-    throw new Error(message);
+    throw new Error(`${message} [${method} /auth/v1/${path}]`);
   }
   return response.status === 204 ? null : response.json();
 }
 
 async function finishAdminSignIn() {
-  const [admin, catalog] = await Promise.all([api("/v1/admin/me"), api("/v1/admin/resources")]);
+  const admin = await api("/v1/admin/me");
+  const catalog = await api("/v1/admin/resources");
   state.admin = admin;
   state.catalog = catalog;
   $("#adminEmail").textContent = admin.email || "Administrator";
@@ -235,6 +240,7 @@ async function submitMfa(event) {
     );
     if (!result?.access_token) throw new Error("MFA verification did not return a secure session.");
     state.token = result.access_token;
+    state.mfaSessionToken = result.access_token;
     state.mfaChallengeId = "";
     await finishAdminSignIn();
   } catch (failure) {
@@ -278,6 +284,7 @@ async function signIn(event) {
     const session = await response.json();
     state.token = session.access_token || "";
     if (!state.token) throw new Error("A secure session could not be created.");
+    state.mfaSessionToken = state.token;
     try {
       await finishAdminSignIn();
     } catch (failure) {
@@ -287,6 +294,7 @@ async function signIn(event) {
   } catch (failure) {
     if ($("#mfaForm").classList.contains("hidden")) {
       state.token = "";
+      state.mfaSessionToken = "";
       error.textContent = failure.message;
     } else {
       $("#mfaError").textContent = failure.message;
@@ -363,7 +371,7 @@ async function registerAccount(event) {
     if (!createdUser.id || (Array.isArray(createdUser.identities) && createdUser.identities.length === 0)) {
       throw new Error("No new account was created. This email may already be registered; try signing in or use a different email.");
     }
-    success.textContent = "Account created. Open the confirmation email from Supabase, then ask a superadmin to approve access.";
+    success.textContent = "Account created. Confirm your email, then ask a superadmin to approve your admin access. After approval, sign in to set up your authenticator app.";
   } catch (failure) {
     error.textContent = failure.message;
   } finally {
@@ -477,6 +485,7 @@ async function completeInvitation(event) {
 async function signOut(callServer = true) {
   const token = state.token;
   state.token = "";
+  state.mfaSessionToken = "";
   state.mfaFactorId = "";
   state.mfaChallengeId = "";
   state.admin = null;
