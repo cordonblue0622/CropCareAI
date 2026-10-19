@@ -149,6 +149,18 @@ function showMfaForm({ enrollmentRequired = false } = {}) {
   $("#mfaMessage").textContent = "";
 }
 
+function qrCodeImageSource(qrCode) {
+  if (typeof qrCode !== "string" || !qrCode.trim()) {
+    throw new Error("Supabase returned an empty authenticator QR code.");
+  }
+  const svg = qrCode.trim();
+  if (/^data:image\/svg\+xml(?:;|,)/i.test(svg)) return svg;
+  if (!svg.startsWith("<svg") && !svg.startsWith("<?xml")) {
+    throw new Error("Supabase returned an unsupported authenticator QR code format.");
+  }
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
 async function beginMfaVerification() {
   showMfaForm();
   const user = await supabaseAuth("user");
@@ -185,7 +197,7 @@ async function beginMfaVerification() {
     throw new Error("Supabase did not return authenticator setup details.");
   }
   state.mfaFactorId = enrolled.id;
-  $("#mfaQrCode").src = enrolled.totp.qr_code;
+  $("#mfaQrCode").src = qrCodeImageSource(enrolled.totp.qr_code);
   $("#mfaSecret").textContent = enrolled.totp.secret;
   $("#mfaSetupFields").classList.remove("hidden");
   $("#mfaMessage").textContent = "Scan the QR code, then enter the current code to enable MFA.";
