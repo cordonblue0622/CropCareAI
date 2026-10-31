@@ -1,7 +1,13 @@
+import 'dart:convert';
+
 import 'package:cropcare_ai/core/constants/app_constants.dart';
 import 'package:cropcare_ai/core/constants/app_enums.dart';
+import 'package:cropcare_ai/data/local/bundled_disease_knowledge.dart';
 import 'package:cropcare_ai/data/local/database_helper.dart';
+import 'package:cropcare_ai/data/models/chat_message_model.dart';
+import 'package:cropcare_ai/data/models/chat_session_model.dart';
 import 'package:cropcare_ai/data/models/crop_model.dart';
+import 'package:cropcare_ai/data/models/disease_knowledge_model.dart';
 import 'package:cropcare_ai/data/models/treatment_model.dart';
 import 'package:cropcare_ai/data/models/treatment_task_model.dart';
 import 'package:cropcare_ai/data/remote/supabase_service.dart';
@@ -51,6 +57,18 @@ class _StaleCropSupabaseService extends SupabaseService {
   @override
   Future<List<Map<String, dynamic>>> getChatSessionsByCrop(
           String cropId) async =>
+      const [];
+
+  @override
+  Future<List<Map<String, dynamic>>> getDiseaseKnowledge({
+    String? cropType,
+  }) async =>
+      const [];
+
+  @override
+  Future<List<Map<String, dynamic>>> getDiseaseTreatmentDaySteps(
+    String diseaseKnowledgeBaseId,
+  ) async =>
       const [];
 }
 
@@ -148,6 +166,178 @@ void main() {
             item['record_id'] == provider.crops.single.id,
       ),
       isTrue,
+    );
+  });
+
+  test('diagnosis crop keeps image and chat history offline after restart',
+      () async {
+    const imageUrl = 'data:image/jpeg;base64,AQID';
+    final now = DateTime.utc(2026, 10, 20, 9);
+    final session = ChatSessionModel(
+      id: 'session-offline',
+      userId: 'user-1',
+      title: 'Offline scan',
+      isOfflineSession: true,
+      createdAt: now,
+      updatedAt: now,
+    );
+    final messages = [
+      ChatMessageModel(
+        id: 'message-user',
+        sessionId: session.id,
+        userId: session.userId,
+        role: MessageRole.user,
+        content: 'Please diagnose this leaf.',
+        metadata: const {'image_url': imageUrl},
+        createdAt: now,
+      ),
+      ChatMessageModel(
+        id: 'message-assistant',
+        sessionId: session.id,
+        userId: session.userId,
+        role: MessageRole.assistant,
+        content: 'Preliminary result: Eggplant Leaf Spot.',
+        createdAt: now.add(const Duration(seconds: 1)),
+      ),
+    ];
+    await database.upsertRow(AppConstants.chatSessionsTable, session.toMap());
+    await database.upsertRows(
+      AppConstants.chatMessagesTable,
+      messages.map((message) => message.toMap()),
+    );
+
+    final supabase = _StaleCropSupabaseService(const {});
+    final provider = CropsProvider(
+      supabase: supabase,
+      db: database,
+      sync: _NoopSyncService(
+        supabaseService: supabase,
+        dbHelper: database,
+      ),
+    );
+    addTearDown(provider.dispose);
+
+    final cropId = await provider.addCropFromDiagnosis(
+      userId: session.userId,
+      diseaseName: 'Eggplant Leaf Spot',
+      labelKey: 'eggplant_leaf_spot',
+      cropName: 'Offline eggplant',
+      cropType: CropType.eggplant,
+      severity: Severity.moderate,
+      treatmentSteps: const ['Inspect leaves daily for new spots.'],
+      initialSummary: 'Preliminary offline result.',
+      confidenceScore: 0.91,
+      imageUrl: imageUrl,
+      diagnosisMode: DiagnosisMode.offline,
+      chatSessionId: session.id,
+    );
+
+    expect(cropId, isNotNull);
+    final savedCropId = cropId!;
+    await database.closeDatabase();
+
+    final diagnoses = await database.queryDiagnosesForCrop(savedCropId);
+    expect(diagnoses, hasLength(1));
+    expect(diagnoses.single['image_url'], imageUrl);
+    expect(diagnoses.single['chat_session_id'], session.id);
+    expect(diagnoses.single['diagnosis_mode'], DiagnosisMode.offline.value);
+
+    final sessions = await database.queryChatSessionsByCrop(savedCropId);
+    expect(sessions, hasLength(1));
+    expect(sessions.single['id'], session.id);
+    expect(sessions.single['is_offline_session'], 1);
+    final storedMessages = await database.queryChatMessages(session.id);
+    expect(storedMessages, hasLength(2));
+    expect(
+      storedMessages.map((row) => ChatMessageModel.fromMap(row).content),
+      containsAll(messages.map((message) => message.content)),
+    );
+    expect(storedMessages.first['metadata'], contains(imageUrl));
+
+    final pending = await database.getPendingSyncItems();
+    final queuedSession = pending.singleWhere(
+      (item) =>
+          item['table_name'] == AppConstants.chatSessionsTable &&
+          item['record_id'] == session.id,
+    );
+    final payload = jsonDecode(
+      (await database.getPendingSyncItemPayload(queuedSession['id'] as int))!,
+    ) as Map<String, dynamic>;
+    expect(payload['crop_id'], savedCropId);
+  });
+
+  test('offline diagnosis without card steps uses bundled treatment plan',
+      () async {
+    final now = DateTime.utc(2026, 10, 20, 9);
+    final bundled = BundledDiseaseKnowledge.records(cropType: 'eggplant')
+        .firstWhere((knowledge) => knowledge.labelKey == 'eggplant_leaf_spot');
+    final unrelatedCachedKnowledge = DiseaseKnowledgeModel(
+      id: 'cached-unrelated-condition',
+      cropType: CropType.eggplant,
+      labelKey: 'cached_unrelated_condition',
+      diseaseName: 'Cached Unrelated Condition',
+      createdAt: now,
+      updatedAt: now,
+    );
+    await database.upsertRow(
+      AppConstants.diseaseKnowledgeTable,
+      unrelatedCachedKnowledge.toMap(),
+    );
+
+    final supabase = _StaleCropSupabaseService(const {});
+    final provider = CropsProvider(
+      supabase: supabase,
+      db: database,
+      sync: _NoopSyncService(
+        supabaseService: supabase,
+        dbHelper: database,
+      ),
+    );
+    addTearDown(provider.dispose);
+
+    final cropId = await provider.addCropFromDiagnosis(
+      userId: 'user-1',
+      diseaseName: bundled.diseaseName,
+      labelKey: bundled.labelKey!,
+      cropName: 'Offline eggplant',
+      cropType: CropType.eggplant,
+      severity: Severity.moderate,
+      diagnosisMode: DiagnosisMode.offline,
+    );
+
+    expect(cropId, isNotNull);
+    final savedCropId = cropId!;
+    await database.closeDatabase();
+
+    final treatmentRows = await database.queryTreatmentsForCrop(savedCropId);
+    expect(treatmentRows, hasLength(1));
+    final treatment = TreatmentModel.fromMap(treatmentRows.single);
+    expect(treatment.treatmentSteps, bundled.treatmentSteps);
+    expect(treatment.expectedDurationDays, bundled.estimatedRecoveryDays);
+
+    final taskRows = await database.queryAllTasksForCrop(savedCropId);
+    expect(taskRows, isNotEmpty);
+    final tasks = taskRows.map(TreatmentTaskModel.fromMap).toList();
+    expect(tasks.map((task) => task.treatmentId).toSet(), {treatment.id});
+    expect(
+      tasks.any((task) => bundled.treatmentSteps!.contains(task.title)),
+      isTrue,
+    );
+
+    final pending = await database.getPendingSyncItems();
+    expect(
+      pending.any(
+        (item) =>
+            item['table_name'] == AppConstants.treatmentsTable &&
+            item['record_id'] == treatment.id,
+      ),
+      isTrue,
+    );
+    expect(
+      pending.where(
+        (item) => item['table_name'] == AppConstants.treatmentTasksTable,
+      ),
+      hasLength(tasks.length),
     );
   });
 

@@ -124,29 +124,33 @@ class _NotificationsScreenState extends State<NotificationsScreen>
       body: notifs.isLoading
           ? const Center(
               child: CircularProgressIndicator(color: AppColors.primary))
-          : TabBarView(
-              controller: _tabs,
-              children: [
-                _AlertsTab(
-                    notifications: notifs.notifications
-                        .where((n) =>
-                            n.type == NotificationType.general ||
-                            n.type == NotificationType.progressAlert ||
-                            n.type == NotificationType.treatmentReminder)
-                        .toList(),
-                    page: _alertPage,
-                    onPageChanged: (page) => setState(() => _alertPage = page),
-                    onMarkRead: notifs.markRead,
-                    onDelete: notifs.deleteNotification,
-                    onOpenCrop: _openCropNotification),
-                _RemindersTab(
-                  tomorrowTasks: notifs.tomorrowTasks,
-                  cropsById: cropsById,
-                  page: _reminderPage,
-                  onPageChanged: (page) => setState(() => _reminderPage = page),
-                  onOpenCrop: _openCropId,
-                ),
-              ],
+          : SafeArea(
+              child: TabBarView(
+                controller: _tabs,
+                children: [
+                  _AlertsTab(
+                      notifications: notifs.notifications
+                          .where((n) =>
+                              n.type == NotificationType.general ||
+                              n.type == NotificationType.progressAlert ||
+                              n.type == NotificationType.treatmentReminder)
+                          .toList(),
+                      page: _alertPage,
+                      onPageChanged: (page) =>
+                          setState(() => _alertPage = page),
+                      onMarkRead: notifs.markRead,
+                      onDelete: notifs.deleteNotification,
+                      onOpenCrop: _openCropNotification),
+                  _RemindersTab(
+                    tomorrowTasks: notifs.tomorrowTasks,
+                    cropsById: cropsById,
+                    page: _reminderPage,
+                    onPageChanged: (page) =>
+                        setState(() => _reminderPage = page),
+                    onOpenCrop: _openCropId,
+                  ),
+                ],
+              ),
             ),
     );
   }

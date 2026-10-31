@@ -39,6 +39,14 @@ returns the service-role key to the browser.
 Run `docs/supabase-admin-security.sql` once in the Supabase SQL editor.
 Run `docs/supabase-admin-content-management.sql` once to add the disease
 severity and canonical treatment fields used by the card-based library.
+Run `docs/supabase-announcements.sql` once to enable administrator-only
+posts and discussions, optional all-user announcements, unique admin likes,
+and atomic alert fan-out to every profile. The announcement tables have no
+`anon` or `authenticated` table grants; only the protected backend can read or
+mutate them. Mobile users receive only the generated per-user notification,
+whose sender label is `CropCare AI Team`. Notifications arrive through the
+app's existing sync path when it opens, reconnects, or refreshes; this project
+does not currently configure a closed-app remote push provider such as FCM.
 
 In Supabase **Authentication > URL Configuration**, set the Site URL to
 `https://cropcareai-nxn4.onrender.com/admin` and add these exact redirect URLs:

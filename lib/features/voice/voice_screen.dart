@@ -30,13 +30,14 @@ class VoiceScreen extends StatefulWidget {
 }
 
 class _VoiceScreenState extends State<VoiceScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   final AudioRecorder _recorder = AudioRecorder();
   bool _listening = false;
   bool _transcribing = false;
   bool _usingBackendFallback = false;
   String _words = '';
   String? _errorText;
+  Future<String?>? _stopOperation;
   late AnimationController _pulseCtrl;
   late Animation<double> _pulse;
 
@@ -48,6 +49,52 @@ class _VoiceScreenState extends State<VoiceScreen>
       ..repeat(reverse: true);
     _pulse = Tween<double>(begin: 1.0, end: 1.18)
         .animate(CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed && _usingBackendFallback) {
+      unawaited(_stopRecordingForLifecycle());
+    }
+  }
+
+  Future<String?> _stopRecorder() {
+    return _stopOperation ??= _recorder.stop().whenComplete(() {
+      _stopOperation = null;
+    });
+  }
+
+  Future<void> _stopRecordingForLifecycle() async {
+    try {
+      await _stopRecorder();
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[VoiceScreen] Could not stop recording after app lifecycle change: '
+        '$error\n$stackTrace',
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _listening = false;
+          _usingBackendFallback = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _disposeRecorder() async {
+    if (_usingBackendFallback) {
+      try {
+        await _stopRecorder();
+      } catch (error, stackTrace) {
+        debugPrint(
+          '[VoiceScreen] Could not stop recorder during disposal: '
+          '$error\n$stackTrace',
+        );
+      }
+    }
+    await _recorder.dispose();
   }
 
   Future<bool> _ensureMicrophonePermission() async {
@@ -168,7 +215,12 @@ class _VoiceScreenState extends State<VoiceScreen>
   }
 
   Future<void> _stopRecordingAndTranscribe() async {
-    final recordingPath = await _recorder.stop();
+    String? recordingPath;
+    try {
+      recordingPath = await _stopRecorder();
+    } catch (_) {
+      // Ignore stop errors — UI state must still be reset so the mic indicator turns off.
+    }
 
     if (!mounted) return;
     setState(() {
@@ -246,7 +298,8 @@ class _VoiceScreenState extends State<VoiceScreen>
 
   @override
   void dispose() {
-    unawaited(_recorder.dispose());
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_disposeRecorder());
     _pulseCtrl.dispose();
     super.dispose();
   }

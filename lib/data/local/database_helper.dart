@@ -5,6 +5,22 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../../core/constants/app_constants.dart';
 
+/// A local record and its corresponding cloud payload that must be committed
+/// together so a failed write cannot leave an unqueued or partial local record.
+class LocalSyncUpsert {
+  final String tableName;
+  final String recordId;
+  final Map<String, dynamic> localData;
+  final Map<String, dynamic> remoteData;
+
+  const LocalSyncUpsert({
+    required this.tableName,
+    required this.recordId,
+    required this.localData,
+    required this.remoteData,
+  });
+}
+
 /// Singleton wrapper around the SQLite database.
 /// Handles local caching of user profiles and the offline sync queue.
 class DatabaseHelper {
@@ -54,6 +70,8 @@ class DatabaseHelper {
         country            TEXT,
         preferred_language TEXT DEFAULT 'en',
         provider           TEXT DEFAULT 'email',
+        role               TEXT DEFAULT 'farmer',
+        is_approved        INTEGER NOT NULL DEFAULT 1,
         created_at         TEXT,
         updated_at         TEXT
       )
@@ -334,6 +352,21 @@ class DatabaseHelper {
         'TEXT',
       );
     }
+
+    if (oldVersion < 6) {
+      await _ensureColumn(
+        db,
+        AppConstants.usersTable,
+        'role',
+        "TEXT DEFAULT 'farmer'",
+      );
+      await _ensureColumn(
+        db,
+        AppConstants.usersTable,
+        'is_approved',
+        'INTEGER NOT NULL DEFAULT 1',
+      );
+    }
   }
 
   Future<void> _ensureColumn(
@@ -397,6 +430,52 @@ class DatabaseHelper {
     );
   }
 
+  // ─── Admin / Role Queries ─────────────────────────────────────────────────
+
+  Future<List<Map<String, dynamic>>> getUsersByRole(String role) async {
+    if (_isDisabledOnPlatform) return [];
+    final db = await database;
+    return db.query(
+      AppConstants.usersTable,
+      where: 'role = ?',
+      whereArgs: [role],
+      orderBy: 'created_at DESC',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingAdmins() async {
+    if (_isDisabledOnPlatform) return [];
+    final db = await database;
+    return db.query(
+      AppConstants.usersTable,
+      where: 'role = ? AND is_approved = 0',
+      whereArgs: ['admin'],
+      orderBy: 'created_at ASC',
+    );
+  }
+
+  Future<void> setUserRole(String userId, String role, {bool isApproved = true}) async {
+    if (_isDisabledOnPlatform) return;
+    final db = await database;
+    await db.update(
+      AppConstants.usersTable,
+      {'role': role, 'is_approved': isApproved ? 1 : 0, 'updated_at': DateTime.now().toIso8601String()},
+      where: 'id = ?',
+      whereArgs: [userId],
+    );
+  }
+
+  Future<void> approveAdmin(String userId) async {
+    if (_isDisabledOnPlatform) return;
+    final db = await database;
+    await db.update(
+      AppConstants.usersTable,
+      {'is_approved': 1, 'updated_at': DateTime.now().toIso8601String()},
+      where: 'id = ?',
+      whereArgs: [userId],
+    );
+  }
+
   // ─── Sync Queue ───────────────────────────────────────────────────────────
 
   Future<int> addToSyncQueue({
@@ -414,6 +493,36 @@ class DatabaseHelper {
       'payload': payload,
       'created_at': DateTime.now().toIso8601String(),
       'attempts': 0,
+    });
+  }
+
+  /// Commits related local rows and all of their sync queue entries atomically.
+  /// Existing row IDs are retained so replaying the queued upserts is idempotent.
+  Future<void> upsertRowsAndQueue(
+    Iterable<LocalSyncUpsert> writes,
+  ) async {
+    if (_isDisabledOnPlatform) return;
+    final items = writes.toList(growable: false);
+    if (items.isEmpty) return;
+
+    final db = await database;
+    final queuedAt = DateTime.now().toIso8601String();
+    await db.transaction((transaction) async {
+      for (final write in items) {
+        await transaction.insert(
+          write.tableName,
+          _normalizeSqliteRow(write.localData),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        await transaction.insert(AppConstants.syncQueueTable, {
+          'table_name': write.tableName,
+          'record_id': write.recordId,
+          'operation': 'UPSERT',
+          'payload': jsonEncode(write.remoteData),
+          'created_at': queuedAt,
+          'attempts': 0,
+        });
+      }
     });
   }
 

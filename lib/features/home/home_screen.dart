@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../../services/connectivity_service.dart';
 import '../../core/theme/app_colors.dart';
 import '../auth/providers/auth_provider.dart';
 import '../crops/providers/crops_provider.dart';
@@ -43,15 +46,26 @@ class _HomeScreenState extends State<HomeScreen> {
     _selectTab(index);
   }
 
+  late final StreamSubscription<bool> _connectivitySub;
+
   @override
   void initState() {
     super.initState();
     HomeScreen.tabSelection.addListener(_handleExternalTabSelection);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadData());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      _loadData();
+      _connectivitySub = context.read<ConnectivityService>().onConnectivityChanged.listen((results) {
+        final online = results;
+        if (online) {
+          unawaited(_loadData());
+        }
+      });
+    });
   }
 
   @override
   void dispose() {
+    _connectivitySub.cancel();
     HomeScreen.tabSelection.removeListener(_handleExternalTabSelection);
     super.dispose();
   }

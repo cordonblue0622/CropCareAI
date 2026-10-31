@@ -57,7 +57,7 @@ class AppConstants {
 
   // ─── Local Database ───────────────────────────────────────────────────────
   static const String dbName = 'cropcare_ai.db';
-  static const int dbVersion = 5;
+  static const int dbVersion = 6;
 
   // ─── Table Names ──────────────────────────────────────────────────────────
   static const String usersTable = 'users';

@@ -1142,6 +1142,14 @@ class _MessageBubbleState extends State<_MessageBubble> {
     final rawCropType = meta['crop_type'] as String? ?? '';
     final summary = meta['summary'] as String? ?? '';
     final modelName = meta['model_name'] as String? ?? '';
+    final modelVersion = meta['model_version'] as String?;
+    final confidenceScore = (meta['confidence_score'] as num?)?.toDouble();
+    final resultLabel = meta['result_label'] as String?;
+    final rawDetectedRegions = meta['detected_regions_json'];
+    final detectedRegionsJson = rawDetectedRegions is Map
+        ? Map<String, dynamic>.from(rawDetectedRegions)
+        : null;
+    final videoUrl = meta['video_url'] as String?;
     final imageUrl = (meta['image_url'] as String?)?.trim();
     final rawActions = meta['recommended_actions'];
     final List<String> steps = rawActions is List
@@ -1249,6 +1257,11 @@ class _MessageBubbleState extends State<_MessageBubble> {
                             rawCropType: rawCropType,
                             summary: summary,
                             modelName: modelName,
+                            modelVersion: modelVersion,
+                            confidenceScore: confidenceScore,
+                            resultLabel: resultLabel,
+                            detectedRegionsJson: detectedRegionsJson,
+                            videoUrl: videoUrl,
                             imageUrl: imageUrl,
                             steps: steps,
                             cropNameCtrl: cropNameCtrl);
@@ -1270,6 +1283,11 @@ class _MessageBubbleState extends State<_MessageBubble> {
     required String rawCropType,
     required String summary,
     required String modelName,
+    required String? modelVersion,
+    required double? confidenceScore,
+    required String? resultLabel,
+    required Map<String, dynamic>? detectedRegionsJson,
+    required String? videoUrl,
     required String? imageUrl,
     required List<String> steps,
     required TextEditingController cropNameCtrl,
@@ -1378,6 +1396,11 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     treatmentSteps: steps,
                     initialSummary: summary,
                     modelName: modelName,
+                    modelVersion: modelVersion,
+                    confidenceScore: confidenceScore,
+                    resultLabel: resultLabel,
+                    detectedRegionsJson: detectedRegionsJson,
+                    videoUrl: videoUrl,
                     imageUrl: imageUrl?.isEmpty == true ? null : imageUrl,
                     diagnosisMode: diagnosisMode,
                     chatSessionId:
@@ -1396,9 +1419,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                           syncWarning ??
                               'Crop added to My Crops and synced to your account.',
                         ),
-                        backgroundColor: syncWarning == null
-                            ? AppColors.primary
-                            : null,
+                        backgroundColor:
+                            syncWarning == null ? AppColors.primary : null,
                         duration: syncWarning == null
                             ? const Duration(seconds: 4)
                             : const Duration(seconds: 8),
@@ -1410,8 +1432,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                             : SnackBarAction(
                                 label: 'Retry',
                                 onPressed: () async {
-                                  final synced = await cropsProvider
-                                      .retryCropSync(cropId);
+                                  final synced =
+                                      await cropsProvider.retryCropSync(cropId);
                                   if (!messenger.mounted) return;
                                   messenger.showSnackBar(
                                     SnackBar(
@@ -1857,17 +1879,65 @@ class _InputBar extends StatefulWidget {
   State<_InputBar> createState() => _InputBarState();
 }
 
-class _InputBarState extends State<_InputBar> {
+class _InputBarState extends State<_InputBar> with WidgetsBindingObserver {
   final AudioRecorder _recorder = AudioRecorder();
   bool _isListening = false;
   bool _startingMic = false;
   bool _transcribing = false;
   bool _usingBackendFallback = false;
   final List<Uint8List> _pendingImageBytesList = [];
+  Future<String?>? _stopOperation;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed &&
+        (_isListening || _usingBackendFallback)) {
+      unawaited(_stopRecordingForLifecycle());
+    }
+  }
+
+  Future<String?> _stopRecorder() {
+    return _stopOperation ??= _recorder.stop().whenComplete(() {
+      _stopOperation = null;
+    });
+  }
+
+  Future<void> _stopRecordingForLifecycle() async {
+    try {
+      await _stopRecorder();
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[ChatInput] Could not stop recording after app lifecycle change: '
+        '$error\n$stackTrace',
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isListening = false;
+          _usingBackendFallback = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _disposeRecorder() async {
+    if (_isListening || _usingBackendFallback) {
+      try {
+        await _stopRecorder();
+      } catch (error, stackTrace) {
+        debugPrint(
+          '[ChatInput] Could not stop recorder during disposal: '
+          '$error\n$stackTrace',
+        );
+      }
+    }
+    await _recorder.dispose();
   }
 
   Future<bool> _ensureMicrophonePermission() async {
@@ -1980,7 +2050,12 @@ class _InputBarState extends State<_InputBar> {
   }
 
   Future<void> _stopRecordingAndTranscribe() async {
-    final recordingPath = await _recorder.stop();
+    String? recordingPath;
+    try {
+      recordingPath = await _stopRecorder();
+    } catch (_) {
+      // Ignore stop errors — UI state must still be reset so the mic indicator turns off.
+    }
     if (!mounted) return;
 
     setState(() {
@@ -2116,6 +2191,10 @@ class _InputBarState extends State<_InputBar> {
 
   Future<void> _submit() async {
     if (widget.sending) return;
+    if (_isListening || _usingBackendFallback) {
+      await _stopRecordingAndTranscribe();
+      return;
+    }
 
     final text = widget.controller.text;
     final imageBytesList = List<Uint8List>.from(_pendingImageBytesList);
@@ -2135,7 +2214,8 @@ class _InputBarState extends State<_InputBar> {
 
   @override
   void dispose() {
-    unawaited(_recorder.dispose());
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_disposeRecorder());
     super.dispose();
   }
 

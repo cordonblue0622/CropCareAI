@@ -48,6 +48,43 @@ async def crop_activity(
     return await service.crop_activity(crop_id)
 
 
+@router.get("/announcements")
+async def list_announcements(
+    admin: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return {"items": await service.list_announcements(admin)}
+
+
+@router.post("/announcements", status_code=status.HTTP_201_CREATED)
+async def create_announcement(
+    payload: dict[str, Any],
+    admin: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return await service.create_announcement(payload, admin)
+
+
+@router.put("/announcements/{announcement_id}/like")
+async def set_announcement_like(
+    announcement_id: str,
+    payload: dict[str, Any],
+    admin: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return await service.set_announcement_like(announcement_id, payload, admin)
+
+
+@router.post("/announcements/{announcement_id}/replies", status_code=status.HTTP_201_CREATED)
+async def create_announcement_reply(
+    announcement_id: str,
+    payload: dict[str, Any],
+    admin: AuthenticatedUser = Depends(require_admin_user),
+    service: AdminService = Depends(get_admin_service),
+) -> dict[str, Any]:
+    return await service.create_announcement_reply(announcement_id, payload, admin)
+
+
 @router.get("/resources")
 async def resource_catalog(
     _: AuthenticatedUser = Depends(require_admin_user),

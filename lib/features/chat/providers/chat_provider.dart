@@ -586,6 +586,11 @@ class ChatProvider extends ChangeNotifier {
           );
           aiMetadata = {
             'model': attachedDiagnosis.modelName ?? 'local-tflite',
+            'model_version': attachedDiagnosis.modelVersion,
+            'confidence_score': attachedDiagnosis.confidenceScore,
+            'result_label': attachedDiagnosis.resultLabel,
+            'detected_regions_json': attachedDiagnosis.detectedRegionsJson,
+            'video_url': attachedDiagnosis.videoUrl,
             'sources': const ['local-tflite'],
             'recommended_actions':
                 showTreatmentCard ? actions : const <String>[],
@@ -633,6 +638,10 @@ class ChatProvider extends ChangeNotifier {
                 );
             aiMetadata = {
               'model': localResult.model.name,
+              'model_version': localResult.model.version,
+              'confidence_score': detection?.confidence,
+              'result_label': detection?.label,
+              'detected_regions_json': localResult.toDetectedRegionsJson(),
               'sources': const ['local-tflite'],
               'recommended_actions':
                   showTreatmentCard ? actions : const <String>[],
@@ -781,6 +790,23 @@ class ChatProvider extends ChangeNotifier {
           'crop_type': inferredCropType,
           'summary': aiContent,
           'model_name': aiMetadata['model'],
+          'model_version': preferAssistantDiagnosis
+              ? aiMetadata['model_version']
+              : attachedDiagnosis?.modelVersion ?? aiMetadata['model_version'],
+          'confidence_score': preferAssistantDiagnosis
+              ? aiMetadata['confidence_score']
+              : attachedDiagnosis?.confidenceScore ??
+                  aiMetadata['confidence_score'],
+          'result_label': preferAssistantDiagnosis
+              ? aiMetadata['result_label']
+              : attachedDiagnosis?.resultLabel ?? aiMetadata['result_label'],
+          'detected_regions_json': preferAssistantDiagnosis
+              ? aiMetadata['detected_regions_json']
+              : attachedDiagnosis?.detectedRegionsJson ??
+                  aiMetadata['detected_regions_json'],
+          'video_url': preferAssistantDiagnosis
+              ? aiMetadata['video_url']
+              : attachedDiagnosis?.videoUrl ?? aiMetadata['video_url'],
           'image_url': persistedImageReference ?? previousImageReference,
           if (persistedImageReferences.isEmpty &&
               previousImageReference != null)
@@ -1400,12 +1426,14 @@ class ChatProvider extends ChangeNotifier {
   // ─── Save ────────────────────────────────────────────────────────────────
 
   Future<void> _saveMessage(ChatMessageModel msg) async {
-    await _cacheRow(AppConstants.chatMessagesTable, msg.toMap());
-    await _sync.queueUpsert(
-      tableName: AppConstants.chatMessagesTable,
-      recordId: msg.id,
-      data: msg.toMap(),
-    );
+    await _sync.persistQueuedUpserts([
+      LocalSyncUpsert(
+        tableName: AppConstants.chatMessagesTable,
+        recordId: msg.id,
+        localData: msg.toMap(),
+        remoteData: msg.toMap(),
+      ),
+    ]);
     await _pushQueuedChatChanges();
   }
 
@@ -1441,12 +1469,14 @@ class ChatProvider extends ChangeNotifier {
   }
 
   Future<void> _saveSession(ChatSessionModel session) async {
-    await _cacheRow(AppConstants.chatSessionsTable, session.toMap());
-    await _sync.queueUpsert(
-      tableName: AppConstants.chatSessionsTable,
-      recordId: session.id,
-      data: _sessionRemoteMap(session),
-    );
+    await _sync.persistQueuedUpserts([
+      LocalSyncUpsert(
+        tableName: AppConstants.chatSessionsTable,
+        recordId: session.id,
+        localData: session.toMap(),
+        remoteData: _sessionRemoteMap(session),
+      ),
+    ]);
     await _pushQueuedChatChanges();
   }
 
@@ -1598,17 +1628,6 @@ class ChatProvider extends ChangeNotifier {
     }
 
     await _saveSession(updated);
-  }
-
-  Future<void> _cacheRow(
-    String table,
-    Map<String, dynamic> row,
-  ) async {
-    try {
-      await _db.upsertRow(table, row);
-    } catch (error, stackTrace) {
-      _logCacheFailure('save $table', error, stackTrace);
-    }
   }
 
   Future<void> _cacheRows(

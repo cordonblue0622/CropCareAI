@@ -98,14 +98,16 @@ Open `http://127.0.0.1:8000/docs` for Swagger UI.
 ## Administrator portal
 
 The protected administrator workspace is served at `http://127.0.0.1:8000/admin`
-locally and `/admin` on the deployed backend. It manages users, disease library
-records, treatments, crops, diagnoses, and system audit data.
+locally and `/admin` on the deployed backend. It manages announcements, users,
+disease library records, treatments, crops, diagnoses, and system audit data.
 
 Before using it:
 
 1. Keep `REQUIRE_AUTH=true` and configure `SUPABASE_URL`,
   `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` on the backend.
-2. Run `docs/supabase-admin-security.sql` once in the Supabase SQL editor.
+2. Run `docs/supabase-admin-security.sql`,
+  `docs/supabase-admin-content-management.sql`, and
+  `docs/supabase-announcements.sql` once in the Supabase SQL editor.
 3. Follow `docs/admin-access-setup.md` to bootstrap the first superadmin.
 4. After that, a superadmin approves normal administrator registrations from
   **User management** in the portal. Never place administrator roles in

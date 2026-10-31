@@ -634,18 +634,31 @@ class CropsProvider extends ChangeNotifier {
     required String recordId,
     required Map<String, dynamic> localData,
     required Map<String, dynamic> remoteData,
-  }) async {
+  }) {
+    return _upsertAllLocallyAndQueue([
+      LocalSyncUpsert(
+        tableName: table,
+        recordId: recordId,
+        localData: localData,
+        remoteData: remoteData,
+      ),
+    ]);
+  }
+
+  Future<void> _upsertAllLocallyAndQueue(
+    List<LocalSyncUpsert> writes,
+  ) async {
     if (kIsWeb) {
-      await _supabase.upsertRecord(table: table, data: remoteData);
+      for (final write in writes) {
+        await _supabase.upsertRecord(
+          table: write.tableName,
+          data: write.remoteData,
+        );
+      }
       return;
     }
 
-    await _sync.queueUpsert(
-      tableName: table,
-      recordId: recordId,
-      data: remoteData,
-    );
-    await _db.upsertRow(table, localData);
+    await _sync.persistQueuedUpserts(writes);
   }
 
   Future<bool> retryCropSync(String cropId) async {
@@ -716,6 +729,8 @@ class CropsProvider extends ChangeNotifier {
     String? modelName,
     String? modelVersion,
     String? imageUrl,
+    Map<String, dynamic>? detectedRegionsJson,
+    String? videoUrl,
     DiagnosisMode diagnosisMode = DiagnosisMode.online,
     String? chatSessionId,
     String? locationLabel,
@@ -756,13 +771,14 @@ class CropsProvider extends ChangeNotifier {
         updatedAt: now,
       );
 
-      await _upsertLocallyAndQueue(
-        table: AppConstants.cropsTable,
-        recordId: crop.id,
-        localData: crop.toMap(),
-        remoteData: _remoteMap(crop),
-      );
-      _crops.insert(0, crop);
+      final pendingWrites = <LocalSyncUpsert>[
+        LocalSyncUpsert(
+          tableName: AppConstants.cropsTable,
+          recordId: crop.id,
+          localData: crop.toMap(),
+          remoteData: _remoteMap(crop),
+        ),
+      ];
 
       final normalizedDiseaseName = diseaseName.trim().isEmpty
           ? '${cropType.name[0].toUpperCase()}${cropType.name.substring(1)} condition'
@@ -780,8 +796,10 @@ class CropsProvider extends ChangeNotifier {
             'locally; saving the diagnosis without a session link.',
           );
         } else {
-          final remoteSession = Map<String, dynamic>.from(session)
+          final localSession = Map<String, dynamic>.from(session)
             ..['crop_id'] = cropId
+            ..['updated_at'] = now.toIso8601String();
+          final remoteSession = Map<String, dynamic>.from(localSession)
             ..['is_offline_session'] = session['is_offline_session'] == true ||
                     session['is_offline_session'] == 1
                 ? true
@@ -789,12 +807,14 @@ class CropsProvider extends ChangeNotifier {
             ..['is_deleted'] =
                 session['is_deleted'] == true || session['is_deleted'] == 1
                     ? true
-                    : false
-            ..['updated_at'] = now.toIso8601String();
-          await _sync.queueUpsert(
-            tableName: AppConstants.chatSessionsTable,
-            recordId: chatSessionId,
-            data: remoteSession,
+                    : false;
+          pendingWrites.add(
+            LocalSyncUpsert(
+              tableName: AppConstants.chatSessionsTable,
+              recordId: chatSessionId,
+              localData: localSession,
+              remoteData: remoteSession,
+            ),
           );
         }
       }
@@ -814,6 +834,8 @@ class CropsProvider extends ChangeNotifier {
             ? null
             : initialSummary?.trim(),
         imageUrl: imageUrl,
+        detectedRegionsJson: detectedRegionsJson,
+        videoUrl: videoUrl,
         modelName: modelName,
         modelVersion: modelVersion,
         diagnosedAt: now,
@@ -821,11 +843,13 @@ class CropsProvider extends ChangeNotifier {
         updatedAt: now,
       );
 
-      await _upsertLocallyAndQueue(
-        table: AppConstants.diagnosesTable,
-        recordId: diagnosis.id,
-        localData: diagnosis.toMap(),
-        remoteData: _diagnosisRemoteMap(diagnosis),
+      pendingWrites.add(
+        LocalSyncUpsert(
+          tableName: AppConstants.diagnosesTable,
+          recordId: diagnosis.id,
+          localData: diagnosis.toMap(),
+          remoteData: _diagnosisRemoteMap(diagnosis),
+        ),
       );
 
       final normalizedTreatmentSteps = _normalizeTreatmentSteps(treatmentSteps);
@@ -847,9 +871,14 @@ class CropsProvider extends ChangeNotifier {
             daySteps: protocolSteps,
             expectedDurationDays: expectedDurationDays,
           );
+      final effectiveTreatmentSteps = normalizedTreatmentSteps.isNotEmpty
+          ? normalizedTreatmentSteps
+          : _normalizeTreatmentSteps(
+              knowledge?.treatmentSteps ?? const <String>[],
+            );
 
       // Create treatment
-      if (normalizedTreatmentSteps.isNotEmpty || usesReviewedProtocol) {
+      if (effectiveTreatmentSteps.isNotEmpty || usesReviewedProtocol) {
         final treatmentId = const Uuid().v4();
         final plan = usesReviewedProtocol
             ? TreatmentPlanService.buildFromDaySteps(
@@ -858,7 +887,7 @@ class CropsProvider extends ChangeNotifier {
                 expectedDurationDays: expectedDurationDays,
               )
             : TreatmentPlanService.build(
-                treatmentSteps: normalizedTreatmentSteps,
+                treatmentSteps: effectiveTreatmentSteps,
                 startDate: now,
                 expectedDurationDays: expectedDurationDays,
               );
@@ -882,11 +911,13 @@ class CropsProvider extends ChangeNotifier {
           updatedAt: now,
         );
 
-        await _upsertLocallyAndQueue(
-          table: AppConstants.treatmentsTable,
-          recordId: treatment.id,
-          localData: treatment.toMap(),
-          remoteData: _treatmentRemoteMap(treatment),
+        pendingWrites.add(
+          LocalSyncUpsert(
+            tableName: AppConstants.treatmentsTable,
+            recordId: treatment.id,
+            localData: treatment.toMap(),
+            remoteData: _treatmentRemoteMap(treatment),
+          ),
         );
 
         // Expand recurring instructions into dated task instances so the plan
@@ -907,15 +938,19 @@ class CropsProvider extends ChangeNotifier {
             createdAt: now,
             updatedAt: now,
           );
-          await _upsertLocallyAndQueue(
-            table: AppConstants.treatmentTasksTable,
-            recordId: task.id,
-            localData: task.toMap(),
-            remoteData: _treatmentTaskRemoteMap(task),
+          pendingWrites.add(
+            LocalSyncUpsert(
+              tableName: AppConstants.treatmentTasksTable,
+              recordId: task.id,
+              localData: task.toMap(),
+              remoteData: _treatmentTaskRemoteMap(task),
+            ),
           );
         }
       }
 
+      await _upsertAllLocallyAndQueue(pendingWrites);
+      _crops.insert(0, crop);
       notifyListeners();
       await _attemptSync();
       final pending = await _pendingCropSyncItems(crop.id);
@@ -1708,8 +1743,12 @@ class CropsProvider extends ChangeNotifier {
     final requestedDisease = diseaseName.trim().toLowerCase();
     final normalizedLabel = _knowledgeComparisonKey(labelKey, cropType);
     final normalizedDisease = _knowledgeComparisonKey(diseaseName, cropType);
+    final knowledgeCandidates = <DiseaseKnowledgeModel>[
+      ..._diseaseKnowledge,
+      ...BundledDiseaseKnowledge.records(cropType: cropType.value),
+    ];
 
-    for (final knowledge in _diseaseKnowledge) {
+    for (final knowledge in knowledgeCandidates) {
       if (knowledge.cropType != cropType) continue;
       if (requestedLabel.isNotEmpty &&
           (knowledge.labelKey?.trim().toLowerCase() == requestedLabel ||
@@ -1718,7 +1757,7 @@ class CropsProvider extends ChangeNotifier {
       }
     }
 
-    for (final knowledge in _diseaseKnowledge) {
+    for (final knowledge in knowledgeCandidates) {
       if (knowledge.cropType == cropType &&
           requestedDisease.isNotEmpty &&
           knowledge.diseaseName.trim().toLowerCase() == requestedDisease) {
@@ -1726,7 +1765,7 @@ class CropsProvider extends ChangeNotifier {
       }
     }
 
-    for (final knowledge in _diseaseKnowledge) {
+    for (final knowledge in knowledgeCandidates) {
       if (knowledge.cropType != cropType) continue;
       final knowledgeLabel =
           _knowledgeComparisonKey(knowledge.labelKey ?? '', cropType);

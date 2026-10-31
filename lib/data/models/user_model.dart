@@ -11,6 +11,8 @@ class UserModel {
   final String? country;
   final String preferredLanguage;
   final String provider;
+  final String role;
+  final bool isApproved;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -27,6 +29,8 @@ class UserModel {
     this.country,
     this.preferredLanguage = 'en',
     this.provider = 'email',
+    this.role = 'farmer',
+    this.isApproved = true,
     this.createdAt,
     this.updatedAt,
   });
@@ -71,6 +75,9 @@ class UserModel {
       country: _cleanString(map['country']),
       preferredLanguage: map['preferred_language'] as String? ?? 'en',
       provider: map['provider'] as String? ?? 'email',
+      role: map['role'] as String? ?? 'farmer',
+      isApproved: (map['is_approved'] as int?) == 1 ||
+          (map['is_approved'] as bool?) == true,
       createdAt: map['created_at'] != null
           ? DateTime.tryParse(map['created_at'] as String)
           : null,
@@ -94,6 +101,8 @@ class UserModel {
       'country': country,
       'preferred_language': preferredLanguage,
       'provider': provider,
+      'role': role,
+      'is_approved': isApproved ? 1 : 0,
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
     };
@@ -112,6 +121,8 @@ class UserModel {
     String? country,
     String? preferredLanguage,
     String? provider,
+    String? role,
+    bool? isApproved,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -128,6 +139,8 @@ class UserModel {
       country: country ?? this.country,
       preferredLanguage: preferredLanguage ?? this.preferredLanguage,
       provider: provider ?? this.provider,
+      role: role ?? this.role,
+      isApproved: isApproved ?? this.isApproved,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );

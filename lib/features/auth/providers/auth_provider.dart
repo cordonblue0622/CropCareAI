@@ -206,6 +206,145 @@ class AuthProvider extends ChangeNotifier {
     return _handleResult(result);
   }
 
+  // ─── Admin Auth ──────────────────────────────────────────────────────────
+
+  /// Creates an admin account pending superadmin approval.
+  Future<bool> signUpAdmin({
+    required String email,
+    required String password,
+    required String fullName,
+    String? barangay,
+    required String municipality,
+    required String province,
+    required String country,
+  }) async {
+    _setLoading();
+    final result = await authRepository.signUpAdmin(
+      email: email,
+      password: password,
+      fullName: fullName,
+      barangay: barangay,
+      municipality: municipality,
+      province: province,
+      country: country,
+    );
+    if (result.success) {
+      _currentUser = null;
+      _status = AuthStatus.unauthenticated;
+      _errorMessage = null;
+      _infoMessage = result.message;
+      notifyListeners();
+      return true;
+    }
+    _status = AuthStatus.unauthenticated;
+    _errorMessage = result.error;
+    _infoMessage = null;
+    notifyListeners();
+    return false;
+  }
+
+  /// Superadmin approves a pending admin account, creating their Supabase
+  /// Auth user so they can log in.
+  Future<bool> approveAdmin({
+    required String email,
+    required String password,
+    required String fullName,
+    String? barangay,
+    required String municipality,
+    required String province,
+    required String country,
+  }) async {
+    _setLoading();
+    final result = await authRepository.approveAdmin(
+      email: email,
+      password: password,
+      fullName: fullName,
+      barangay: barangay,
+      municipality: municipality,
+      province: province,
+      country: country,
+    );
+    if (result.success) {
+      _errorMessage = null;
+      _infoMessage = 'Admin account approved. The new admin can now sign in.';
+      // Do NOT switch session — superadmin remains logged in.
+    } else {
+      _status = AuthStatus.unauthenticated;
+      _errorMessage = result.error;
+    }
+    notifyListeners();
+    return result.success;
+  }
+
+  /// Superadmin resets an admin's password directly.
+  Future<bool> resetAdminPassword({
+    required String userId,
+    required String newPassword,
+    required String redirectTo,
+  }) async {
+    _setLoading();
+    try {
+      await authRepository.resetAdminPassword(
+        userId: userId,
+        newPassword: newPassword,
+        redirectTo: redirectTo,
+      );
+      _errorMessage = null;
+      _infoMessage = 'Admin password reset successfully.';
+      notifyListeners();
+      return true;
+    } on AuthException catch (error) {
+      _errorMessage = error.message;
+      _infoMessage = null;
+      notifyListeners();
+      return false;
+    } catch (_) {
+      _errorMessage = 'Could not reset the admin password.';
+      _infoMessage = null;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Superadmin sends a password reset email to an admin.
+  Future<bool> sendAdminPasswordResetEmail({
+    required String email,
+    required String redirectTo,
+  }) async {
+    _setLoading();
+    try {
+      await authRepository.sendAdminPasswordResetEmail(
+        email: email,
+        redirectTo: redirectTo,
+      );
+      _errorMessage = null;
+      _infoMessage = 'Password reset email sent to $email.';
+      notifyListeners();
+      return true;
+    } on AuthException catch (error) {
+      _errorMessage = error.message;
+      _infoMessage = null;
+      notifyListeners();
+      return false;
+    } catch (_) {
+      _errorMessage = 'Could not send the password reset email.';
+      _infoMessage = null;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // ─── Role-Based Access ───────────────────────────────────────────────────
+
+  bool get isSuperadmin =>
+      _currentUser?.role == 'superadmin' || _currentUser?.role == 'admin';
+
+  bool get isAdmin => _currentUser?.role == 'admin';
+
+  bool get currentUserIsApproved => _currentUser?.isApproved ?? false;
+
+  String get currentUserRole => _currentUser?.role ?? 'farmer';
+
   // ─── Sign Out ─────────────────────────────────────────────────────────────
 
   Future<void> signOut() async {

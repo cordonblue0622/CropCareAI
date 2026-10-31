@@ -16,6 +16,7 @@ const state = {
 
 const labels = {
   overview: ["Overview", "System health and managed record totals"],
+  announcements: ["Announcements", "Team updates, internal coordination, and mobile alerts"],
   users: ["User management", "Registered accounts and access status"],
   diseases: ["Disease library", "Curated disease information and recommendations"],
   treatments: ["Treatment management", "Crop disease protocols and daily treatment steps"],
@@ -529,6 +530,7 @@ async function selectSection(section) {
   content.replaceChildren(loadingState());
   try {
     if (section === "overview") await renderOverview();
+    else if (section === "announcements") await renderAnnouncements();
     else if (section === "users") await renderUsers();
     else if (section === "diseases") await renderDiseaseLibrary();
     else if (section === "treatments") await renderTreatmentLibrary();
@@ -551,6 +553,255 @@ function renderFailure(message) {
   const panel = element("section", "panel glass empty-state");
   panel.append(element("h3", "", "Unable to load this section"), element("p", "", message));
   content.replaceChildren(panel);
+}
+
+async function renderAnnouncements() {
+  const response = await api("/v1/admin/announcements");
+  const posts = Array.isArray(response.items) ? response.items : [];
+
+  const composer = element("section", "panel glass announcement-composer");
+  composer.append(panelHeader(
+    "Create an announcement",
+    `Posting as ${state.admin?.email || "the current administrator"}.`,
+  ));
+  const form = element("form", "announcement-form");
+  const titleLabel = element("label", "", "Title");
+  const titleInput = element("input");
+  titleInput.id = "announcementTitle";
+  titleInput.name = "title";
+  titleInput.maxLength = 200;
+  titleInput.required = true;
+  titleLabel.htmlFor = titleInput.id;
+  const bodyLabel = element("label", "", "Announcement");
+  const bodyInput = element("textarea");
+  bodyInput.id = "announcementBody";
+  bodyInput.name = "body";
+  bodyInput.maxLength = 10000;
+  bodyInput.rows = 5;
+  bodyInput.required = true;
+  bodyLabel.htmlFor = bodyInput.id;
+
+  const audience = element("fieldset", "audience-fieldset");
+  audience.append(element("legend", "", "Audience"));
+  const audienceOptions = element("div", "audience-options");
+  audienceOptions.append(
+    announcementAudienceOption(
+      "admin",
+      "Administrators only",
+      "Internal timeline and discussion; no mobile alert.",
+      true,
+    ),
+    announcementAudienceOption(
+      "all_users",
+      "All app users",
+      "Send a mobile alert from CropCare AI Team.",
+    ),
+  );
+  audience.append(audienceOptions);
+
+  const error = element("p", "form-error");
+  error.setAttribute("role", "alert");
+  const submit = element("button", "primary-button", "Publish announcement");
+  submit.type = "submit";
+  form.append(titleLabel, titleInput, bodyLabel, bodyInput, audience, error, submit);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    error.textContent = "";
+    submit.disabled = true;
+    submit.textContent = "Publishing...";
+    const selectedAudience = new FormData(form).get("audience");
+    try {
+      const result = await api("/v1/admin/announcements", {
+        method: "POST",
+        body: JSON.stringify({
+          title: titleInput.value,
+          body: bodyInput.value,
+          audience: selectedAudience,
+        }),
+      });
+      form.reset();
+      if (selectedAudience === "admin") {
+        showStatus("Internal announcement published. No mobile alerts were sent.");
+      } else {
+        const recipients = Number(result.recipient_count) || 0;
+        showStatus(`Announcement published and queued for ${recipients} ${recipients === 1 ? "user" : "users"}.`);
+      }
+      await selectSection("announcements");
+    } catch (failure) {
+      error.textContent = failure.message;
+    } finally {
+      if (submit.isConnected) {
+        submit.disabled = false;
+        submit.textContent = "Publish announcement";
+      }
+    }
+  });
+  composer.append(form);
+
+  const timeline = element("section", "announcement-timeline");
+  timeline.setAttribute("aria-label", "Announcement timeline");
+  if (!posts.length) {
+    timeline.append(element("div", "panel glass empty-state", "No announcements have been posted yet."));
+  }
+  posts.forEach((post) => timeline.append(buildAnnouncementCard(post)));
+  content.replaceChildren(composer, timeline);
+}
+
+function announcementAudienceOption(value, title, description, checked = false) {
+  const label = element("label", "audience-option");
+  const input = element("input");
+  input.type = "radio";
+  input.name = "audience";
+  input.value = value;
+  input.required = true;
+  input.checked = checked;
+  const copy = element("span");
+  copy.append(element("strong", "", title), element("small", "", description));
+  label.append(input, copy);
+  return label;
+}
+
+function buildAnnouncementCard(post) {
+  const card = element("article", "announcement-post glass");
+  const header = element("header", "announcement-post-header");
+  const identity = element("div", "announcement-author");
+  const authorName = post.author_name || "Administrator";
+  identity.append(
+    element("strong", "", authorName),
+    element("small", "", titleCase(post.author_role || "admin")),
+    announcementTimestamp(post.created_at),
+  );
+  const audience = element(
+    "span",
+    `audience-badge ${post.audience === "admin" ? "internal" : "public"}`,
+    post.audience === "admin" ? "Admin only" : "All app users",
+  );
+  header.append(
+    element("span", "announcement-avatar", announcementInitials(authorName)),
+    identity,
+    audience,
+  );
+  card.append(
+    header,
+    element("h3", "", post.title || ""),
+    element("p", "announcement-body", post.body || ""),
+  );
+
+  const actions = element("div", "announcement-actions");
+  const like = element("button", "interaction-button", announcementLikeLabel(post));
+  like.type = "button";
+  like.classList.toggle("liked", post.liked_by_current_admin === true);
+  like.setAttribute("aria-pressed", String(post.liked_by_current_admin === true));
+  const replyCount = element(
+    "span",
+    "engagement-count",
+    `${Number(post.replies_count) || 0} ${Number(post.replies_count) === 1 ? "reply" : "replies"}`,
+  );
+  actions.append(like, replyCount);
+  like.addEventListener("click", async () => {
+    like.disabled = true;
+    try {
+      const result = await api(`/v1/admin/announcements/${encodeURIComponent(post.id)}/like`, {
+        method: "PUT",
+        body: JSON.stringify({ liked: post.liked_by_current_admin !== true }),
+      });
+      post.liked_by_current_admin = result.liked;
+      post.likes_count = result.likes_count;
+      like.textContent = announcementLikeLabel(post);
+      like.classList.toggle("liked", result.liked);
+      like.setAttribute("aria-pressed", String(result.liked));
+      like.setAttribute("aria-label", result.liked ? "Remove like" : "Like announcement");
+    } catch (failure) {
+      showStatus(failure.message, true);
+    } finally {
+      like.disabled = false;
+    }
+  });
+  like.setAttribute(
+    "aria-label",
+    post.liked_by_current_admin === true ? "Remove like" : "Like announcement",
+  );
+
+  const replies = element("div", "announcement-replies");
+  (Array.isArray(post.replies) ? post.replies : []).forEach((reply) => {
+    replies.append(buildAnnouncementReply(reply));
+  });
+
+  const replyForm = element("form", "announcement-reply-form");
+  const replyLabel = element("label", "", "Reply to this announcement");
+  const replyInput = element("textarea");
+  const replyInputId = `announcementReply-${post.id}`;
+  replyInput.id = replyInputId;
+  replyInput.name = "body";
+  replyInput.rows = 2;
+  replyInput.maxLength = 5000;
+  replyInput.required = true;
+  replyLabel.htmlFor = replyInputId;
+  const replyError = element("p", "form-error");
+  replyError.setAttribute("role", "alert");
+  const replySubmit = element("button", "secondary-button", "Reply");
+  replySubmit.type = "submit";
+  replyForm.append(replyLabel, replyInput, replyError, replySubmit);
+  replyForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    replyError.textContent = "";
+    replySubmit.disabled = true;
+    replySubmit.textContent = "Posting...";
+    try {
+      const reply = await api(`/v1/admin/announcements/${encodeURIComponent(post.id)}/replies`, {
+        method: "POST",
+        body: JSON.stringify({ body: replyInput.value }),
+      });
+      if (!Array.isArray(post.replies)) post.replies = [];
+      post.replies.push(reply);
+      post.replies_count = (Number(post.replies_count) || 0) + 1;
+      replies.append(buildAnnouncementReply(reply));
+      replyCount.textContent = `${post.replies_count} ${post.replies_count === 1 ? "reply" : "replies"}`;
+      replyForm.reset();
+    } catch (failure) {
+      replyError.textContent = failure.message;
+    } finally {
+      replySubmit.disabled = false;
+      replySubmit.textContent = "Reply";
+    }
+  });
+
+  card.append(actions, replies, replyForm);
+  return card;
+}
+
+function buildAnnouncementReply(reply) {
+  const item = element("article", "announcement-reply");
+  const header = element("header", "announcement-reply-header");
+  const identity = element("div");
+  identity.append(
+    element("strong", "", reply.author_name || "Administrator"),
+    element("small", "", titleCase(reply.author_role || "admin")),
+  );
+  header.append(identity, announcementTimestamp(reply.created_at));
+  item.append(header, element("p", "announcement-body", reply.body || ""));
+  return item;
+}
+
+function announcementTimestamp(value) {
+  const date = new Date(value);
+  const timestamp = element("time", "", Number.isNaN(date.getTime())
+    ? "Date unavailable"
+    : new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(date));
+  timestamp.dateTime = String(value || "");
+  return timestamp;
+}
+
+function announcementInitials(name) {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2)
+    .map((part) => part[0].toUpperCase()).join("") || "A";
+}
+
+function announcementLikeLabel(post) {
+  return `${post.liked_by_current_admin === true ? "Liked" : "Like"} · ${Number(post.likes_count) || 0}`;
 }
 
 async function renderOverview() {

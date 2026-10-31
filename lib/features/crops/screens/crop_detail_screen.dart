@@ -68,6 +68,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   List<ChatSessionModel> _chatSessions = [];
   ChatSessionModel? _cropChatSession;
   bool _loading = true;
+  bool _isLoadingData = false;
+  bool _reloadDataAfterCurrent = false;
+  StreamSubscription<bool>? _connectivitySubscription;
 
   DateTime _selectedDate = _todayDate();
   DateTime? _dailyPlanFocusDate;
@@ -98,11 +101,18 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       final d = widget.initialSelectedDate!;
       _selectedDate = DateTime(d.year, d.month, d.day);
     }
+    _connectivitySubscription =
+        context.read<ConnectivityService>().onConnectivityChanged.listen(
+      (online) {
+        if (online && mounted) unawaited(_loadData());
+      },
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadData());
   }
 
   @override
   void dispose() {
+    unawaited(_connectivitySubscription?.cancel());
     _tabs.dispose();
     super.dispose();
   }
@@ -141,6 +151,11 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   }
 
   Future<void> _loadData() async {
+    if (_isLoadingData) {
+      _reloadDataAfterCurrent = true;
+      return;
+    }
+    _isLoadingData = true;
     final db = context.read<DatabaseHelper>();
     final svc = context.read<SupabaseService>();
     final cropsProvider = context.read<CropsProvider>();
@@ -162,6 +177,58 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           .whereType<String>()
           .toSet();
       final pendingMessageIds = pendingIdsFor(AppConstants.chatMessagesTable);
+
+      final cachedDiagnoses = _safeParseRows(localDx, DiagnosisModel.fromMap)
+        ..removeWhere((diagnosis) => diagnosis.isDeleted)
+        ..sort((a, b) => b.diagnosedAt.compareTo(a.diagnosedAt));
+      final cachedTreatments = _safeParseRows(localTx, TreatmentModel.fromMap)
+        ..removeWhere((treatment) => treatment.isDeleted);
+      final cachedProgress =
+          _safeParseRows(localProgress, ProgressUpdateModel.fromMap)
+            ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      final cachedTasks = _safeParseRows(localTasks, TreatmentTaskModel.fromMap)
+        ..removeWhere((task) => task.isDeleted)
+        ..sort((a, b) {
+          final dueCompare = a.dueAt.compareTo(b.dueAt);
+          if (dueCompare != 0) return dueCompare;
+          return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
+        });
+      final cachedSessions =
+          _safeParseRows(localSessions, ChatSessionModel.fromMap)
+            ..removeWhere((session) => session.isDeleted);
+      final cachedMessageRows = <String, Map<String, dynamic>>{};
+      for (final session in cachedSessions) {
+        for (final row in await db.queryChatMessages(session.id)) {
+          final id = (row['id'] as String?)?.trim();
+          if (id != null && id.isNotEmpty) {
+            cachedMessageRows[id] = Map<String, dynamic>.from(row);
+          }
+        }
+      }
+      final cachedMessages = _safeParseRows(
+        cachedMessageRows.values,
+        ChatMessageModel.fromMap,
+      )
+        ..removeWhere((message) => message.role == MessageRole.system)
+        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      final linkedCachedSessionId = cachedDiagnoses
+          .map((diagnosis) => diagnosis.chatSessionId?.trim() ?? '')
+          .firstWhere((id) => id.isNotEmpty, orElse: () => '');
+      if (mounted) {
+        setState(() {
+          _diagnoses = cachedDiagnoses;
+          _treatments = cachedTreatments;
+          _tasks = cachedTasks;
+          _progress = cachedProgress;
+          _chatHistory = cachedMessages;
+          _chatSessions = cachedSessions;
+          _cropChatSession = cachedSessions
+                  .where((session) => session.id == linkedCachedSessionId)
+                  .firstOrNull ??
+              (cachedSessions.isEmpty ? null : cachedSessions.first);
+          _loading = false;
+        });
+      }
 
       final remoteDx = await _runOrFallback(
         'diagnoses',
@@ -313,6 +380,12 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       debugPrint('[CropDetail] _loadData failed: $e\n$st');
       if (!mounted) return;
       setState(() => _loading = false);
+    } finally {
+      _isLoadingData = false;
+      if (_reloadDataAfterCurrent && mounted) {
+        _reloadDataAfterCurrent = false;
+        unawaited(_loadData());
+      }
     }
   }
 
@@ -605,117 +678,120 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (modalContext) => AnimatedPadding(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(modalContext).viewInsets.bottom,
-        ),
-        child: _CheckInSheet(
-          crop: _crop,
-          allTasks: _tasks,
-          checkedTasks: checkedTasks,
-          activeTreatment: _treatmentForTask(task),
-          latestDiagnosis: _diagnosisForTask(task),
-          previousUpdate: previousUpdate,
-          onSubmitted: (newScore, newStatus, update, aiNextSteps) async {
-            submittedScore = newScore;
-            submittedStatus = newStatus;
-            submittedUpdate = update;
-            TreatmentTimelineRebaseResult? rebase;
-            if (activeTreatment != null && checkedTasks.isNotEmpty) {
-              if (!_hasTreatmentCheckIn(activeTreatment.id)) {
-                rebase = await cropsProvider.rebaseTreatmentTimeline(
-                  treatment: activeTreatment,
-                  tasks: _tasks,
-                  startedAt: update.updateDate,
-                  syncNow: false,
-                );
-              } else {
-                rebase = await cropsProvider.shiftTreatmentTimelineFrom(
-                  treatment: activeTreatment,
-                  tasks: _tasks,
-                  fromDate: checkedTasks.first.dueAt,
-                  toDate: update.updateDate,
-                  syncNow: false,
-                );
-              }
-            }
-            await cropsProvider.saveProgressUpdate(update, syncNow: false);
-            await cropsProvider.updateCropHealthScore(
-              _crop.id,
-              newScore,
-              newStatus,
-              syncNow: false,
-            );
-            final treatmentForRevision = rebase?.treatment ?? activeTreatment;
-            if ((newStatus == ProgressStatus.improving ||
-                    newStatus == ProgressStatus.worsening) &&
-                treatmentForRevision != null &&
-                aiNextSteps.isNotEmpty) {
-              try {
-                submittedPlanRevision =
-                    await cropsProvider.reviseRemainingTreatmentPlan(
-                  treatment: treatmentForRevision,
-                  tasks: rebase?.tasks ?? _tasks,
-                  recommendedActions: aiNextSteps,
-                  assessment: update.note ?? '',
-                  healthScore: newScore,
-                  assessedAt: update.updateDate,
-                  progressStatus: newStatus,
-                  checkInId: update.id,
-                );
-              } catch (error, stackTrace) {
-                planRevisionFailed = true;
-                debugPrint(
-                  '[CropDetail] Could not revise treatment plan: $error\n$stackTrace',
-                );
-              }
-            }
-            final checkInDay = update.updateDate.toLocal();
-            final revisedPlanDay = submittedPlanRevision == null
-                ? null
-                : DateTime(checkInDay.year, checkInDay.month, checkInDay.day)
-                    .add(const Duration(days: 1));
-            if (!mounted) return;
-            setState(() {
-              if (rebase != null) {
-                _treatments = _treatments
-                    .map((treatment) => treatment.id == rebase!.treatment.id
-                        ? rebase.treatment
-                        : treatment)
-                    .toList();
-                _tasks = rebase.tasks;
-              }
-              if (submittedPlanRevision != null) {
-                _tasks = submittedPlanRevision!.tasks;
-                _treatments = _treatments
-                    .map((treatment) =>
-                        treatment.id == submittedPlanRevision!.treatment.id
-                            ? submittedPlanRevision!.treatment
-                            : treatment)
-                    .toList();
-              }
-              _selectedDate = revisedPlanDay ??
-                  DateTime(
-                    checkInDay.year,
-                    checkInDay.month,
-                    checkInDay.day,
+      builder: (modalContext) => SafeArea(
+        top: false,
+        child: AnimatedPadding(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(modalContext).viewInsets.bottom,
+          ),
+          child: _CheckInSheet(
+            crop: _crop,
+            allTasks: _tasks,
+            checkedTasks: checkedTasks,
+            activeTreatment: _treatmentForTask(task),
+            latestDiagnosis: _diagnosisForTask(task),
+            previousUpdate: previousUpdate,
+            onSubmitted: (newScore, newStatus, update, aiNextSteps) async {
+              submittedScore = newScore;
+              submittedStatus = newStatus;
+              submittedUpdate = update;
+              TreatmentTimelineRebaseResult? rebase;
+              if (activeTreatment != null && checkedTasks.isNotEmpty) {
+                if (!_hasTreatmentCheckIn(activeTreatment.id)) {
+                  rebase = await cropsProvider.rebaseTreatmentTimeline(
+                    treatment: activeTreatment,
+                    tasks: _tasks,
+                    startedAt: update.updateDate,
+                    syncNow: false,
                   );
-              _dailyPlanFocusDate = revisedPlanDay;
-              _crop = _crop.copyWith(
-                latestHealthScore: newScore,
-                latestProgressStatus: newStatus,
-                lastCheckedAt: update.createdAt,
+                } else {
+                  rebase = await cropsProvider.shiftTreatmentTimelineFrom(
+                    treatment: activeTreatment,
+                    tasks: _tasks,
+                    fromDate: checkedTasks.first.dueAt,
+                    toDate: update.updateDate,
+                    syncNow: false,
+                  );
+                }
+              }
+              await cropsProvider.saveProgressUpdate(update, syncNow: false);
+              await cropsProvider.updateCropHealthScore(
+                _crop.id,
+                newScore,
+                newStatus,
+                syncNow: false,
               );
-              _progress = [update, ..._progress]
-                ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-            });
-            unawaited(cropsProvider.flushPendingSync());
-            if (newStatus == ProgressStatus.insufficientData) {
-              unawaited(_analyzePendingCheckIns());
-            }
-          },
+              final treatmentForRevision = rebase?.treatment ?? activeTreatment;
+              if ((newStatus == ProgressStatus.improving ||
+                      newStatus == ProgressStatus.worsening) &&
+                  treatmentForRevision != null &&
+                  aiNextSteps.isNotEmpty) {
+                try {
+                  submittedPlanRevision =
+                      await cropsProvider.reviseRemainingTreatmentPlan(
+                    treatment: treatmentForRevision,
+                    tasks: rebase?.tasks ?? _tasks,
+                    recommendedActions: aiNextSteps,
+                    assessment: update.note ?? '',
+                    healthScore: newScore,
+                    assessedAt: update.updateDate,
+                    progressStatus: newStatus,
+                    checkInId: update.id,
+                  );
+                } catch (error, stackTrace) {
+                  planRevisionFailed = true;
+                  debugPrint(
+                    '[CropDetail] Could not revise treatment plan: $error\n$stackTrace',
+                  );
+                }
+              }
+              final checkInDay = update.updateDate.toLocal();
+              final revisedPlanDay = submittedPlanRevision == null
+                  ? null
+                  : DateTime(checkInDay.year, checkInDay.month, checkInDay.day)
+                      .add(const Duration(days: 1));
+              if (!mounted) return;
+              setState(() {
+                if (rebase != null) {
+                  _treatments = _treatments
+                      .map((treatment) => treatment.id == rebase!.treatment.id
+                          ? rebase.treatment
+                          : treatment)
+                      .toList();
+                  _tasks = rebase.tasks;
+                }
+                if (submittedPlanRevision != null) {
+                  _tasks = submittedPlanRevision!.tasks;
+                  _treatments = _treatments
+                      .map((treatment) =>
+                          treatment.id == submittedPlanRevision!.treatment.id
+                              ? submittedPlanRevision!.treatment
+                              : treatment)
+                      .toList();
+                }
+                _selectedDate = revisedPlanDay ??
+                    DateTime(
+                      checkInDay.year,
+                      checkInDay.month,
+                      checkInDay.day,
+                    );
+                _dailyPlanFocusDate = revisedPlanDay;
+                _crop = _crop.copyWith(
+                  latestHealthScore: newScore,
+                  latestProgressStatus: newStatus,
+                  lastCheckedAt: update.createdAt,
+                );
+                _progress = [update, ..._progress]
+                  ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+              });
+              unawaited(cropsProvider.flushPendingSync());
+              if (newStatus == ProgressStatus.insufficientData) {
+                unawaited(_analyzePendingCheckIns());
+              }
+            },
+          ),
         ),
       ),
     );

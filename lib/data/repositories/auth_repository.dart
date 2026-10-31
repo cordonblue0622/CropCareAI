@@ -1,4 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uuid/uuid.dart';
+
 import '../../core/constants/app_constants.dart';
 import '../local/database_helper.dart';
 import '../models/user_model.dart';
@@ -65,6 +67,11 @@ class AuthRepository {
           _cleanString(supabaseUser.userMetadata?['province']),
       country: _cleanString(profile?['country']) ??
           _cleanString(supabaseUser.userMetadata?['country']),
+      role: _cleanString(profile?['role']) ??
+          _cleanString(supabaseUser.userMetadata?['role']) ?? 'farmer',
+      isApproved: (profile?['is_approved'] as int?) == 1 ||
+          (profile?['is_approved'] as bool?) == true ||
+          (supabaseUser.userMetadata?['is_approved'] as bool?) == true,
       provider: supabaseUser.appMetadata['provider'] as String? ?? 'email',
       createdAt: _tryParseDate(profile?['created_at']),
       updatedAt: _tryParseDate(profile?['updated_at']) ?? DateTime.now(),
@@ -195,6 +202,146 @@ class AuthRepository {
         success: false,
         error:
             'Could not create your account. Check your internet connection and try again.',
+      );
+    }
+  }
+
+  // ─── Admin Sign Up (pending superadmin approval) ─────────────────────────
+
+  /// Creates an admin profile pending superadmin approval.
+  /// The Supabase Auth user is NOT created yet — it is created when the
+  /// superadmin approves the account via [approveAdmin].
+  Future<AuthResult> signUpAdmin({
+    required String email,
+    required String password,
+    required String fullName,
+    String? barangay,
+    required String municipality,
+    required String province,
+    required String country,
+  }) async {
+    try {
+      // First check if a Supabase Auth user already exists for this email
+      final existingProfile = await supabaseService.getProfileByEmail(email);
+      if (existingProfile != null) {
+        return const AuthResult(
+          success: false,
+          error: 'An account with this email already exists.',
+        );
+      }
+
+      // Create profile locally only (Supabase Auth user + profile created on approval)
+      final now = DateTime.now();
+      final user = UserModel(
+        id: const Uuid().v4(), // Temporary ID; replaced on approval
+        fullName: fullName,
+        email: email,
+        barangay: _cleanString(barangay),
+        municipality: _cleanString(municipality),
+        province: _cleanString(province),
+        country: _cleanString(country),
+        provider: 'email',
+        role: 'admin',
+        isApproved: false,
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      await dbHelper.upsertUser(user.toMap());
+
+      return const AuthResult(
+        success: true,
+        requiresEmailConfirmation: false,
+        message:
+            'Admin account created. Pending superadmin approval before you can sign in.',
+      );
+    } on AuthException catch (e) {
+      return AuthResult(success: false, error: e.message);
+    } catch (_) {
+      return const AuthResult(
+        success: false,
+        error:
+            'Could not create admin account. Check your internet connection and try again.',
+      );
+    }
+  }
+
+  // ─── Admin Approval (Superadmin only) ────────────────────────────────────
+
+  /// Approves a pending admin account and creates their Supabase Auth user
+  /// so they can log in. Uses the Supabase Admin API (service role key).
+  Future<AuthResult> approveAdmin({
+    required String email,
+    required String password,
+    required String fullName,
+    String? barangay,
+    required String municipality,
+    required String province,
+    required String country,
+  }) async {
+    try {
+      // Create the Supabase Auth user via Admin API (auto-confirms email)
+      final authResponse = await supabaseService.createAdminUser(
+        email: email,
+        password: password,
+        fullName: fullName,
+        barangay: barangay,
+        municipality: municipality,
+        province: province,
+        country: country,
+      );
+
+      final supabaseUser = authResponse.user;
+      if (supabaseUser == null) {
+        return const AuthResult(
+          success: false,
+          error: 'Failed to create Supabase Auth user for admin.',
+        );
+      }
+
+      // Upsert the profile (role/is_approved stored in userMetadata via Admin API)
+      final now = DateTime.now();
+      final profileData = <String, dynamic>{
+        'id': supabaseUser.id,
+        'email': email,
+        'full_name': fullName,
+        'created_at': now.toIso8601String(),
+        'updated_at': now.toIso8601String(),
+        if (barangay != null && barangay.trim().isNotEmpty)
+          'barangay': barangay.trim(),
+        'municipality': municipality.trim(),
+        'province': province.trim(),
+        'country': country.trim(),
+      };
+
+      await supabaseService.upsertProfile(profileData);
+
+      // Update local cache
+      final user = UserModel(
+        id: supabaseUser.id,
+        fullName: fullName,
+        email: email,
+        barangay: _cleanString(barangay),
+        municipality: _cleanString(municipality),
+        province: _cleanString(province),
+        country: _cleanString(country),
+        provider: 'email',
+        role: 'admin',
+        isApproved: true,
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      await dbHelper.upsertUser(user.toMap());
+
+      return AuthResult(success: true, user: user);
+    } on AuthException catch (e) {
+      return AuthResult(success: false, error: e.message);
+    } catch (_) {
+      return const AuthResult(
+        success: false,
+        error:
+            'Could not approve admin account. Check your internet connection and try again.',
       );
     }
   }
@@ -376,6 +523,32 @@ class AuthRepository {
 
   Future<void> updatePassword(String password) =>
       supabaseService.updatePassword(password);
+
+  // ─── Admin Password Reset (Superadmin only) ──────────────────────────────
+
+  /// Superadmin resets an admin's password via the Supabase Admin API.
+  Future<void> resetAdminPassword({
+    required String userId,
+    String? newPassword,
+    required String redirectTo,
+  }) async {
+    await supabaseService.resetAdminPassword(
+      userId: userId,
+      newPassword: newPassword,
+      redirectTo: redirectTo,
+    );
+  }
+
+  /// Superadmin sends a password reset email to an admin.
+  Future<void> sendAdminPasswordResetEmail({
+    required String email,
+    required String redirectTo,
+  }) async {
+    await supabaseService.sendAdminPasswordResetEmail(
+      email: email,
+      redirectTo: redirectTo,
+    );
+  }
 
   UserModel? get currentUser {
     final u = supabaseService.currentUser;

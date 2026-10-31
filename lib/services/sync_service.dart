@@ -807,7 +807,18 @@ class SyncService {
     container[key] = uploadedUrl;
   }
 
-  // ─── Queue Helpers (call before DB write when offline) ────────────────────
+  // ─── Queue Helpers ─────────────────────────────────────────────────────────
+
+  /// Persists local rows and their queue entries in one SQLite transaction.
+  /// The revision change makes an already-active sync run drain this new batch.
+  Future<void> persistQueuedUpserts(
+    Iterable<LocalSyncUpsert> writes,
+  ) async {
+    final items = writes.toList(growable: false);
+    if (items.isEmpty) return;
+    await dbHelper.upsertRowsAndQueue(items);
+    _queueRevision++;
+  }
 
   Future<void> queueUpsert({
     required String tableName,

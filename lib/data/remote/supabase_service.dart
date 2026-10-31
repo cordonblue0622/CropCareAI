@@ -98,12 +98,99 @@ class SupabaseService {
   Session? get currentSession => _client.auth.currentSession;
   bool get isSignedIn => currentUser != null;
 
+  // ─── Admin Auth (Superadmin only) ─────────────────────────────────────────
+  // These methods use the Supabase Admin API and require the service role key
+  // to be configured on the Supabase client.
+
+  /// Creates a new user account with admin privileges via the Admin API.
+  /// The email is auto-confirmed so the admin can log in immediately.
+  Future<UserResponse> createAdminUser({
+    required String email,
+    required String password,
+    required String fullName,
+    String? barangay,
+    String? municipality,
+    String? province,
+    String? country,
+  }) async {
+    return _client.auth.admin.createUser(
+      AdminUserAttributes(
+        email: email,
+        password: password,
+        emailConfirm: true,
+        userMetadata: {
+          'full_name': fullName,
+          'role': 'admin',
+          if (barangay != null && barangay.trim().isNotEmpty)
+            'barangay': barangay.trim(),
+          if (municipality != null && municipality.trim().isNotEmpty)
+            'municipality': municipality.trim(),
+          if (province != null && province.trim().isNotEmpty)
+            'province': province.trim(),
+          if (country != null && country.trim().isNotEmpty)
+            'country': country.trim(),
+        },
+      ),
+    );
+  }
+
+  /// Resets an admin's password via the Admin API (superadmin action).
+  /// If [newPassword] is provided, it is set directly. Otherwise, a
+  /// password reset email is generated and sent to the user's email.
+  Future<void> resetAdminPassword({
+    required String userId,
+    String? newPassword,
+    required String redirectTo,
+  }) async {
+    if (newPassword != null && newPassword.isNotEmpty) {
+      await _client.auth.admin.updateUserById(
+        userId,
+        attributes: AdminUserAttributes(password: newPassword),
+      );
+      return;
+    }
+
+    // Look up the user's email to send the reset link
+    final profile = await getProfile(userId);
+    final email = profile?['email'] as String?;
+    if (email == null || email.isEmpty) {
+      throw StateError('No email found for user $userId.');
+    }
+
+    await _client.auth.admin.generateLink(
+      type: GenerateLinkType.recovery,
+      email: email,
+      redirectTo: redirectTo,
+    );
+  }
+
+  /// Sends a password reset email to an admin (superadmin action).
+  Future<void> sendAdminPasswordResetEmail({
+    required String email,
+    required String redirectTo,
+  }) async {
+    await _client.auth.admin.generateLink(
+      type: GenerateLinkType.recovery,
+      email: email,
+      redirectTo: redirectTo,
+    );
+  }
+
+  /// Deletes a user account via the Admin API (superadmin action).
+  Future<void> deleteAdminUser(String userId) async {
+    await _client.auth.admin.deleteUser(userId);
+  }
+
   Stream<AuthState> get authStateChanges => _client.auth.onAuthStateChange;
 
   // ─── Profiles ─────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>?> getProfile(String userId) async {
     return _client.from('profiles').select().eq('id', userId).maybeSingle();
+  }
+
+  Future<Map<String, dynamic>?> getProfileByEmail(String email) async {
+    return _client.from('profiles').select().eq('email', email).maybeSingle();
   }
 
   Future<void> upsertProfile(Map<String, dynamic> profile) async {

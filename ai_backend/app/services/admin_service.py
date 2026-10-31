@@ -5,7 +5,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import HTTPException, status
@@ -210,6 +210,151 @@ class AdminService:
         else:
             detail = "The administrator data operation could not be completed."
         raise HTTPException(status_code=response.status_code, detail=detail)
+
+    @staticmethod
+    def _clean_announcement_payload(payload: dict[str, Any]) -> dict[str, str]:
+        cleaned: dict[str, str] = {}
+        for field, maximum in (("title", 200), ("body", 10000)):
+            value = payload.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Announcement {field} is required.",
+                )
+            value = value.strip()
+            if len(value) > maximum:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Announcement {field} must be {maximum} characters or fewer.",
+                )
+            cleaned[f"p_{field}"] = value
+        audience = payload.get("audience")
+        if not isinstance(audience, str) or audience not in {"admin", "all_users"}:
+            raise HTTPException(
+                status_code=422,
+                detail="Announcement audience must be admin or all_users.",
+            )
+        cleaned["p_audience"] = audience
+        return cleaned
+
+    @staticmethod
+    def _clean_announcement_id(announcement_id: str) -> str:
+        try:
+            return str(UUID(announcement_id))
+        except (ValueError, AttributeError) as exc:
+            raise HTTPException(status_code=422, detail="Invalid announcement id.") from exc
+
+    async def create_announcement(
+        self,
+        payload: dict[str, Any],
+        actor: AuthenticatedUser,
+    ) -> dict[str, Any]:
+        data = self._clean_announcement_payload(payload)
+        data["p_created_by"] = actor.id
+        url = f"{self._settings.supabase_url}/rest/v1/rpc/create_announcement"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, headers=self._headers(), json=data)
+        self._raise_for_response(response)
+        result = response.json()
+        if not isinstance(result, dict) or not result.get("id"):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="The announcement could not be confirmed.",
+            )
+        return result
+
+    async def list_announcements(
+        self,
+        actor: AuthenticatedUser,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        page_size = 200
+        url = f"{self._settings.supabase_url}/rest/v1/rpc/list_admin_announcements"
+        offset = 0
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            while True:
+                response = await client.post(
+                    url,
+                    headers=self._headers(),
+                    json={
+                        "p_admin_id": actor.id,
+                        "p_limit": page_size,
+                        "p_offset": offset,
+                    },
+                )
+                self._raise_for_response(response)
+                rows = response.json()
+                if not isinstance(rows, list):
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="Announcements could not be loaded.",
+                    )
+                items.extend(row for row in rows if isinstance(row, dict))
+                if len(rows) < page_size:
+                    return items
+                offset += page_size
+
+    async def set_announcement_like(
+        self,
+        announcement_id: str,
+        payload: dict[str, Any],
+        actor: AuthenticatedUser,
+    ) -> dict[str, Any]:
+        liked = payload.get("liked")
+        if not isinstance(liked, bool):
+            raise HTTPException(status_code=422, detail="Liked must be true or false.")
+        data = {
+            "p_announcement_id": self._clean_announcement_id(announcement_id),
+            "p_admin_id": actor.id,
+            "p_liked": liked,
+        }
+        url = f"{self._settings.supabase_url}/rest/v1/rpc/set_announcement_like"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(url, headers=self._headers(), json=data)
+        self._raise_for_response(response)
+        result = response.json()
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("liked"), bool)
+            or not isinstance(result.get("likes_count"), int)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="The announcement like could not be confirmed.",
+            )
+        return result
+
+    async def create_announcement_reply(
+        self,
+        announcement_id: str,
+        payload: dict[str, Any],
+        actor: AuthenticatedUser,
+    ) -> dict[str, Any]:
+        body = payload.get("body")
+        if not isinstance(body, str) or not body.strip():
+            raise HTTPException(status_code=422, detail="Reply body is required.")
+        body = body.strip()
+        if len(body) > 5000:
+            raise HTTPException(
+                status_code=422,
+                detail="Reply body must be 5000 characters or fewer.",
+            )
+        data = {
+            "p_announcement_id": self._clean_announcement_id(announcement_id),
+            "p_body": body,
+            "p_created_by": actor.id,
+        }
+        url = f"{self._settings.supabase_url}/rest/v1/rpc/create_announcement_reply"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(url, headers=self._headers(), json=data)
+        self._raise_for_response(response)
+        result = response.json()
+        if not isinstance(result, dict) or not result.get("id"):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="The announcement reply could not be confirmed.",
+            )
+        return result
 
     async def list_resource(
         self,
