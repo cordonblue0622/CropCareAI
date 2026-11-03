@@ -76,34 +76,16 @@ class _AddCropScreenState extends State<AddCropScreen> {
         }
 
         final syncWarning = cropsProvider.error;
-        final savedCrop = cropsProvider.crops.firstWhere(
-          (crop) => crop.cropName == _nameCtrl.text.trim(),
-        );
         if (mounted) {
           final messenger = ScaffoldMessenger.of(context);
           Navigator.pop(context);
           if (syncWarning != null) {
             messenger.showSnackBar(
               SnackBar(
-                content: Text(syncWarning),
-                duration: const Duration(seconds: 8),
-                action: SnackBarAction(
-                  label: 'Retry',
-                  onPressed: () async {
-                    final synced =
-                        await cropsProvider.retryCropSync(savedCrop.id);
-                    if (!messenger.mounted) return;
-                    messenger.showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          synced
-                              ? 'Crop synced to your account.'
-                              : 'Crop is still saved only on this device. Keep the app installed and try again later.',
-                        ),
-                      ),
-                    );
-                  },
+                content: const Text(
+                  "Crop saved successfully on this device. It will automatically sync when you're back online.",
                 ),
+                duration: const Duration(seconds: 8),
               ),
             );
           }

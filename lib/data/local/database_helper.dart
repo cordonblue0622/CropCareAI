@@ -204,6 +204,9 @@ class DatabaseHelper {
         completed_task_count  INTEGER DEFAULT 0,
         missed_task_count     INTEGER DEFAULT 0,
         update_date           TEXT NOT NULL,
+        ai_analysis_status    TEXT NOT NULL DEFAULT 'not_required',
+        ai_analysis_error     TEXT,
+        ai_analysis_started_at TEXT,
         sync_version          INTEGER NOT NULL DEFAULT 1,
         is_deleted            INTEGER NOT NULL DEFAULT 0,
         created_at            TEXT NOT NULL,
@@ -367,6 +370,35 @@ class DatabaseHelper {
         'INTEGER NOT NULL DEFAULT 1',
       );
     }
+
+    if (oldVersion < 7) {
+      await _ensureColumn(
+        db,
+        AppConstants.progressUpdatesTable,
+        'ai_analysis_status',
+        "TEXT NOT NULL DEFAULT 'not_required'",
+      );
+      await _ensureColumn(
+        db,
+        AppConstants.progressUpdatesTable,
+        'ai_analysis_error',
+        'TEXT',
+      );
+      await _ensureColumn(
+        db,
+        AppConstants.progressUpdatesTable,
+        'ai_analysis_started_at',
+        'TEXT',
+      );
+      await db.execute('''
+        UPDATE ${AppConstants.progressUpdatesTable}
+        SET ai_analysis_status = 'pending'
+        WHERE progress_status = 'insufficient_data'
+          AND image_url IS NOT NULL
+          AND TRIM(image_url) != ''
+          AND ai_analysis_status = 'not_required'
+      ''');
+    }
   }
 
   Future<void> _ensureColumn(
@@ -454,12 +486,17 @@ class DatabaseHelper {
     );
   }
 
-  Future<void> setUserRole(String userId, String role, {bool isApproved = true}) async {
+  Future<void> setUserRole(String userId, String role,
+      {bool isApproved = true}) async {
     if (_isDisabledOnPlatform) return;
     final db = await database;
     await db.update(
       AppConstants.usersTable,
-      {'role': role, 'is_approved': isApproved ? 1 : 0, 'updated_at': DateTime.now().toIso8601String()},
+      {
+        'role': role,
+        'is_approved': isApproved ? 1 : 0,
+        'updated_at': DateTime.now().toIso8601String()
+      },
       where: 'id = ?',
       whereArgs: [userId],
     );
@@ -486,13 +523,22 @@ class DatabaseHelper {
   }) async {
     if (_isDisabledOnPlatform) return 0;
     final db = await database;
-    return db.insert(AppConstants.syncQueueTable, {
-      'table_name': tableName,
-      'record_id': recordId,
-      'operation': operation,
-      'payload': payload,
-      'created_at': DateTime.now().toIso8601String(),
-      'attempts': 0,
+    return db.transaction((transaction) async {
+      if (operation == 'UPSERT') {
+        await transaction.delete(
+          AppConstants.syncQueueTable,
+          where: 'table_name = ? AND record_id = ? AND operation = ?',
+          whereArgs: [tableName, recordId, 'UPSERT'],
+        );
+      }
+      return transaction.insert(AppConstants.syncQueueTable, {
+        'table_name': tableName,
+        'record_id': recordId,
+        'operation': operation,
+        'payload': payload,
+        'created_at': DateTime.now().toIso8601String(),
+        'attempts': 0,
+      });
     });
   }
 
@@ -513,6 +559,14 @@ class DatabaseHelper {
           write.tableName,
           _normalizeSqliteRow(write.localData),
           conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        // Keep only the newest pending upsert for a record. Deleting the old
+        // queue row (rather than updating it) is safe when an earlier sync is
+        // interrupted: its completion cannot accidentally delete this new row.
+        await transaction.delete(
+          AppConstants.syncQueueTable,
+          where: 'table_name = ? AND record_id = ? AND operation = ?',
+          whereArgs: [write.tableName, write.recordId, 'UPSERT'],
         );
         await transaction.insert(AppConstants.syncQueueTable, {
           'table_name': write.tableName,
@@ -797,6 +851,62 @@ class DatabaseHelper {
     final rows =
         await db.query(table, where: 'id = ?', whereArgs: [id], limit: 1);
     return rows.isNotEmpty ? rows.first : null;
+  }
+
+  Future<bool> claimProgressAnalysis(String progressId) async {
+    if (_isDisabledOnPlatform) return false;
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    final changed = await db.update(
+      AppConstants.progressUpdatesTable,
+      {
+        'ai_analysis_status': 'in_progress',
+        'ai_analysis_error': null,
+        'ai_analysis_started_at': now,
+      },
+      where: 'id = ? AND ai_analysis_status IN (?, ?)',
+      whereArgs: [progressId, 'pending', 'failed'],
+    );
+    return changed == 1;
+  }
+
+  Future<void> setProgressAnalysisState({
+    required String progressId,
+    required String status,
+    String? error,
+  }) async {
+    if (_isDisabledOnPlatform) return;
+    final db = await database;
+    await db.update(
+      AppConstants.progressUpdatesTable,
+      {
+        'ai_analysis_status': status,
+        'ai_analysis_error': error,
+        'ai_analysis_started_at': status == 'in_progress'
+            ? DateTime.now().toUtc().toIso8601String()
+            : null,
+      },
+      where: 'id = ?',
+      whereArgs: [progressId],
+    );
+  }
+
+  Future<int> resetStaleProgressAnalysisClaims({
+    Duration staleAfter = const Duration(minutes: 15),
+  }) async {
+    if (_isDisabledOnPlatform) return 0;
+    final db = await database;
+    final cutoff =
+        DateTime.now().toUtc().subtract(staleAfter).toIso8601String();
+    return db.update(
+      AppConstants.progressUpdatesTable,
+      {
+        'ai_analysis_status': 'pending',
+        'ai_analysis_started_at': null,
+      },
+      where: 'ai_analysis_status = ? AND ai_analysis_started_at <= ?',
+      whereArgs: ['in_progress', cutoff],
+    );
   }
 
   Future<void> softDelete(String table, String id) async {

@@ -61,71 +61,140 @@ class TfliteClassifierCore {
       final zeroPoint = params.zeroPoint;
       scores =
           rawOutput.first.map((value) => (value - zeroPoint) * scale).toList();
-      final total = scores.fold<double>(0.0, (a, b) => a + b);
-      if (total > 0) {
-        for (var i = 0; i < scores.length; i++) {
-          scores[i] = scores[i] / total;
-        }
-      }
     } else {
       final rawOutput = [List<double>.filled(labels.length, 0.0)];
       interpreter.run(input, rawOutput);
-      scores = _normalizeFloatScores(rawOutput.first);
+      scores = rawOutput.first;
     }
     if (scores.isEmpty) {
       throw Exception('The TFLite model returned no predictions.');
     }
 
-    final ranked = rankCandidateIndices(
+    return responseForScores(
       scores: scores,
       labels: labels,
       cropType: cropType,
+      source: source,
+      modelName: modelName,
+      modelVersion: modelVersion,
+      filename: filename,
+      modelSource: modelSource,
     );
+  }
 
-    final primaryIndex = ranked.first;
+  /// Converts model scores into a diagnosis response.
+  ///
+  /// When [cropType] is provided, only that crop family's output classes are
+  /// candidates for the primary diagnosis and confidence-margin validation.
+  /// The global ranking is retained in diagnostic notes but cannot override
+  /// an acceptable selected-family prediction. Raw TFLite outputs keep the
+  /// existing logit conversion; [preserveProvidedScores] is for callers that
+  /// supply already-interpreted unit-interval scores.
+  AiBackendDetectResponse responseForScores({
+    required List<double> scores,
+    required List<String> labels,
+    String? cropType,
+    bool preserveProvidedScores = false,
+    String source = 'local-tflite',
+    String modelName = 'cropcare_efficientnet_v2',
+    String modelVersion = 'v2-subset-100',
+    String filename = 'image',
+    String? modelSource,
+  }) {
+    if (scores.length != labels.length || scores.isEmpty) {
+      throw StateError(
+        'TFLite returned ${scores.length} scores for ${labels.length} labels.',
+      );
+    }
+    final normalizedScores = preserveProvidedScores
+        ? scores
+            .map((value) => value.clamp(0.0, 1.0).toDouble())
+            .toList(growable: false)
+        : _normalizeFloatScores(scores);
+    final requestedCropType = cropType?.trim().toLowerCase();
+    final hasSelectedCrop =
+        requestedCropType != null && requestedCropType.isNotEmpty;
+    final globalRanking = rankCandidateIndices(
+      scores: normalizedScores,
+      labels: labels,
+    );
+    final detectionRanking = hasSelectedCrop
+        ? rankCandidateIndices(
+            scores: normalizedScores,
+            labels: labels,
+            cropType: requestedCropType,
+          )
+        : globalRanking;
+    final topPredictions = globalRanking
+        .take(3)
+        .map((index) =>
+            '${labels[index]} ${(normalizedScores[index] * 100).toStringAsFixed(1)}%')
+        .join(' | ');
+
+    if (detectionRanking.isEmpty) {
+      return AiBackendDetectResponse(
+        status: 'no_match',
+        source: source,
+        cropType: requestedCropType,
+        detections: const [],
+        model: AiBackendModelInfo(
+          name: modelName,
+          version: modelVersion,
+        ),
+        notes: [
+          'The model has no output classes for the selected crop family: $requestedCropType.',
+          'Input file: $filename',
+          'Top predictions: $topPredictions',
+          if (modelSource != null && modelSource.isNotEmpty)
+            'Model source file: $modelSource',
+        ],
+      );
+    }
+
+    final primaryIndex = detectionRanking.first;
     final rawLabel = labels[primaryIndex];
-    final score = scores[primaryIndex].clamp(0.0, 1.0).toDouble();
-    final secondaryScore =
-        ranked.length > 1 ? scores[ranked[1]].clamp(0.0, 1.0).toDouble() : 0.0;
+    final score = normalizedScores[primaryIndex].clamp(0.0, 1.0).toDouble();
+    final secondaryScore = detectionRanking.length > 1
+        ? normalizedScores[detectionRanking[1]].clamp(0.0, 1.0).toDouble()
+        : 0.0;
     final scoreMargin = (score - secondaryScore).clamp(-1.0, 1.0).toDouble();
     final labelSpec = _labelSpecFor(rawLabel);
-    final requestedCropType = cropType?.trim().toLowerCase();
     final predictedCropType = labelSpec.cropType?.value;
+    final predictedCropFamily = labelSpec.cropFamily;
+    final globalTopSpec = _labelSpecFor(labels[globalRanking.first]);
+    final globalMismatchNote = hasSelectedCrop &&
+            globalTopSpec.cropFamily != requestedCropType
+        ? 'Global highest prediction ${globalTopSpec.displayLabel} is outside the selected $requestedCropType family and was not used for diagnosis.'
+        : null;
     final sameCropConfidence = predictedCropType == null
         ? score
-        : ranked
-            .fold<double>(0.0, (sum, index) {
-              final candidateCropType =
-                  _labelSpecFor(labels[index]).cropType?.value;
-              if (candidateCropType != predictedCropType) {
-                return sum;
-              }
-              return sum + scores[index].clamp(0.0, 1.0).toDouble();
-            })
+        : normalizedScores
+            .asMap()
+            .entries
+            .where((entry) =>
+                entry.key < labels.length &&
+                cropFamilyForLabel(labels[entry.key]) == predictedCropType)
+            .fold<double>(
+              0.0,
+              (sum, entry) => sum + entry.value.clamp(0.0, 1.0).toDouble(),
+            )
             .clamp(0.0, 1.0)
             .toDouble();
     final isUnsupportedCropFamily = predictedCropType == null;
-    final isSelectedCropMismatch = requestedCropType != null &&
-        requestedCropType.isNotEmpty &&
-        predictedCropType != null &&
-        requestedCropType != predictedCropType;
+    final isSelectedCropMismatch =
+        hasSelectedCrop && requestedCropType != predictedCropFamily;
     final isBelowAcceptedConfidence =
         score < AppConstants.temporaryScannerAcceptedConfidence;
-    final isAmbiguous = ranked.length > 1 &&
+    final isAmbiguous = detectionRanking.length > 1 &&
         scoreMargin < AppConstants.temporaryScannerAcceptedMargin;
 
-    final topPredictions = ranked
-        .take(3)
-        .map((index) =>
-            '${labels[index]} ${(scores[index] * 100).toStringAsFixed(1)}%')
-        .join(' | ');
-    final topDetections = ranked.take(3).map((index) {
+    final topDetections = detectionRanking.take(3).map((index) {
       final candidateLabel = labels[index];
       final candidateSpec = _labelSpecFor(candidateLabel);
       return AiBackendDetectionItem(
         label: candidateSpec.displayLabel,
         labelKey: candidateSpec.labelKey,
-        confidence: scores[index].clamp(0.0, 1.0).toDouble(),
+        confidence: normalizedScores[index].clamp(0.0, 1.0).toDouble(),
         bbox: const AiBackendBoundingBox(
           x: 0,
           y: 0,
@@ -142,13 +211,14 @@ class TfliteClassifierCore {
             : 'The model predicted ${labelSpec.displayLabel}, but the selected crop is $requestedCropType.',
         'Input file: $filename',
         'Top predictions: $topPredictions',
+        if (globalMismatchNote != null) globalMismatchNote,
         if (modelSource != null && modelSource.isNotEmpty)
           'Model source file: $modelSource',
       ];
       return AiBackendDetectResponse(
         status: 'no_match',
         source: source,
-        cropType: cropType,
+        cropType: requestedCropType ?? predictedCropType,
         detections: topDetections,
         model: AiBackendModelInfo(
           name: modelName,
@@ -173,7 +243,7 @@ class TfliteClassifierCore {
       return AiBackendDetectResponse(
         status: 'no_match',
         source: source,
-        cropType: predictedCropType,
+        cropType: requestedCropType ?? predictedCropType,
         detections: topDetections,
         model: AiBackendModelInfo(
           name: modelName,
@@ -183,6 +253,7 @@ class TfliteClassifierCore {
           ...rejectionNotes,
           'Input file: $filename',
           'Top predictions: $topPredictions',
+          if (globalMismatchNote != null) globalMismatchNote,
           if (modelSource != null && modelSource.isNotEmpty)
             'Model source file: $modelSource',
         ],
@@ -193,7 +264,10 @@ class TfliteClassifierCore {
       'Temporary TFLite model result generated on device.',
       'Input file: $filename',
       'Top predictions: $topPredictions',
-      'Top prediction margin: ${(scoreMargin * 100).toStringAsFixed(1)}%',
+      if (globalMismatchNote != null) globalMismatchNote,
+      hasSelectedCrop
+          ? 'Selected-family prediction margin: ${(scoreMargin * 100).toStringAsFixed(1)}%'
+          : 'Top prediction margin: ${(scoreMargin * 100).toStringAsFixed(1)}%',
       'Predicted crop-family confidence: ${(sameCropConfidence * 100).toStringAsFixed(1)}%',
       if (!labelSpec.supportedInKnowledgeBase)
         'This predicted class is not fully covered by the current app knowledge base yet.',
@@ -253,13 +327,17 @@ class TfliteClassifierCore {
         ? allIndices
         : allIndices.where((index) {
             if (index >= labels.length) return false;
-            return _labelSpecFor(labels[index]).cropType?.value ==
-                requestedCrop;
+            return cropFamilyForLabel(labels[index]) == requestedCrop;
           }).toList(growable: false);
-    final ranked = candidates.isEmpty ? allIndices : [...candidates];
+    final ranked = [...candidates];
     ranked.sort((a, b) => scores[b].compareTo(scores[a]));
     return ranked;
   }
+
+  /// Returns the crop family encoded in an output label, including legacy
+  /// labels for families that are not selectable in the app.
+  String? cropFamilyForLabel(String rawLabel) =>
+      _labelSpecFor(rawLabel).cropFamily;
 
   /// Build the per-image input tensor for EfficientNetB0.
   ///
@@ -279,11 +357,10 @@ class TfliteClassifierCore {
       throw Exception('Failed to decode image for TFLite inference.');
     }
 
-    final resized = img.copyResize(
-      decoded,
+    final resized = _resizeWithTrainingBilinear(
+      img.bakeOrientation(decoded),
       width: inputWidth,
       height: inputHeight,
-      interpolation: img.Interpolation.average,
     );
 
     if (inputDtype == TfliteInputDtype.uint8) {
@@ -390,18 +467,119 @@ class TfliteClassifierCore {
   }
 }
 
+/// Mirrors Keras/Pillow bilinear resizing: pixel-center coordinates and a
+/// widened triangular filter when downsampling. The two separable passes
+/// retain the antialiasing behavior used by image_dataset_from_directory.
+img.Image _resizeWithTrainingBilinear(
+  img.Image source, {
+  required int width,
+  required int height,
+}) {
+  final horizontalContributions = _bilinearContributions(source.width, width);
+  final horizontallyResized = img.Image(
+    width: width,
+    height: source.height,
+    numChannels: 3,
+  );
+
+  for (var y = 0; y < source.height; y++) {
+    for (var x = 0; x < width; x++) {
+      var red = 0.0;
+      var green = 0.0;
+      var blue = 0.0;
+      for (final contribution in horizontalContributions[x]) {
+        final pixel = source.getPixel(contribution.index, y);
+        red += pixel.r.toDouble() * contribution.weight;
+        green += pixel.g.toDouble() * contribution.weight;
+        blue += pixel.b.toDouble() * contribution.weight;
+      }
+      horizontallyResized.setPixelRgb(
+        x,
+        y,
+        red.round(),
+        green.round(),
+        blue.round(),
+      );
+    }
+  }
+
+  final verticalContributions = _bilinearContributions(source.height, height);
+  final resized = img.Image(width: width, height: height, numChannels: 3);
+  for (var y = 0; y < height; y++) {
+    for (var x = 0; x < width; x++) {
+      var red = 0.0;
+      var green = 0.0;
+      var blue = 0.0;
+      for (final contribution in verticalContributions[y]) {
+        final pixel = horizontallyResized.getPixel(x, contribution.index);
+        red += pixel.r.toDouble() * contribution.weight;
+        green += pixel.g.toDouble() * contribution.weight;
+        blue += pixel.b.toDouble() * contribution.weight;
+      }
+      resized.setPixelRgb(
+        x,
+        y,
+        red.round(),
+        green.round(),
+        blue.round(),
+      );
+    }
+  }
+  return resized;
+}
+
+List<List<_ResizeContribution>> _bilinearContributions(
+  int sourceLength,
+  int targetLength,
+) {
+  final scale = sourceLength / targetLength;
+  final filterScale = math.max(1.0, scale);
+  return List.generate(targetLength, (targetIndex) {
+    final center = (targetIndex + 0.5) * scale;
+    final first = math.max(0, (center - filterScale).floor());
+    final end = math.min(sourceLength, (center + filterScale).ceil());
+    final weights = <_ResizeContribution>[];
+    var totalWeight = 0.0;
+    for (var sourceIndex = first; sourceIndex < end; sourceIndex++) {
+      final distance = ((sourceIndex + 0.5 - center) / filterScale).abs();
+      final weight = math.max(0.0, 1.0 - distance);
+      if (weight > 0) {
+        weights.add(_ResizeContribution(sourceIndex, weight));
+        totalWeight += weight;
+      }
+    }
+    return weights
+        .map((contribution) => _ResizeContribution(
+              contribution.index,
+              contribution.weight / totalWeight,
+            ))
+        .toList(growable: false);
+  }, growable: false);
+}
+
+class _ResizeContribution {
+  final int index;
+  final double weight;
+
+  const _ResizeContribution(this.index, this.weight);
+}
+
 class _LabelSpec {
   final String rawLabel;
   final String displayLabel;
   final String labelKey;
   final CropType? cropType;
+  final String? cropFamilyOverride;
   final bool supportedInKnowledgeBase;
+
+  String? get cropFamily => cropFamilyOverride ?? cropType?.value;
 
   const _LabelSpec({
     required this.rawLabel,
     required this.displayLabel,
     required this.labelKey,
     this.cropType,
+    this.cropFamilyOverride,
     this.supportedInKnowledgeBase = false,
   });
 }
@@ -425,6 +603,12 @@ const Map<String, _LabelSpec> _labelSpecs = {
     rawLabel: 'squash_powdery_mildew',
     displayLabel: 'Squash Powdery Mildew',
     labelKey: 'squash_powdery_mildew',
+    cropType: CropType.squash,
+  ),
+  'squash_healthy': _LabelSpec(
+    rawLabel: 'squash_healthy',
+    displayLabel: 'Squash Healthy',
+    labelKey: 'squash_healthy',
     cropType: CropType.squash,
   ),
   'tomato_bacterial_spot': _LabelSpec(
@@ -501,21 +685,25 @@ const Map<String, _LabelSpec> _labelSpecs = {
     rawLabel: 'Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot',
     displayLabel: 'Corn Cercospora Leaf Spot / Gray Leaf Spot',
     labelKey: 'corn_cercospora_leaf_spot_gray_leaf_spot',
+    cropFamilyOverride: 'corn',
   ),
   'Corn_(maize)___Common_rust_': _LabelSpec(
     rawLabel: 'Corn_(maize)___Common_rust_',
     displayLabel: 'Corn Common Rust',
     labelKey: 'corn_common_rust',
+    cropFamilyOverride: 'corn',
   ),
   'Corn_(maize)___Northern_Leaf_Blight': _LabelSpec(
     rawLabel: 'Corn_(maize)___Northern_Leaf_Blight',
     displayLabel: 'Corn Northern Leaf Blight',
     labelKey: 'corn_northern_leaf_blight',
+    cropFamilyOverride: 'corn',
   ),
   'Corn_(maize)___healthy': _LabelSpec(
     rawLabel: 'Corn_(maize)___healthy',
     displayLabel: 'Corn Healthy',
     labelKey: 'corn_healthy',
+    cropFamilyOverride: 'corn',
   ),
   'Eggplant_healthy': _LabelSpec(
     rawLabel: 'Eggplant_healthy',

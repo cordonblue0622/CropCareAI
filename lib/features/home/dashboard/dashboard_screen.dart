@@ -23,11 +23,17 @@ import 'widgets/farm_weather_sheet.dart';
 import '../../library/library_screen.dart';
 import '../../chat/screens/chat_screen.dart';
 import '../../account/nav_drawer.dart';
+import '../../onboarding/guided_tour/guided_tour_targets.dart';
 
 class DashboardScreen extends StatefulWidget {
   final VoidCallback? onOpenMyCrops;
+  final ScrollController? scrollController;
 
-  const DashboardScreen({super.key, this.onOpenMyCrops});
+  const DashboardScreen({
+    super.key,
+    this.onOpenMyCrops,
+    this.scrollController,
+  });
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -569,6 +575,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
         },
         child: CustomScrollView(
+          controller: widget.scrollController,
           slivers: [
             SliverAppBar(
               floating: true,
@@ -583,6 +590,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               automaticallyImplyLeading: false,
               titleSpacing: 0,
               title: Padding(
+                key: AppTourKeys.dashboardWelcome,
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(children: [
                   Tooltip(
@@ -664,7 +672,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                   const SizedBox(width: 2),
-                  Stack(children: [
+                  Stack(key: AppTourKeys.notifications, children: [
                     IconButton(
                       icon: const Icon(Icons.notifications_outlined,
                           color: Colors.white),
@@ -729,10 +737,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             _showVitalityDialog(context, allRecentActiveCrops),
                   ),
                   const SizedBox(height: 8),
-                  _buildVitality(
-                    crops,
-                    dashboardActiveCrops,
-                    allRecentActiveCrops,
+                  KeyedSubtree(
+                    key: AppTourKeys.dashboardOverview,
+                    child: _buildVitality(
+                      crops,
+                      dashboardActiveCrops,
+                      allRecentActiveCrops,
+                    ),
                   ),
                   const SizedBox(height: 24),
 
@@ -758,9 +769,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     const SizedBox(height: 16),
 
                   // Today's Tasks
-                  _TodayTasksCard(
-                    notifs: notifs,
-                    onViewAll: () => _pushNotifications(context),
+                  KeyedSubtree(
+                    key: AppTourKeys.dailyTasks,
+                    child: _TodayTasksCard(
+                      notifs: notifs,
+                      onViewAll: () => _pushNotifications(context),
+                    ),
                   ),
                   const SizedBox(height: 24),
 
@@ -793,6 +807,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
       floatingActionButton: FloatingActionButton(
+        key: AppTourKeys.cropDoctor,
         heroTag: 'dashboard_crop_doctor_fab',
         onPressed: () => _openChat(context),
         tooltip: 'Open crop doctor',

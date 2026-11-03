@@ -12,6 +12,7 @@ import '../../notifications/providers/notifications_provider.dart';
 import '../providers/crops_provider.dart';
 import 'crop_detail_screen.dart';
 import 'add_crop_screen.dart';
+import '../../onboarding/guided_tour/guided_tour_targets.dart';
 
 class MyCropsScreen extends StatefulWidget {
   const MyCropsScreen({super.key});
@@ -77,6 +78,7 @@ class _MyCropsScreenState extends State<MyCropsScreen> {
     return Scaffold(
       backgroundColor: AppColors.backgroundCream,
       appBar: AppBar(
+        key: AppTourKeys.myCropsAppBar,
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         title: const Text('My Crops',

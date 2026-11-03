@@ -1136,6 +1136,10 @@ class _MessageBubbleState extends State<_MessageBubble> {
             true;
     final diseaseName = meta['disease_name'] as String? ?? '';
     final labelKey = meta['label_key'] as String? ?? '';
+    final diagnosisId = meta['diagnosis_id'] as String?;
+    final diagnosedAt = DateTime.tryParse(
+      meta['diagnosed_at'] as String? ?? '',
+    );
     final rawSeverity = meta['severity'] as String? ?? '';
     final rawDiagnosisMode =
         meta['diagnosis_mode'] as String? ?? DiagnosisMode.online.value;
@@ -1254,6 +1258,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                             labelKey: labelKey,
                             rawSeverity: rawSeverity,
                             diagnosisMode: diagnosisMode,
+                            diagnosisId: diagnosisId,
+                            diagnosedAt: diagnosedAt,
                             rawCropType: rawCropType,
                             summary: summary,
                             modelName: modelName,
@@ -1280,6 +1286,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
     required String labelKey,
     required String rawSeverity,
     required DiagnosisMode diagnosisMode,
+    required String? diagnosisId,
+    required DateTime? diagnosedAt,
     required String rawCropType,
     required String summary,
     required String modelName,
@@ -1386,6 +1394,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   }
 
                   Navigator.of(ctx).pop();
+                  final chatProvider = context.read<ChatProvider>();
+                  final messenger = ScaffoldMessenger.of(context);
                   final cropId = await cropsProvider.addCropFromDiagnosis(
                     userId: user.id,
                     diseaseName: diseaseName,
@@ -1403,21 +1413,21 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     videoUrl: videoUrl,
                     imageUrl: imageUrl?.isEmpty == true ? null : imageUrl,
                     diagnosisMode: diagnosisMode,
-                    chatSessionId:
-                        context.read<ChatProvider>().currentSession?.id,
+                    diagnosisId: diagnosisId,
+                    diagnosedAt: diagnosedAt,
+                    chatSessionId: chatProvider.currentSession?.id,
                   );
-                  if (!mounted) return;
+                  if (!messenger.mounted) return;
                   if (cropId != null) {
-                    await context
-                        .read<ChatProvider>()
-                        .linkCurrentSessionToCrop(cropId);
+                    await chatProvider.linkCurrentSessionToCrop(cropId);
+                    if (!messenger.mounted) return;
                     final syncWarning = cropsProvider.error;
-                    final messenger = ScaffoldMessenger.of(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    messenger.showSnackBar(
                       SnackBar(
                         content: Text(
-                          syncWarning ??
-                              'Crop added to My Crops and synced to your account.',
+                          syncWarning == null
+                              ? 'Crop added to My Crops and synced to your account.'
+                              : "Crop saved successfully on this device. It will automatically sync when you're back online.",
                         ),
                         backgroundColor:
                             syncWarning == null ? AppColors.primary : null,
@@ -1427,29 +1437,10 @@ class _MessageBubbleState extends State<_MessageBubble> {
                         behavior: SnackBarBehavior.floating,
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10)),
-                        action: syncWarning == null
-                            ? null
-                            : SnackBarAction(
-                                label: 'Retry',
-                                onPressed: () async {
-                                  final synced =
-                                      await cropsProvider.retryCropSync(cropId);
-                                  if (!messenger.mounted) return;
-                                  messenger.showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        synced
-                                            ? 'Crop synced to your account.'
-                                            : 'Crop is still saved only on this device. Keep the app installed and try again later.',
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
                       ),
                     );
                   } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    messenger.showSnackBar(
                       SnackBar(
                         content: Text(
                           cropsProvider.error ??

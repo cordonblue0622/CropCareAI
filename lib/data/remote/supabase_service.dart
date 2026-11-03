@@ -95,6 +95,7 @@ class SupabaseService {
   }
 
   User? get currentUser => _client.auth.currentUser;
+  String? get authenticatedUserId => currentUser?.id;
   Session? get currentSession => _client.auth.currentSession;
   bool get isSignedIn => currentUser != null;
 

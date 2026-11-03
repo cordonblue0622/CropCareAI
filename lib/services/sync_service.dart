@@ -21,8 +21,9 @@ class SyncService {
   final DatabaseHelper dbHelper;
   final StreamController<void> _remoteCropChanges =
       StreamController<void>.broadcast();
-  late final AiBackendService _aiBackend =
-      AiBackendService(supabase: supabaseService);
+  final StreamController<void> _syncCompleted =
+      StreamController<void>.broadcast();
+  late final AiBackendService _aiBackend;
 
   bool _isSyncing = false;
   bool _isRefreshingRemoteCrops = false;
@@ -35,8 +36,11 @@ class SyncService {
   SyncService({
     required this.supabaseService,
     required this.dbHelper,
+    AiBackendService? aiBackend,
+    Stream<bool>? connectivityChanges,
   }) {
-    _listenForConnectivity();
+    _aiBackend = aiBackend ?? AiBackendService(supabase: supabaseService);
+    _listenForConnectivity(connectivityChanges);
     supabaseService.authStateChanges.listen((state) {
       final userId = state.session?.user.id;
       if (userId == null) {
@@ -54,6 +58,7 @@ class SyncService {
   }
 
   Stream<void> get remoteCropChanges => _remoteCropChanges.stream;
+  Stream<void> get syncCompleted => _syncCompleted.stream;
 
   Future<void> _subscribeToCropChanges(String userId) async {
     if (_subscribedCropUserId == userId) return;
@@ -110,12 +115,25 @@ class SyncService {
 
   // ─── Connectivity Listener ────────────────────────────────────────────────
 
-  void _listenForConnectivity() {
+  void _listenForConnectivity([Stream<bool>? connectivityChanges]) {
+    void synchronizeAfterReconnect(bool online) {
+      if (!online || !supabaseService.isSignedIn) return;
+      unawaited(syncAll().catchError((error, stackTrace) {
+        debugPrint(
+          '[SyncService] Automatic sync failed; local changes remain queued: '
+          '$error\n$stackTrace',
+        );
+      }));
+    }
+
+    if (connectivityChanges != null) {
+      connectivityChanges.listen(synchronizeAfterReconnect);
+      return;
+    }
     Connectivity().onConnectivityChanged.listen((results) {
-      final online = results.any((r) => r != ConnectivityResult.none);
-      if (online && supabaseService.isSignedIn) {
-        syncAll();
-      }
+      synchronizeAfterReconnect(
+        results.any((result) => result != ConnectivityResult.none),
+      );
     });
   }
 
@@ -149,16 +167,28 @@ class SyncService {
 
     await _reassessPendingPhotoCheckIns(userId);
     await pullFromRemote(userId: userId);
+    _syncCompleted.add(null);
   }
 
   // ─── Push ──────────────────────────────────────────────────────────────────
 
   Future<void> pushPendingChanges() async {
+    final authenticatedUserId = supabaseService.authenticatedUserId;
+    if (authenticatedUserId == null || authenticatedUserId.trim().isEmpty) {
+      return;
+    }
     if (_isSyncing) return;
     _isSyncing = true;
     try {
       final pending =
           orderPendingSyncItems(await dbHelper.getPendingSyncItems());
+      final pendingTreatmentUpsertIds = pending
+          .where((item) =>
+              item['table_name'] == AppConstants.treatmentsTable &&
+              item['operation'] == 'UPSERT')
+          .map((item) => item['record_id'] as String?)
+          .whereType<String>()
+          .toSet();
       final failedCropIds = <String>{};
       final failedChatSessionIds = <String>{};
       final failedDiagnosisIds = <String>{};
@@ -178,6 +208,28 @@ class SyncService {
         }
         final Map<String, dynamic> payload =
             jsonDecode(payloadJson) as Map<String, dynamic>;
+
+        var recordUserId = payload['user_id'] as String?;
+        if (recordUserId == null || recordUserId.trim().isEmpty) {
+          final localRow = await dbHelper.queryById(
+            table,
+            payload['id'] as String? ?? item['record_id'] as String,
+          );
+          final localUserId = localRow?['user_id'] as String?;
+          if (localUserId?.trim().isNotEmpty == true) {
+            recordUserId = localUserId;
+          }
+        }
+        final normalizedRecordUserId = recordUserId?.trim();
+        if (normalizedRecordUserId == null ||
+            normalizedRecordUserId.isEmpty ||
+            normalizedRecordUserId != authenticatedUserId.trim()) {
+          debugPrint(
+            '[SyncService] Deferred $op $table record '
+            '${payload['id'] ?? item['record_id']} until its owner can be verified.',
+          );
+          continue;
+        }
 
         final cropId = payload['crop_id'] as String?;
         final diagnosisId = payload['diagnosis_id'] as String?;
@@ -240,18 +292,20 @@ class SyncService {
             );
             continue;
           }
-          if (!syncedTreatmentIds.contains(treatmentId)) {
+          if (!syncedTreatmentIds.contains(treatmentId) &&
+              pendingTreatmentUpsertIds.contains(treatmentId)) {
             if (failedTreatmentIds.contains(treatmentId)) continue;
 
             final localTreatment = await dbHelper.queryById(
               AppConstants.treatmentsTable,
               treatmentId,
             );
-            if (localTreatment == null) {
+            if (localTreatment == null ||
+                localTreatment['user_id'] != authenticatedUserId) {
               failedTreatmentIds.add(treatmentId);
               debugPrint(
                 '[SyncService] Deferred task ${payload['id']} because its '
-                'treatment $treatmentId is missing locally.',
+                'treatment $treatmentId is unavailable to this account.',
               );
               continue;
             }
@@ -284,12 +338,6 @@ class SyncService {
                 table: table,
                 data: preparedPayload,
               );
-              if (table == AppConstants.progressUpdatesTable) {
-                await _cacheSyncedProgressImage(
-                  localPayload: payload,
-                  syncedPayload: preparedPayload,
-                );
-              }
               break;
             case 'DELETE':
               await supabaseService.deleteRecord(
@@ -389,40 +437,51 @@ class SyncService {
     return prepared;
   }
 
-  Future<void> _cacheSyncedProgressImage({
-    required Map<String, dynamic> localPayload,
-    required Map<String, dynamic> syncedPayload,
-  }) async {
-    final remoteImageUrl = normalizeImageReference(syncedPayload['image_url']);
-    if (remoteImageUrl == null || !isRemoteImageReference(remoteImageUrl)) {
-      return;
-    }
-
-    final cached = Map<String, dynamic>.from(localPayload)
-      ..['image_url'] = remoteImageUrl;
-    await dbHelper.upsertRow(AppConstants.progressUpdatesTable, cached);
-  }
-
   Future<void> _reassessPendingPhotoCheckIns(String userId) async {
+    await dbHelper.resetStaleProgressAnalysisClaims();
+    final queuedProgressIds = (await dbHelper.getPendingSyncItems())
+        .where((item) =>
+            item['table_name'] == AppConstants.progressUpdatesTable &&
+            (item['operation'] == 'UPSERT' ||
+                item['operation'] == 'SOFT_DELETE'))
+        .map((item) => item['record_id'] as String?)
+        .whereType<String>()
+        .toSet();
     final updates = await dbHelper.queryByUserId(
       AppConstants.progressUpdatesTable,
       userId,
     );
     final pending = updates.where((update) {
       final imageUrl = normalizeImageReference(update['image_url']);
-      return update['progress_status'] ==
-              ProgressStatus.insufficientData.value &&
-          imageUrl != null;
+      final status = update['ai_analysis_status'] as String? ??
+          (update['progress_status'] == ProgressStatus.insufficientData.value &&
+                  imageUrl != null
+              ? 'pending'
+              : 'not_required');
+      return !queuedProgressIds.contains(update['id']) &&
+          (status == 'pending' || status == 'failed') &&
+          decodeInlineImageDataUrl(imageUrl) != null;
     }).toList();
 
     for (final update in pending) {
       try {
         await _reassessPhotoCheckIn(update, userId);
-      } catch (_) {
-        // Keep the stored update pending so the next online sync can retry.
+      } catch (error) {
+        final progressId = update['id'] as String?;
+        if (progressId != null) {
+          await dbHelper.setProgressAnalysisState(
+            progressId: progressId,
+            status: 'failed',
+            error: error.toString(),
+          );
+        }
       }
     }
   }
+
+  @visibleForTesting
+  Future<void> reassessPendingPhotoCheckInsForTest(String userId) =>
+      _reassessPendingPhotoCheckIns(userId);
 
   Future<void> _reassessPhotoCheckIn(
     Map<String, dynamic> update,
@@ -433,9 +492,19 @@ class SyncService {
     if (imageUrl == null || cropId == null || cropId.isEmpty) {
       return;
     }
+    final progressId = update['id'] as String?;
+    if (progressId == null ||
+        !await dbHelper.claimProgressAnalysis(progressId)) {
+      return;
+    }
 
     final crop = await dbHelper.queryById(AppConstants.cropsTable, cropId);
-    if (crop == null) {
+    if (crop == null || crop['user_id'] != userId) {
+      await dbHelper.setProgressAnalysisState(
+        progressId: progressId,
+        status: 'failed',
+        error: 'The associated crop is unavailable to this account.',
+      );
       return;
     }
 
@@ -464,6 +533,11 @@ class SyncService {
       currentHealthScore: (crop['latest_health_score'] as num?)?.toDouble(),
     );
     if (!response.accepted) {
+      await dbHelper.setProgressAnalysisState(
+        progressId: progressId,
+        status: 'failed',
+        error: response.rejectionReason ?? 'The image was not accepted.',
+      );
       return;
     }
 
@@ -476,6 +550,9 @@ class SyncService {
       ..['note'] = response.assessment.trim().isEmpty
           ? update['note']
           : response.assessment.trim()
+      ..['ai_analysis_status'] = 'completed'
+      ..['ai_analysis_error'] = null
+      ..['ai_analysis_started_at'] = null
       ..['updated_at'] = now;
     final assessedCrop = Map<String, dynamic>.from(crop)
       ..['latest_health_score'] = response.healthScore
@@ -483,16 +560,29 @@ class SyncService {
       ..['last_checked_at'] = now
       ..['updated_at'] = now;
 
-    await dbHelper.upsertRow(AppConstants.progressUpdatesTable, assessedUpdate);
-    await dbHelper.upsertRow(AppConstants.cropsTable, assessedCrop);
-    await supabaseService.upsertRecord(
-      table: AppConstants.progressUpdatesTable,
-      data: assessedUpdate,
-    );
-    await supabaseService.upsertRecord(
-      table: AppConstants.cropsTable,
-      data: assessedCrop,
-    );
+    final remoteProgress = Map<String, dynamic>.from(assessedUpdate)
+      ..remove('ai_analysis_status')
+      ..remove('ai_analysis_error')
+      ..remove('ai_analysis_started_at')
+      ..['is_deleted'] = assessedUpdate['is_deleted'] == true ||
+          assessedUpdate['is_deleted'] == 1;
+    final remoteCrop = Map<String, dynamic>.from(assessedCrop)
+      ..['is_deleted'] =
+          assessedCrop['is_deleted'] == true || assessedCrop['is_deleted'] == 1;
+    await persistQueuedUpserts([
+      LocalSyncUpsert(
+        tableName: AppConstants.progressUpdatesTable,
+        recordId: progressId,
+        localData: assessedUpdate,
+        remoteData: remoteProgress,
+      ),
+      LocalSyncUpsert(
+        tableName: AppConstants.cropsTable,
+        recordId: cropId,
+        localData: assessedCrop,
+        remoteData: remoteCrop,
+      ),
+    ]);
   }
 
   String _progressStatusValue(String value) {
@@ -559,7 +649,16 @@ class SyncService {
 
     await dbHelper.upsertRows(AppConstants.cropsTable, cropsToUpsert);
     await dbHelper.upsertRows(
-        AppConstants.diagnosesTable, _encodeNestedValues(diagnosesToUpsert));
+      AppConstants.diagnosesTable,
+      _encodeNestedValues(preserveLocalImageReferences(
+        localRows: await dbHelper.queryByUserId(
+          AppConstants.diagnosesTable,
+          userId,
+          includeDeleted: true,
+        ),
+        mergedRows: diagnosesToUpsert,
+      )),
+    );
     // Supabase returns list-type columns (e.g. treatment_steps,
     // observed_symptoms) as Dart Lists. SQLite only supports scalar types, so
     // encode any nested List/Map values to JSON strings before local upsert.
@@ -582,8 +681,16 @@ class SyncService {
       userId: userId,
       remoteRows: progressRows,
     );
-    await dbHelper.upsertRows(AppConstants.progressUpdatesTable,
-        _encodeNestedValues(progressToUpsert));
+    await dbHelper.upsertRows(
+        AppConstants.progressUpdatesTable,
+        _encodeNestedValues(preserveLocalProgressData(
+          localRows: await dbHelper.queryByUserId(
+            AppConstants.progressUpdatesTable,
+            userId,
+            includeDeleted: true,
+          ),
+          mergedRows: progressToUpsert,
+        )));
 
     final messageRows = <Map<String, dynamic>>[];
     for (final session in sessions) {
@@ -674,6 +781,130 @@ class SyncService {
     return remoteTimestamp.compareTo(localTimestamp) >= 0;
   }
 
+  /// Keep locally captured photo bytes and local-only analysis bookkeeping
+  /// when a cloud row for the same progress record is pulled back down.
+  static List<Map<String, dynamic>> preserveLocalProgressData({
+    required Iterable<Map<String, dynamic>> localRows,
+    required Iterable<Map<String, dynamic>> mergedRows,
+  }) {
+    final localById = <String, Map<String, dynamic>>{
+      for (final row in localRows)
+        if ((row['id'] as String?)?.trim().isNotEmpty ?? false)
+          (row['id'] as String).trim(): row,
+    };
+    return mergedRows.map((remoteRow) {
+      final merged = Map<String, dynamic>.from(remoteRow);
+      final id = (remoteRow['id'] as String?)?.trim();
+      if (id == null || id.isEmpty) return merged;
+      final local = localById[id];
+      if (local == null) return merged;
+
+      final localImage = normalizeImageReference(local['image_url']);
+      final remoteImage = normalizeImageReference(remoteRow['image_url']);
+      if (isInlineImageDataUrl(localImage) &&
+          !isInlineImageDataUrl(remoteImage)) {
+        merged['image_url'] = localImage;
+      }
+      for (final key in const [
+        'ai_analysis_status',
+        'ai_analysis_error',
+        'ai_analysis_started_at',
+      ]) {
+        if (local.containsKey(key)) merged[key] = local[key];
+      }
+      return merged;
+    }).toList(growable: false);
+  }
+
+  static List<Map<String, dynamic>> preserveLocalImageReferences({
+    required Iterable<Map<String, dynamic>> localRows,
+    required Iterable<Map<String, dynamic>> mergedRows,
+  }) {
+    final localById = <String, Map<String, dynamic>>{
+      for (final row in localRows)
+        if ((row['id'] as String?)?.trim().isNotEmpty ?? false)
+          (row['id'] as String).trim(): row,
+    };
+    return mergedRows.map((remoteRow) {
+      final merged = Map<String, dynamic>.from(remoteRow);
+      final id = (remoteRow['id'] as String?)?.trim();
+      final local = id == null || id.isEmpty ? null : localById[id];
+      if (local == null) return merged;
+      final localImage = normalizeImageReference(local['image_url']);
+      final remoteImage = normalizeImageReference(remoteRow['image_url']);
+      if (isInlineImageDataUrl(localImage) &&
+          !isInlineImageDataUrl(remoteImage)) {
+        merged['image_url'] = localImage;
+      }
+      return merged;
+    }).toList(growable: false);
+  }
+
+  static List<Map<String, dynamic>> preserveLocalChatImages({
+    required Iterable<Map<String, dynamic>> localRows,
+    required Iterable<Map<String, dynamic>> mergedRows,
+  }) {
+    Map<String, dynamic>? parseMetadata(dynamic value) {
+      if (value is Map) return Map<String, dynamic>.from(value);
+      if (value is String && value.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(value);
+          if (decoded is Map) return Map<String, dynamic>.from(decoded);
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    final localById = <String, Map<String, dynamic>>{
+      for (final row in localRows)
+        if ((row['id'] as String?)?.trim().isNotEmpty ?? false)
+          (row['id'] as String).trim(): row,
+    };
+    return mergedRows.map((remoteRow) {
+      final merged = Map<String, dynamic>.from(remoteRow);
+      final id = (remoteRow['id'] as String?)?.trim();
+      final local = id == null || id.isEmpty ? null : localById[id];
+      if (local == null) return merged;
+      final localMetadata = parseMetadata(local['metadata']);
+      final remoteMetadata =
+          parseMetadata(remoteRow['metadata']) ?? <String, dynamic>{};
+      if (localMetadata == null) return merged;
+
+      var changed = false;
+      final localSingle = normalizeImageReference(localMetadata['image_url']);
+      final remoteSingle = normalizeImageReference(remoteMetadata['image_url']);
+      if (isInlineImageDataUrl(localSingle) &&
+          !isInlineImageDataUrl(remoteSingle)) {
+        remoteMetadata['image_url'] = localSingle;
+        changed = true;
+      }
+      final localImages = localMetadata['image_urls'];
+      final remoteImages = remoteMetadata['image_urls'];
+      if (localImages is List) {
+        final localReferences =
+            localImages.map((value) => value.toString()).toList();
+        final remoteReferences = remoteImages is List
+            ? remoteImages.map((value) => value.toString()).toList()
+            : <String>[];
+        for (var index = 0; index < localReferences.length; index++) {
+          if (isInlineImageDataUrl(localReferences[index]) &&
+              (index >= remoteReferences.length ||
+                  !isInlineImageDataUrl(remoteReferences[index]))) {
+            if (index >= remoteReferences.length) {
+              remoteReferences.add(localReferences[index]);
+            } else {
+              remoteReferences[index] = localReferences[index];
+            }
+            changed = true;
+          }
+        }
+        if (changed) remoteMetadata['image_urls'] = remoteReferences;
+      }
+      if (changed) merged['metadata'] = jsonEncode(remoteMetadata);
+      return merged;
+    }).toList(growable: false);
+  }
+
   static List<Map<String, dynamic>> mergeLocalAndRemoteRows({
     required Iterable<Map<String, dynamic>> localRows,
     required Iterable<Map<String, dynamic>> remoteRows,
@@ -735,12 +966,43 @@ class SyncService {
     if (table == AppConstants.chatMessagesTable) {
       final metadata = _parseMetadata(prepared['metadata']);
       if (metadata != null) {
-        await _replaceInlineImageReference(
-          container: metadata,
-          key: 'image_url',
-          userId: prepared['user_id'] as String?,
-          recordId: prepared['id'] as String?,
-        );
+        final images = metadata['image_urls'];
+        if (images is List && images.isNotEmpty) {
+          final uploadedReferences = <String>[];
+          for (var index = 0; index < images.length; index++) {
+            final imageUrl = normalizeImageReference(images[index]);
+            final imageBytes = decodeInlineImageDataUrl(imageUrl);
+            if (imageBytes == null) {
+              if (imageUrl != null) uploadedReferences.add(imageUrl);
+              continue;
+            }
+            final userId = prepared['user_id'] as String?;
+            final messageId = prepared['id'] as String?;
+            if (userId == null || messageId == null) {
+              throw StateError('Missing identifiers for queued chat images.');
+            }
+            final uploadedUrl = await supabaseService.uploadChatImage(
+              userId: userId,
+              messageId: '$messageId-$index',
+              bytes: imageBytes,
+            );
+            if (uploadedUrl == null || uploadedUrl.trim().isEmpty) {
+              throw StateError('Could not upload queued chat image $index.');
+            }
+            uploadedReferences.add(uploadedUrl);
+          }
+          metadata['image_urls'] = uploadedReferences;
+          if (uploadedReferences.isNotEmpty) {
+            metadata['image_url'] = uploadedReferences.first;
+          }
+        } else {
+          await _replaceInlineImageReference(
+            container: metadata,
+            key: 'image_url',
+            userId: prepared['user_id'] as String?,
+            recordId: prepared['id'] as String?,
+          );
+        }
         prepared['metadata'] = metadata;
       }
       return prepared;
@@ -748,6 +1010,12 @@ class SyncService {
 
     if (table == AppConstants.diagnosesTable ||
         table == AppConstants.progressUpdatesTable) {
+      if (table == AppConstants.progressUpdatesTable) {
+        prepared
+          ..remove('ai_analysis_status')
+          ..remove('ai_analysis_error')
+          ..remove('ai_analysis_started_at');
+      }
       await _replaceInlineImageReference(
         container: prepared,
         key: 'image_url',
@@ -837,12 +1105,16 @@ class SyncService {
   Future<void> queueDelete({
     required String tableName,
     required String recordId,
+    String? userId,
   }) async {
     await dbHelper.addToSyncQueue(
       tableName: tableName,
       recordId: recordId,
       operation: 'DELETE',
-      payload: jsonEncode({'id': recordId}),
+      payload: jsonEncode({
+        'id': recordId,
+        if (userId != null && userId.trim().isNotEmpty) 'user_id': userId,
+      }),
     );
     _queueRevision++;
   }
@@ -850,12 +1122,16 @@ class SyncService {
   Future<void> queueSoftDelete({
     required String tableName,
     required String recordId,
+    String? userId,
   }) async {
     await dbHelper.addToSyncQueue(
       tableName: tableName,
       recordId: recordId,
       operation: 'SOFT_DELETE',
-      payload: jsonEncode({'id': recordId}),
+      payload: jsonEncode({
+        'id': recordId,
+        if (userId != null && userId.trim().isNotEmpty) 'user_id': userId,
+      }),
     );
     _queueRevision++;
   }

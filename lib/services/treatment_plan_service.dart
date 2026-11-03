@@ -2,6 +2,7 @@
 // A task is created for every required occurrence instead of storing a
 // recurrence rule that could be missed while the device is offline.
 import '../data/models/disease_treatment_day_step_model.dart';
+import 'treatment_action_parser.dart';
 
 class TreatmentPlanService {
   TreatmentPlanService._();
@@ -94,13 +95,10 @@ class TreatmentPlanService {
 
     final tasks = <TreatmentPlanTask>[];
     for (final step in activeSteps) {
-      final actions = step.tasks
-          .map((task) => task.trim())
-          .where((task) => task.isNotEmpty)
-          .toList(growable: false);
+      final actions = TreatmentActionParser.normalize(step.tasks);
       final taskActions = actions.isEmpty ? [step.dayTitle.trim()] : actions;
       for (final action in taskActions) {
-        if (action.isEmpty) continue;
+        if (!TreatmentActionParser.isMeaningful(action)) continue;
         tasks.add(
           TreatmentPlanTask(
             day: step.dayNumber,
@@ -181,14 +179,7 @@ class TreatmentPlanService {
   }
 
   static List<String> _uniqueSteps(List<String> steps) {
-    final result = <String>[];
-    for (final step in steps) {
-      final normalized = step.trim();
-      if (normalized.isNotEmpty && !result.contains(normalized)) {
-        result.add(normalized);
-      }
-    }
-    return result;
+    return TreatmentActionParser.normalize(steps);
   }
 
   static DateTime _dateForDay(DateTime startDate, int day) {

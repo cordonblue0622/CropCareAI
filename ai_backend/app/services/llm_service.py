@@ -956,10 +956,15 @@ class LlmService:
         if raw is None:
             return []
         if isinstance(raw, list):
-            return [str(item).strip() for item in raw if str(item).strip()]
+            return [
+                str(item).strip()
+                for item in raw
+                if str(item).strip()
+                and not re.fullmatch(r"\d{1,2}[.)]", str(item).strip())
+            ]
         if isinstance(raw, str):
             text = raw.strip()
-            return [text] if text else []
+            return [text] if text and not re.fullmatch(r"\d{1,2}[.)]", text) else []
         return []
 
     def _extract_treatment_actions(self, text: str) -> list[str]:
@@ -1008,8 +1013,30 @@ class LlmService:
         normalized = re.sub(r"\s+", " ", text).strip()
         if not normalized:
             return []
-        sentences = re.split(r"(?<=[.!?])\s+", normalized)
-        return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+        # Keep numbered instructions intact. Splitting sentences first turns
+        # "1. Remove leaves." into a number-only task and a separate action.
+        markers = [
+            match
+            for match in re.finditer(r"\d{1,2}[.)]\s+", normalized)
+            if match.start() == 0 or normalized[match.start() - 1] == " "
+        ]
+        if markers:
+            actions: list[str] = []
+            prefix = normalized[: markers[0].start()].strip()
+            if prefix:
+                actions.append(prefix)
+            for index, marker in enumerate(markers):
+                end = markers[index + 1].start() if index + 1 < len(markers) else len(normalized)
+                actions.append(normalized[marker.start() : end].strip())
+        else:
+            actions = re.split(r"(?<=[.!?])\s+", normalized)
+
+        return [
+            action.strip()
+            for action in actions
+            if action.strip() and not re.fullmatch(r"\d{1,2}[.)]", action.strip())
+        ]
 
     def _response_sources(
         self,

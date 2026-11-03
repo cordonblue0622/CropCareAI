@@ -13,6 +13,8 @@ import '../crops/screens/crops_screen.dart';
 import '../voice/voice_screen.dart';
 import '../scan/scan_screen.dart';
 import '../account/account_screen.dart';
+import '../onboarding/guided_tour/guided_tour_host.dart';
+import '../onboarding/guided_tour/guided_tour_targets.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,6 +28,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final GlobalKey<GuidedTourHostState> _tourHostKey = GlobalKey();
+  final ScrollController _dashboardScrollController = ScrollController();
   int _currentIndex = 0;
   int _voiceScreenVersion = 0;
 
@@ -66,6 +70,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _connectivitySub.cancel();
+    _dashboardScrollController.dispose();
     HomeScreen.tabSelection.removeListener(_handleExternalTabSelection);
     super.dispose();
   }
@@ -112,24 +117,36 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final unread = context.watch<NotificationsProvider>().unreadCount;
+    final userId = context.watch<AuthProvider>().currentUser?.id ?? '';
 
-    return Scaffold(
-      body: IndexedStack(
-        index: _currentIndex,
-        children: [
-          DashboardScreen(onOpenMyCrops: () => setTab(1)),
-          const MyCropsScreen(),
-          const ScanScreen(),
-          VoiceScreen(key: ValueKey(_voiceScreenVersion)),
-          const AccountScreen(),
-        ],
-      ),
-      bottomNavigationBar: _BottomNav(
-        currentIndex: _currentIndex,
-        unreadCount: unread,
-        onTap: (index) {
-          setTab(index);
-        },
+    return GuidedTourHost(
+      key: _tourHostKey,
+      userId: userId,
+      onSelectTab: _selectTab,
+      dashboardScrollController: _dashboardScrollController,
+      child: Scaffold(
+        body: IndexedStack(
+          index: _currentIndex,
+          children: [
+            DashboardScreen(
+              onOpenMyCrops: () => setTab(1),
+              scrollController: _dashboardScrollController,
+            ),
+            const MyCropsScreen(),
+            const ScanScreen(),
+            VoiceScreen(key: ValueKey(_voiceScreenVersion)),
+            AccountScreen(
+              onReplayTour: () => _tourHostKey.currentState?.startTour(),
+            ),
+          ],
+        ),
+        bottomNavigationBar: _BottomNav(
+          currentIndex: _currentIndex,
+          unreadCount: unread,
+          onTap: (index) {
+            setTab(index);
+          },
+        ),
       ),
     );
   }
@@ -189,6 +206,7 @@ class _BottomNav extends StatelessWidget {
                   current: currentIndex,
                   onTap: onTap),
               _FeaturedNavItem(
+                key: AppTourKeys.scanNavigation,
                 icon: Icons.qr_code_scanner_rounded,
                 label: 'SCAN',
                 index: 2,
@@ -273,6 +291,7 @@ class _FeaturedNavItem extends StatelessWidget {
   final ValueChanged<int> onTap;
 
   const _FeaturedNavItem({
+    super.key,
     required this.icon,
     required this.label,
     required this.index,

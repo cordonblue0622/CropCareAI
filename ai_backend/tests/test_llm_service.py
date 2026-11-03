@@ -295,3 +295,41 @@ def test_unrelated_text_does_not_fetch_unfiltered_crop_knowledge() -> None:
 
     assert records == []
     assert tracking_supabase.fetch_calls == 0
+
+
+def test_numbered_treatment_instructions_stay_complete_actions() -> None:
+    service = LlmService(Settings())
+    answer = (
+        "Treatment:\n"
+        "1. Remove infected lower leaves. Bag them and discard them; do not compost them.\n"
+        "2. Inspect the undersides of fresh leaves each day.\n"
+        "3. Apply the labeled treatment only as directed.\n"
+        "Prevention: Keep foliage dry."
+    )
+
+    actions = service._extract_treatment_actions(answer)
+
+    assert actions == [
+        "1. Remove infected lower leaves. Bag them and discard them; do not compost them.",
+        "2. Inspect the undersides of fresh leaves each day.",
+        "3. Apply the labeled treatment only as directed.",
+    ]
+    assert all(action not in {"1.", "2.", "3."} for action in actions)
+
+
+def test_inline_numbering_and_unnumbered_sentences_parse_without_placeholders() -> None:
+    service = LlmService(Settings())
+
+    assert service._sentences_to_actions(
+        "1) Remove damaged leaves. 2) Water at the base. 3) Inspect new growth."
+    ) == [
+        "1) Remove damaged leaves.",
+        "2) Water at the base.",
+        "3) Inspect new growth.",
+    ]
+    assert service._sentences_to_actions(
+        "Remove damaged leaves. Avoid overhead watering!"
+    ) == ["Remove damaged leaves.", "Avoid overhead watering!"]
+    assert service._normalize_string_list(["1.", "Remove leaves.", "2)", " "]) == [
+        "Remove leaves."
+    ]

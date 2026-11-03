@@ -157,7 +157,7 @@ void main() {
 
     expect(saved, isTrue);
     expect(provider.crops, hasLength(1));
-    expect(provider.error, contains('cloud sync is still pending'));
+    expect(provider.error, contains('automatically sync'));
     final pending = await database.getPendingSyncItems();
     expect(
       pending.any(

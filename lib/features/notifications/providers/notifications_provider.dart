@@ -655,7 +655,7 @@ class NotificationsProvider extends ChangeNotifier {
     // UPSERT queued. Remove those writes so they cannot recreate a dismissed
     // notification after the DELETE is processed.
     await _clearQueuedOperation(notificationId, 'UPSERT');
-    await _queueDelete(notificationId);
+    await _queueDelete(notificationId, notification.userId);
     await _db.hardDelete(AppConstants.notificationsTable, notificationId);
     try {
       await _supabase.deleteNotification(notificationId);
@@ -684,10 +684,11 @@ class NotificationsProvider extends ChangeNotifier {
     );
   }
 
-  Future<void> _queueDelete(String notificationId) async {
+  Future<void> _queueDelete(String notificationId, String userId) async {
     await _sync.queueDelete(
       tableName: AppConstants.notificationsTable,
       recordId: notificationId,
+      userId: userId,
     );
   }
 

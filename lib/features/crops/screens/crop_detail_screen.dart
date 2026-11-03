@@ -71,6 +71,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
   bool _isLoadingData = false;
   bool _reloadDataAfterCurrent = false;
   StreamSubscription<bool>? _connectivitySubscription;
+  StreamSubscription<void>? _syncCompletedSubscription;
 
   DateTime _selectedDate = _todayDate();
   DateTime? _dailyPlanFocusDate;
@@ -107,12 +108,17 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         if (online && mounted) unawaited(_loadData());
       },
     );
+    _syncCompletedSubscription =
+        context.read<SyncService>().syncCompleted.listen((_) {
+      if (mounted) unawaited(_loadData());
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadData());
   }
 
   @override
   void dispose() {
     unawaited(_connectivitySubscription?.cancel());
+    unawaited(_syncCompletedSubscription?.cancel());
     _tabs.dispose();
     super.dispose();
   }
@@ -161,12 +167,12 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     final cropsProvider = context.read<CropsProvider>();
 
     try {
-      final localDx = await db.queryDiagnosesForCrop(_crop.id);
-      final localTx = await db.queryTreatmentsForCrop(_crop.id);
+      var localDx = await db.queryDiagnosesForCrop(_crop.id);
+      var localTx = await db.queryTreatmentsForCrop(_crop.id);
       final localProgress = await db.queryProgressUpdatesForCrop(_crop.id);
-      final localTasks = await db.queryAllTasksForCrop(_crop.id);
+      var localTasks = await db.queryAllTasksForCrop(_crop.id);
       final localSessions = await db.queryChatSessionsByCrop(_crop.id);
-      final pendingRows = await db.getPendingSyncItems();
+      var pendingRows = await db.getPendingSyncItems();
       Set<String> pendingIdsFor(String table) => pendingRows
           .where((item) =>
               item['table_name'] == table &&
@@ -178,6 +184,37 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           .toSet();
       final pendingMessageIds = pendingIdsFor(AppConstants.chatMessagesTable);
 
+      final cachedSessions =
+          _safeParseRows(localSessions, ChatSessionModel.fromMap)
+            ..removeWhere((session) => session.isDeleted);
+      final cachedMessageRows = <String, Map<String, dynamic>>{};
+      for (final session in cachedSessions) {
+        for (final row in await db.queryChatMessages(session.id)) {
+          final id = (row['id'] as String?)?.trim();
+          if (id != null && id.isNotEmpty) {
+            cachedMessageRows[id] = Map<String, dynamic>.from(row);
+          }
+        }
+      }
+      final allCachedMessages = _safeParseRows(
+        cachedMessageRows.values,
+        ChatMessageModel.fromMap,
+      );
+      final restoredFromConversation =
+          await cropsProvider.restoreCropDiagnosisFromLocalSuggestion(
+        crop: _crop,
+        sessions: cachedSessions,
+        messages: allCachedMessages,
+      );
+      if (restoredFromConversation) {
+        localDx = await db.queryDiagnosesForCrop(_crop.id);
+        localTx = await db.queryTreatmentsForCrop(_crop.id);
+        localTasks = await db.queryAllTasksForCrop(_crop.id);
+        pendingRows = await db.getPendingSyncItems();
+        unawaited(cropsProvider.flushPendingSync());
+      }
+      // Parse only after recovery, so the first rendered local snapshot
+      // includes records restored from the saved diagnosis card.
       final cachedDiagnoses = _safeParseRows(localDx, DiagnosisModel.fromMap)
         ..removeWhere((diagnosis) => diagnosis.isDeleted)
         ..sort((a, b) => b.diagnosedAt.compareTo(a.diagnosedAt));
@@ -193,22 +230,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           if (dueCompare != 0) return dueCompare;
           return (a.taskOrder ?? 0).compareTo(b.taskOrder ?? 0);
         });
-      final cachedSessions =
-          _safeParseRows(localSessions, ChatSessionModel.fromMap)
-            ..removeWhere((session) => session.isDeleted);
-      final cachedMessageRows = <String, Map<String, dynamic>>{};
-      for (final session in cachedSessions) {
-        for (final row in await db.queryChatMessages(session.id)) {
-          final id = (row['id'] as String?)?.trim();
-          if (id != null && id.isNotEmpty) {
-            cachedMessageRows[id] = Map<String, dynamic>.from(row);
-          }
-        }
-      }
-      final cachedMessages = _safeParseRows(
-        cachedMessageRows.values,
-        ChatMessageModel.fromMap,
-      )
+      final cachedMessages = allCachedMessages
         ..removeWhere((message) => message.role == MessageRole.system)
         ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
       final linkedCachedSessionId = cachedDiagnoses
@@ -246,10 +268,14 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         <Map<String, dynamic>>[],
       );
 
-      final rawDx = SyncService.mergeLocalAndRemoteRows(
+      final rawDxMerged = SyncService.mergeLocalAndRemoteRows(
         localRows: localDx,
         remoteRows: remoteDx,
         pendingLocalIds: pendingIdsFor(AppConstants.diagnosesTable),
+      );
+      final rawDx = SyncService.preserveLocalImageReferences(
+        localRows: localDx,
+        mergedRows: rawDxMerged,
       );
       final rawTx = SyncService.mergeLocalAndRemoteRows(
         localRows: localTx,
@@ -261,14 +287,19 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         remoteRows: remoteProgress,
         pendingLocalIds: pendingIdsFor(AppConstants.progressUpdatesTable),
       );
+      final progressRowsForDisplay = SyncService.preserveLocalProgressData(
+        localRows: localProgress,
+        mergedRows: rawProgress,
+      );
 
       final diagnoses = _safeParseRows(rawDx, DiagnosisModel.fromMap)
         ..removeWhere((diagnosis) => diagnosis.isDeleted)
         ..sort((a, b) => b.diagnosedAt.compareTo(a.diagnosedAt));
       final treatments = _safeParseRows(rawTx, TreatmentModel.fromMap)
         ..removeWhere((treatment) => treatment.isDeleted);
-      final progress = _safeParseRows(rawProgress, ProgressUpdateModel.fromMap)
-        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      final progress =
+          _safeParseRows(progressRowsForDisplay, ProgressUpdateModel.fromMap)
+            ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
       final remoteTaskRows = await _runOrFallback(
         'treatment tasks for this crop',
@@ -286,7 +317,8 @@ class _CropDetailScreenState extends State<CropDetailScreen>
       )..removeWhere((task) => task.isDeleted);
       await db.upsertRows(AppConstants.diagnosesTable, rawDx);
       await db.upsertRows(AppConstants.treatmentsTable, rawTx);
-      await db.upsertRows(AppConstants.progressUpdatesTable, rawProgress);
+      await db.upsertRows(
+          AppConstants.progressUpdatesTable, progressRowsForDisplay);
       await db.upsertRows(AppConstants.treatmentTasksTable, mergedTaskRows);
       final expandedTasks =
           await cropsProvider.expandLegacyProtocolTasks(parsedTasks);
@@ -340,7 +372,10 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                           '',
                     );
             if (remoteIsNewer) {
-              messageRowsById[id] = Map<String, dynamic>.from(row);
+              messageRowsById[id] = SyncService.preserveLocalChatImages(
+                localRows: localMessage == null ? const [] : [localMessage],
+                mergedRows: [row],
+              ).single;
             }
           }
         }
@@ -389,14 +424,15 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     }
   }
 
-  /// Finds progress updates saved offline (progressStatus == insufficientData
-  /// with a stored image) and, when online, sends them to GPT for analysis,
-  /// then updates the stored record and the crop's health score.
+  /// Reassesses locally stored check-ins only after their cloud submission has
+  /// synced. A database claim prevents the screen and background sync worker
+  /// from analyzing the same check-in at the same time.
   Future<void> _analyzePendingCheckIns() async {
     final pending = _progress
         .where(
           (u) =>
-              u.progressStatus == ProgressStatus.insufficientData &&
+              (u.aiAnalysisStatus == AiAnalysisStatus.pending ||
+                  u.aiAnalysisStatus == AiAnalysisStatus.failed) &&
               u.imageUrl != null &&
               u.imageUrl!.isNotEmpty &&
               isInlineImageDataUrl(u.imageUrl),
@@ -410,11 +446,26 @@ class _CropDetailScreenState extends State<CropDetailScreen>
 
     final aiBackend = context.read<AiBackendService>();
     final cropsProvider = context.read<CropsProvider>();
+    final db = context.read<DatabaseHelper>();
+    final sync = context.read<SyncService>();
 
     for (final update in pending) {
       if (!mounted) return;
+      final queued = (await db.getPendingSyncItems()).any((item) =>
+          item['table_name'] == AppConstants.progressUpdatesTable &&
+          item['record_id'] == update.id &&
+          (item['operation'] == 'UPSERT' ||
+              item['operation'] == 'SOFT_DELETE'));
+      if (queued || !await db.claimProgressAnalysis(update.id)) continue;
       final imageBytes = decodeInlineImageDataUrl(update.imageUrl);
-      if (imageBytes == null) continue;
+      if (imageBytes == null) {
+        await db.setProgressAnalysisState(
+          progressId: update.id,
+          status: 'failed',
+          error: 'The local check-in image is unavailable.',
+        );
+        continue;
+      }
 
       try {
         final aiResponse = await aiBackend.assessCropHealth(
@@ -428,7 +479,14 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           currentHealthScore: _crop.latestHealthScore,
         );
 
-        if (!aiResponse.accepted) continue;
+        if (!aiResponse.accepted) {
+          await db.setProgressAnalysisState(
+            progressId: update.id,
+            status: 'failed',
+            error: aiResponse.rejectionReason ?? 'The image was not accepted.',
+          );
+          continue;
+        }
 
         final newStatus = _parseProgressStatus(aiResponse.progressStatus);
         final updatedRecord = ProgressUpdateModel(
@@ -451,6 +509,9 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           completedTaskCount: update.completedTaskCount,
           missedTaskCount: update.missedTaskCount,
           updateDate: update.updateDate,
+          aiAnalysisStatus: AiAnalysisStatus.completed,
+          aiAnalysisError: null,
+          aiAnalysisStartedAt: null,
           syncVersion: update.syncVersion,
           isDeleted: update.isDeleted,
           createdAt: update.createdAt,
@@ -525,13 +586,18 @@ class _CropDetailScreenState extends State<CropDetailScreen>
             }
           });
         }
-      } catch (_) {
-        // Skip this update — will retry on next load.
+      } catch (error) {
+        await db.setProgressAnalysisState(
+          progressId: update.id,
+          status: 'failed',
+          error: error.toString(),
+        );
       }
     }
 
     if (mounted) {
-      unawaited(cropsProvider.flushPendingSync());
+      await cropsProvider.flushPendingSync();
+      if (mounted) unawaited(sync.syncAll());
     }
   }
 
@@ -2164,7 +2230,9 @@ class _ProgressTab extends StatelessWidget {
     // (i.e. not an offline/pending stub).
     final latestUpdate = progress
         .where((u) =>
-            u.progressStatus != ProgressStatus.insufficientData &&
+            (u.aiAnalysisStatus == AiAnalysisStatus.completed ||
+                (u.aiAnalysisStatus == AiAnalysisStatus.notRequired &&
+                    u.progressStatus != ProgressStatus.insufficientData)) &&
             u.note != null &&
             u.note!.trim().isNotEmpty)
         .fold<ProgressUpdateModel?>(
@@ -3235,6 +3303,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       late final double newScore;
       late final ProgressStatus newStatus;
       late final String assessment;
+      late final AiAnalysisStatus aiAnalysisStatus;
       var aiNextSteps = const <String>[];
       final connectivity = context.read<ConnectivityService>();
       final isOnline = await connectivity.isConnected;
@@ -3243,6 +3312,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         // until the user is back online and re-analysis runs.
         newScore = widget.crop.latestHealthScore ?? 50.0;
         newStatus = ProgressStatus.insufficientData;
+        aiAnalysisStatus = AiAnalysisStatus.pending;
         assessment =
             'Offline check-in — AI analysis pending. Will be updated when online.';
       } else {
@@ -3283,6 +3353,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
           }
           newScore = aiResponse.healthScore;
           newStatus = _progressStatusFromBackend(aiResponse.progressStatus);
+          aiAnalysisStatus = AiAnalysisStatus.completed;
           assessment = aiResponse.assessment;
           aiNextSteps = aiResponse.nextSteps;
         } catch (_) {
@@ -3290,6 +3361,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
           // Save the check-in and let _analyzePendingCheckIns re-analyse later.
           newScore = widget.crop.latestHealthScore ?? 50.0;
           newStatus = ProgressStatus.insufficientData;
+          aiAnalysisStatus = AiAnalysisStatus.pending;
           assessment =
               'Check-in saved — AI analysis pending. Score will update automatically.';
         }
@@ -3315,6 +3387,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         completedTaskCount: widget.checkedTasks.length,
         missedTaskCount: 0,
         updateDate: submittedAt,
+        aiAnalysisStatus: aiAnalysisStatus,
         createdAt: submittedAt,
         updatedAt: submittedAt,
       );

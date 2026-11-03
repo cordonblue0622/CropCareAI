@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 
 import '../core/constants/app_constants.dart';
+import '../core/constants/app_enums.dart';
 import '../data/models/ai_backend_models.dart';
 import 'tflite_classifier_core.dart';
 
@@ -86,16 +87,14 @@ class LocalClassifierService {
   }
 
   Set<String> _extractCropTypes(List<String> labels) {
+    final selectableFamilies = CropType.values
+        .where((cropType) => cropType != CropType.pechay)
+        .map((cropType) => cropType.value)
+        .toSet();
     return labels
-        .map((label) => label.trim().toLowerCase())
-        .map((label) {
-          final separatorIndex = label.indexOf('_');
-          if (separatorIndex == -1) {
-            return label;
-          }
-          return label.substring(0, separatorIndex);
-        })
-        .where((cropType) => cropType.isNotEmpty)
+        .map(_core.cropFamilyForLabel)
+        .whereType<String>()
+        .where(selectableFamilies.contains)
         .toSet();
   }
 }

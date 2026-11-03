@@ -9,6 +9,8 @@ import '../../../core/constants/app_enums.dart';
 import '../../../data/local/database_helper.dart';
 import '../../../data/local/bundled_disease_knowledge.dart';
 import '../../../data/models/crop_model.dart';
+import '../../../data/models/chat_message_model.dart';
+import '../../../data/models/chat_session_model.dart';
 import '../../../data/models/diagnosis_model.dart';
 import '../../../data/models/disease_knowledge_model.dart';
 import '../../../data/models/disease_treatment_day_step_model.dart';
@@ -18,12 +20,15 @@ import '../../../data/models/treatment_task_model.dart';
 import '../../../data/remote/supabase_service.dart';
 import '../../../services/health_score_service.dart';
 import '../../../services/sync_service.dart';
+import '../../../services/treatment_action_parser.dart';
 import '../../../services/treatment_plan_service.dart';
+import '../../../services/connectivity_service.dart';
 
 class CropsProvider extends ChangeNotifier {
   final SupabaseService _supabase;
   final DatabaseHelper _db;
   final SyncService _sync;
+  final ConnectivityService? _connectivity;
 
   List<CropModel> _crops = [];
   List<DiseaseKnowledgeModel> _diseaseKnowledge = [];
@@ -37,9 +42,11 @@ class CropsProvider extends ChangeNotifier {
     required SupabaseService supabase,
     required DatabaseHelper db,
     required SyncService sync,
+    ConnectivityService? connectivity,
   })  : _supabase = supabase,
         _db = db,
-        _sync = sync {
+        _sync = sync,
+        _connectivity = connectivity {
     _remoteCropChangesSubscription = _sync.remoteCropChanges.listen((_) {
       final userId = _supabase.currentUser?.id;
       if (userId != null) unawaited(fetchCrops(userId));
@@ -134,10 +141,12 @@ class CropsProvider extends ChangeNotifier {
         final deleted = row['is_deleted'];
         return deleted != true && deleted != 1;
       }).toList(growable: false);
-      if (visibleLocalRows.isNotEmpty) {
-        _crops = visibleLocalRows.map(CropModel.fromMap).toList();
-        notifyListeners();
-      }
+      _crops = visibleLocalRows.map(CropModel.fromMap).toList();
+      // Loading here means the local screen has not rendered its first
+      // snapshot. Remote refresh continues in the background and must not keep
+      // My Crops behind a spinner while the device is offline.
+      _isLoading = false;
+      notifyListeners();
 
       final remoteRows = await _supabase.getCropsIncludingDeleted(userId);
       final remoteIds = remoteRows
@@ -264,7 +273,7 @@ class CropsProvider extends ChangeNotifier {
       final pending = await _pendingCropSyncItems(crop.id);
       if (pending.isNotEmpty) {
         _error =
-            'Crop is saved on this device, but cloud sync is still pending.';
+            "Crop saved successfully on this device. It will automatically sync when you're back online.";
         final lastError = pending.last['last_error'] as String?;
         debugPrint(
           '[CropsProvider] Crop ${crop.id} is still waiting to sync.'
@@ -555,7 +564,11 @@ class CropsProvider extends ChangeNotifier {
         updated['updated_at'] = now;
       }
       await _db.upsertRow(table, updated);
-      await _sync.queueSoftDelete(tableName: table, recordId: id);
+      await _sync.queueSoftDelete(
+        tableName: table,
+        recordId: id,
+        userId: updated['user_id'] as String?,
+      );
     }
   }
 
@@ -573,8 +586,13 @@ class CropsProvider extends ChangeNotifier {
     Iterable<String> ids,
   ) async {
     for (final id in ids) {
+      final existing = await _db.queryById(table, id);
       await _db.hardDelete(table, id);
-      await _sync.queueDelete(tableName: table, recordId: id);
+      await _sync.queueDelete(
+        tableName: table,
+        recordId: id,
+        userId: existing?['user_id'] as String?,
+      );
     }
   }
 
@@ -666,7 +684,7 @@ class CropsProvider extends ChangeNotifier {
     final pending = await _pendingCropSyncItems(cropId);
     _error = pending.isEmpty
         ? null
-        : 'Crop is saved on this device, but cloud sync is still pending.';
+        : "Crop saved successfully on this device. It will automatically sync when you're back online.";
     if (pending.isNotEmpty) {
       final lastError = pending.last['last_error'] as String?;
       debugPrint(
@@ -696,6 +714,7 @@ class CropsProvider extends ChangeNotifier {
       return;
     }
     try {
+      if (_connectivity != null && !await _connectivity.isConnected) return;
       await _sync.syncAll();
     } catch (error, stackTrace) {
       // Local state is already committed; the queue will retry later.
@@ -732,6 +751,8 @@ class CropsProvider extends ChangeNotifier {
     Map<String, dynamic>? detectedRegionsJson,
     String? videoUrl,
     DiagnosisMode diagnosisMode = DiagnosisMode.online,
+    String? diagnosisId,
+    DateTime? diagnosedAt,
     String? chatSessionId,
     String? locationLabel,
     String? notes,
@@ -820,7 +841,9 @@ class CropsProvider extends ChangeNotifier {
       }
 
       final diagnosis = DiagnosisModel(
-        id: const Uuid().v4(),
+        id: diagnosisId?.trim().isNotEmpty == true
+            ? diagnosisId!.trim()
+            : const Uuid().v4(),
         cropId: cropId,
         userId: userId,
         chatSessionId: linkedChatSessionId,
@@ -838,8 +861,8 @@ class CropsProvider extends ChangeNotifier {
         videoUrl: videoUrl,
         modelName: modelName,
         modelVersion: modelVersion,
-        diagnosedAt: now,
-        createdAt: now,
+        diagnosedAt: diagnosedAt ?? now,
+        createdAt: diagnosedAt ?? now,
         updatedAt: now,
       );
 
@@ -853,7 +876,7 @@ class CropsProvider extends ChangeNotifier {
       );
 
       final normalizedTreatmentSteps = _normalizeTreatmentSteps(treatmentSteps);
-      final knowledge = await _findDiseaseKnowledgeForDiagnosis(
+      final knowledge = await _findLocalDiseaseKnowledge(
         cropType: cropType,
         diseaseName: normalizedDiseaseName,
         labelKey: labelKey,
@@ -865,7 +888,7 @@ class CropsProvider extends ChangeNotifier {
           );
       final protocolSteps = knowledge == null
           ? const <DiseaseTreatmentDayStepModel>[]
-          : await _loadTreatmentProtocol(knowledge.id);
+          : await _loadLocalTreatmentProtocol(knowledge.id);
       final usesReviewedProtocol = normalizedTreatmentSteps.isEmpty &&
           TreatmentPlanService.coversExpectedDuration(
             daySteps: protocolSteps,
@@ -956,7 +979,7 @@ class CropsProvider extends ChangeNotifier {
       final pending = await _pendingCropSyncItems(crop.id);
       if (pending.isNotEmpty) {
         _error =
-            'Crop is saved on this device, but cloud sync is still pending.';
+            "Crop saved successfully on this device. It will automatically sync when you're back online.";
         final lastError = pending.last['last_error'] as String?;
         debugPrint(
           '[CropsProvider] Crop ${crop.id} is still waiting to sync.'
@@ -1273,7 +1296,7 @@ class CropsProvider extends ChangeNotifier {
       table: AppConstants.progressUpdatesTable,
       recordId: update.id,
       localData: update.toMap(),
-      remoteData: update.toMap()..['is_deleted'] = update.isDeleted,
+      remoteData: update.toRemoteMap()..['is_deleted'] = update.isDeleted,
     );
     if (syncNow) {
       await _attemptSync();
@@ -1293,6 +1316,362 @@ class CropsProvider extends ChangeNotifier {
       remoteData: _diagnosisRemoteMap(diagnosis),
     );
     await _attemptSync();
+  }
+
+  /// Recovers related records for a crop that was saved before its diagnosis
+  /// rows were committed. The only source is the locally stored Add to My
+  /// Crops suggestion card and local disease knowledge; this never calls AI.
+  Future<bool> restoreCropDiagnosisFromLocalSuggestion({
+    required CropModel crop,
+    required List<ChatSessionModel> sessions,
+    required Iterable<ChatMessageModel> messages,
+  }) async {
+    if (kIsWeb || sessions.isEmpty) return false;
+
+    final sessionById = {
+      for (final session in sessions)
+        if (!session.isDeleted) session.id: session,
+    };
+    final suggestions = messages
+        .where(
+          (message) =>
+              message.role == MessageRole.system &&
+              message.userId == crop.userId &&
+              sessionById[message.sessionId]?.userId == crop.userId &&
+              message.metadata?['type'] == 'add_crop_suggestion',
+        )
+        .toList()
+      ..sort((left, right) => right.createdAt.compareTo(left.createdAt));
+
+    for (final suggestion in suggestions) {
+      final metadata = suggestion.metadata ?? const <String, dynamic>{};
+      final diseaseName = (metadata['disease_name'] as String? ?? '').trim();
+      if (diseaseName.isEmpty) continue;
+
+      final cropTypeValue =
+          (metadata['crop_type'] as String? ?? crop.cropType.value).trim();
+      final cropType = CropType.values.firstWhere(
+        (type) => type.value == cropTypeValue,
+        orElse: () => crop.cropType,
+      );
+      if (cropType != crop.cropType) continue;
+
+      final labelKey = (metadata['label_key'] as String? ?? '').trim();
+      final knowledge = await _findLocalDiseaseKnowledge(
+        cropType: cropType,
+        diseaseName: diseaseName,
+        labelKey: labelKey,
+      );
+      final existingRows = await _db.queryDiagnosesForCrop(crop.id);
+      final requestedDiagnosisId =
+          (metadata['diagnosis_id'] as String? ?? '').trim();
+      DiagnosisModel? diagnosis;
+      for (final row in existingRows) {
+        final candidate = DiagnosisModel.fromMap(row);
+        final sameStoredId = requestedDiagnosisId.isNotEmpty &&
+            candidate.id == requestedDiagnosisId;
+        final sameConversationDiagnosis =
+            candidate.chatSessionId == suggestion.sessionId &&
+                candidate.diseaseName.trim().toLowerCase() ==
+                    diseaseName.toLowerCase();
+        if (sameStoredId || sameConversationDiagnosis) {
+          diagnosis = candidate;
+          break;
+        }
+      }
+
+      final now = DateTime.now();
+      final diagnosedAt = DateTime.tryParse(
+            metadata['diagnosed_at'] as String? ?? '',
+          ) ??
+          suggestion.createdAt;
+      final writes = <LocalSyncUpsert>[];
+      final rawRegions = metadata['detected_regions_json'];
+      Map<String, dynamic>? detectedRegions;
+      if (rawRegions is Map) {
+        detectedRegions = Map<String, dynamic>.from(rawRegions);
+      } else if (rawRegions is String && rawRegions.trim().isNotEmpty) {
+        try {
+          final decoded = jsonDecode(rawRegions);
+          if (decoded is Map) {
+            detectedRegions = Map<String, dynamic>.from(decoded);
+          }
+        } catch (_) {
+          // Keep the diagnosis while omitting malformed optional metadata.
+        }
+      }
+      final rawConfidence = metadata['confidence_score'];
+      final recoveredConfidence = rawConfidence is num
+          ? rawConfidence.toDouble()
+          : double.tryParse(rawConfidence?.toString() ?? '');
+      final recoveredSummary =
+          _nonEmptyText(metadata['summary']) ?? knowledge?.description;
+      final existingDiagnosis = diagnosis;
+      late final DiagnosisModel recoveredDiagnosis;
+      if (existingDiagnosis == null) {
+        var diagnosisId = requestedDiagnosisId.isNotEmpty
+            ? requestedDiagnosisId
+            : suggestion.id;
+        final idCollision = await _db.queryById(
+          AppConstants.diagnosesTable,
+          diagnosisId,
+        );
+        if (idCollision != null) diagnosisId = const Uuid().v4();
+        recoveredDiagnosis = DiagnosisModel(
+          id: diagnosisId,
+          cropId: crop.id,
+          userId: crop.userId,
+          chatSessionId: suggestion.sessionId,
+          diagnosisMode: DiagnosisMode.values.firstWhere(
+            (mode) =>
+                mode.value ==
+                (metadata['diagnosis_mode'] as String? ?? 'offline'),
+            orElse: () => DiagnosisMode.offline,
+          ),
+          labelKey: labelKey.isEmpty ? null : labelKey,
+          diseaseName: diseaseName,
+          confidenceScore: recoveredConfidence,
+          severity: Severity.values.firstWhere(
+            (value) =>
+                value.value == (metadata['severity'] as String? ?? 'moderate'),
+            orElse: () => Severity.moderate,
+          ),
+          resultLabel: metadata['result_label'] as String?,
+          summary: recoveredSummary,
+          imageUrl: _nonEmptyText(metadata['image_url']),
+          detectedRegionsJson: detectedRegions,
+          videoUrl: _nonEmptyText(metadata['video_url']),
+          modelName: _nonEmptyText(metadata['model_name']),
+          modelVersion: _nonEmptyText(metadata['model_version']),
+          diagnosedAt: diagnosedAt,
+          createdAt: diagnosedAt,
+          updatedAt: now,
+        );
+      } else {
+        // Older saves may have created the diagnosis without some metadata.
+        // Fill only missing fields; never replace an existing local value.
+        recoveredDiagnosis = DiagnosisModel(
+          id: existingDiagnosis.id,
+          cropId: existingDiagnosis.cropId,
+          userId: existingDiagnosis.userId,
+          chatSessionId: _nonEmptyText(existingDiagnosis.chatSessionId) == null
+              ? suggestion.sessionId
+              : existingDiagnosis.chatSessionId,
+          diagnosisMode: existingDiagnosis.diagnosisMode,
+          labelKey: _nonEmptyText(existingDiagnosis.labelKey) ??
+              (labelKey.isEmpty ? null : labelKey),
+          diseaseName: existingDiagnosis.diseaseName,
+          confidenceScore:
+              existingDiagnosis.confidenceScore ?? recoveredConfidence,
+          severity: existingDiagnosis.severity,
+          resultLabel: _nonEmptyText(existingDiagnosis.resultLabel) ??
+              _nonEmptyText(metadata['result_label']),
+          summary: _nonEmptyText(existingDiagnosis.summary) ?? recoveredSummary,
+          imageUrl: _nonEmptyText(existingDiagnosis.imageUrl) ??
+              _nonEmptyText(metadata['image_url']),
+          videoUrl: _nonEmptyText(existingDiagnosis.videoUrl) ??
+              _nonEmptyText(metadata['video_url']),
+          detectedRegionsJson:
+              existingDiagnosis.detectedRegionsJson ?? detectedRegions,
+          modelName: _nonEmptyText(existingDiagnosis.modelName) ??
+              _nonEmptyText(metadata['model_name']),
+          modelVersion: _nonEmptyText(existingDiagnosis.modelVersion) ??
+              _nonEmptyText(metadata['model_version']),
+          diagnosedAt: existingDiagnosis.diagnosedAt,
+          syncVersion: existingDiagnosis.syncVersion,
+          isDeleted: existingDiagnosis.isDeleted,
+          createdAt: existingDiagnosis.createdAt,
+          updatedAt: now,
+        );
+      }
+      diagnosis = recoveredDiagnosis;
+      var diagnosisChanged = existingDiagnosis == null;
+      if (existingDiagnosis != null) {
+        final before = existingDiagnosis.toMap();
+        final after = recoveredDiagnosis.toMap();
+        before['updated_at'] = after['updated_at'];
+        diagnosisChanged = jsonEncode(before) != jsonEncode(after);
+      }
+      if (diagnosisChanged) {
+        writes.add(
+          LocalSyncUpsert(
+            tableName: AppConstants.diagnosesTable,
+            recordId: recoveredDiagnosis.id,
+            localData: recoveredDiagnosis.toMap(),
+            remoteData: _diagnosisRemoteMap(recoveredDiagnosis),
+          ),
+        );
+      }
+
+      final actionSteps = _stringList(metadata['recommended_actions']);
+      final treatmentSteps = _normalizeTreatmentSteps(
+        actionSteps.isNotEmpty
+            ? actionSteps
+            : [
+                ...?knowledge?.treatmentSteps,
+                ...?knowledge?.preventionSteps,
+              ],
+      );
+      final existingTreatments = await _db.queryTreatmentsForCrop(crop.id);
+      TreatmentModel? treatment;
+      for (final row in existingTreatments) {
+        final candidate = TreatmentModel.fromMap(row);
+        if (candidate.diagnosisId == diagnosis.id) {
+          treatment = candidate;
+          break;
+        }
+      }
+
+      if (treatment == null && treatmentSteps.isNotEmpty) {
+        final plan = TreatmentPlanService.build(
+          treatmentSteps: treatmentSteps,
+          startDate: diagnosedAt,
+          expectedDurationDays: knowledge?.estimatedRecoveryDays,
+        );
+        final treatmentId = const Uuid().v4();
+        final healthy = diagnosis.severity == Severity.healthy ||
+            diseaseName.toLowerCase().contains('healthy');
+        treatment = TreatmentModel(
+          id: treatmentId,
+          cropId: crop.id,
+          diagnosisId: diagnosis.id,
+          userId: crop.userId,
+          diseaseName: diseaseName,
+          treatmentTitle: healthy
+              ? 'Daily Care Plan — ${cropType.name[0].toUpperCase()}${cropType.name.substring(1)}'
+              : 'Treatment Plan — $diseaseName',
+          treatmentSteps: plan.sourceSteps,
+          expectedDurationDays: plan.durationDays,
+          status: TreatmentStatus.ongoing,
+          startedAt: diagnosedAt,
+          source: 'local-diagnosis',
+          createdAt: now,
+          updatedAt: now,
+        );
+        writes.add(
+          LocalSyncUpsert(
+            tableName: AppConstants.treatmentsTable,
+            recordId: treatment.id,
+            localData: treatment.toMap(),
+            remoteData: _treatmentRemoteMap(treatment),
+          ),
+        );
+
+        for (var index = 0; index < plan.tasks.length; index++) {
+          final plannedTask = plan.tasks[index];
+          final task = TreatmentTaskModel(
+            id: const Uuid().v4(),
+            treatmentId: treatment.id,
+            cropId: crop.id,
+            userId: crop.userId,
+            title: plannedTask.title,
+            description: plannedTask.description,
+            dueAt: plannedTask.dueAt,
+            status: TaskStatus.pending,
+            taskOrder: index + 1,
+            createdAt: now,
+            updatedAt: now,
+          );
+          writes.add(
+            LocalSyncUpsert(
+              tableName: AppConstants.treatmentTasksTable,
+              recordId: task.id,
+              localData: task.toMap(),
+              remoteData: _treatmentTaskRemoteMap(task),
+            ),
+          );
+        }
+      } else if (treatment != null) {
+        final existingTasks = await _db.queryTasksForTreatment(treatment.id);
+        if (existingTasks.isEmpty && treatment.treatmentSteps.isNotEmpty) {
+          final plan = TreatmentPlanService.build(
+            treatmentSteps: treatment.treatmentSteps,
+            startDate: treatment.startedAt ?? diagnosedAt,
+            expectedDurationDays: treatment.expectedDurationDays ??
+                knowledge?.estimatedRecoveryDays,
+          );
+          for (var index = 0; index < plan.tasks.length; index++) {
+            final plannedTask = plan.tasks[index];
+            final task = TreatmentTaskModel(
+              id: const Uuid().v4(),
+              treatmentId: treatment.id,
+              cropId: crop.id,
+              userId: crop.userId,
+              title: plannedTask.title,
+              description: plannedTask.description,
+              dueAt: plannedTask.dueAt,
+              status: TaskStatus.pending,
+              taskOrder: index + 1,
+              createdAt: now,
+              updatedAt: now,
+            );
+            writes.add(
+              LocalSyncUpsert(
+                tableName: AppConstants.treatmentTasksTable,
+                recordId: task.id,
+                localData: task.toMap(),
+                remoteData: _treatmentTaskRemoteMap(task),
+              ),
+            );
+          }
+        }
+      }
+
+      if (writes.isEmpty) return false;
+      await _upsertAllLocallyAndQueue(writes);
+      notifyListeners();
+      return true;
+    }
+    return false;
+  }
+
+  Future<DiseaseKnowledgeModel?> _findLocalDiseaseKnowledge({
+    required CropType cropType,
+    required String diseaseName,
+    required String labelKey,
+  }) async {
+    final cachedRows = await _db.queryDiseaseKnowledge(cropType.value);
+    final cached = <DiseaseKnowledgeModel>[];
+    for (final row in cachedRows) {
+      try {
+        cached.add(DiseaseKnowledgeModel.fromMap(row));
+      } catch (_) {
+        // A bad cached row must not prevent the bundled offline match.
+      }
+    }
+    final candidates = [
+      ...cached,
+      ...BundledDiseaseKnowledge.records(cropType: cropType.value),
+    ];
+    final normalizedLabel = labelKey.trim().toLowerCase();
+    final normalizedDisease = diseaseName.trim().toLowerCase();
+    for (final candidate in candidates) {
+      if (candidate.cropType != cropType) continue;
+      if (normalizedLabel.isNotEmpty &&
+          candidate.labelKey?.trim().toLowerCase() == normalizedLabel) {
+        return candidate;
+      }
+    }
+    for (final candidate in candidates) {
+      if (candidate.cropType == cropType &&
+          candidate.diseaseName.trim().toLowerCase() == normalizedDisease) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  String? _nonEmptyText(Object? value) {
+    final text = value?.toString().trim() ?? '';
+    return text.isEmpty ? null : text;
+  }
+
+  List<String> _stringList(Object? raw) {
+    if (raw is! List) return const [];
+    return raw
+        .map((value) => value.toString().trim())
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
   }
 
   Future<void> completeTreatmentTimeline({
@@ -1678,17 +2057,7 @@ class CropsProvider extends ChangeNotifier {
   }
 
   List<String> _normalizeTreatmentSteps(List<String> treatmentSteps) {
-    final normalized = <String>[];
-    final seen = <String>{};
-    for (final step in treatmentSteps) {
-      final trimmed = step.trim();
-      final key = trimmed.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
-      if (trimmed.isEmpty || !seen.add(key)) {
-        continue;
-      }
-      normalized.add(trimmed);
-    }
-    return normalized;
+    return TreatmentActionParser.normalize(treatmentSteps);
   }
 
   int? _expectedDurationFor({
@@ -1708,85 +2077,20 @@ class CropsProvider extends ChangeNotifier {
     return null;
   }
 
-  Future<List<DiseaseTreatmentDayStepModel>> _loadTreatmentProtocol(
+  Future<List<DiseaseTreatmentDayStepModel>> _loadLocalTreatmentProtocol(
     String diseaseKnowledgeBaseId,
   ) async {
-    try {
-      final remoteRows =
-          await _supabase.getDiseaseTreatmentDaySteps(diseaseKnowledgeBaseId);
-      if (remoteRows.isNotEmpty) {
-        final steps =
-            remoteRows.map(DiseaseTreatmentDayStepModel.fromMap).toList();
-        await _db.upsertRows(
-          AppConstants.diseaseTreatmentDayStepsTable,
-          steps.map((step) => step.toMap()),
-        );
-        return steps;
-      }
-    } catch (_) {}
-
-    final cachedRows =
+    final rows =
         await _db.queryDiseaseTreatmentDaySteps(diseaseKnowledgeBaseId);
-    return cachedRows.map(DiseaseTreatmentDayStepModel.fromMap).toList();
-  }
-
-  Future<DiseaseKnowledgeModel?> _findDiseaseKnowledgeForDiagnosis({
-    required CropType cropType,
-    required String diseaseName,
-    required String labelKey,
-  }) async {
-    if (_diseaseKnowledge.isEmpty) {
-      await fetchDiseaseKnowledge(cropType: cropType.value);
-    }
-
-    final requestedLabel = labelKey.trim().toLowerCase();
-    final requestedDisease = diseaseName.trim().toLowerCase();
-    final normalizedLabel = _knowledgeComparisonKey(labelKey, cropType);
-    final normalizedDisease = _knowledgeComparisonKey(diseaseName, cropType);
-    final knowledgeCandidates = <DiseaseKnowledgeModel>[
-      ..._diseaseKnowledge,
-      ...BundledDiseaseKnowledge.records(cropType: cropType.value),
-    ];
-
-    for (final knowledge in knowledgeCandidates) {
-      if (knowledge.cropType != cropType) continue;
-      if (requestedLabel.isNotEmpty &&
-          (knowledge.labelKey?.trim().toLowerCase() == requestedLabel ||
-              knowledge.diseaseName.trim().toLowerCase() == requestedLabel)) {
-        return knowledge;
+    final steps = <DiseaseTreatmentDayStepModel>[];
+    for (final row in rows) {
+      try {
+        steps.add(DiseaseTreatmentDayStepModel.fromMap(row));
+      } catch (_) {
+        // Ignore malformed cached rows and keep the available disease guidance.
       }
     }
-
-    for (final knowledge in knowledgeCandidates) {
-      if (knowledge.cropType == cropType &&
-          requestedDisease.isNotEmpty &&
-          knowledge.diseaseName.trim().toLowerCase() == requestedDisease) {
-        return knowledge;
-      }
-    }
-
-    for (final knowledge in knowledgeCandidates) {
-      if (knowledge.cropType != cropType) continue;
-      final knowledgeLabel =
-          _knowledgeComparisonKey(knowledge.labelKey ?? '', cropType);
-      final knowledgeDisease =
-          _knowledgeComparisonKey(knowledge.diseaseName, cropType);
-      if (normalizedLabel.isNotEmpty && normalizedLabel == knowledgeLabel) {
-        return knowledge;
-      }
-      if (normalizedDisease.isNotEmpty &&
-          normalizedDisease == knowledgeDisease) {
-        return knowledge;
-      }
-    }
-    return null;
-  }
-
-  String _knowledgeComparisonKey(String value, CropType cropType) {
-    var normalized = value.trim().toLowerCase();
-    normalized = normalized.replaceFirst('${cropType.value}_', '');
-    normalized = normalized.replaceFirst('${cropType.value} ', '');
-    return normalized.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+    return steps;
   }
 
   String? _mergeNotes(String? existing, String? addition) {
@@ -1803,37 +2107,54 @@ class CropsProvider extends ChangeNotifier {
 
   Future<List<DiseaseKnowledgeModel>> fetchDiseaseKnowledge(
       {String? cropType}) async {
-    try {
-      final rows = await _supabase.getDiseaseKnowledge(cropType: cropType);
-      if (rows.isNotEmpty) {
-        _diseaseKnowledge = rows.map(DiseaseKnowledgeModel.fromMap).toList();
-        await _db.upsertRows(
-          AppConstants.diseaseKnowledgeTable,
-          _diseaseKnowledge.map((knowledge) => knowledge.toMap()),
-        );
-        notifyListeners();
-        return _diseaseKnowledge;
-      }
-    } catch (_) {}
-
     final cachedRows = await _db.queryDiseaseKnowledge(cropType ?? '');
-    if (cachedRows.isNotEmpty) {
-      _diseaseKnowledge =
-          cachedRows.map(DiseaseKnowledgeModel.fromMap).toList();
-      notifyListeners();
-      return _diseaseKnowledge;
+    final cachedKnowledge = <DiseaseKnowledgeModel>[];
+    for (final row in cachedRows) {
+      try {
+        cachedKnowledge.add(DiseaseKnowledgeModel.fromMap(row));
+      } catch (_) {
+        // Keep usable cached entries and continue with bundled knowledge.
+      }
     }
 
     final bundledAll = BundledDiseaseKnowledge.records();
-    if (bundledAll.isNotEmpty) {
+    final cachedIds = cachedKnowledge.map((item) => item.id).toSet();
+    final bundledToCache = bundledAll
+        .where((item) => !cachedIds.contains(item.id))
+        .toList(growable: false);
+    if (bundledToCache.isNotEmpty) {
       await _db.upsertRows(
         AppConstants.diseaseKnowledgeTable,
-        bundledAll.map((knowledge) => knowledge.toMap()),
+        bundledToCache.map((knowledge) => knowledge.toMap()),
       );
     }
-    _diseaseKnowledge = BundledDiseaseKnowledge.records(cropType: cropType);
+
+    _mergeDiseaseKnowledge([...bundledAll, ...cachedKnowledge]);
     notifyListeners();
-    return _diseaseKnowledge;
+    unawaited(_refreshDiseaseKnowledge(cropType: cropType));
+
+    return cropType == null || cropType.trim().isEmpty
+        ? _diseaseKnowledge
+        : _diseaseKnowledge
+            .where((knowledge) => knowledge.cropType.value == cropType)
+            .toList(growable: false);
+  }
+
+  Future<void> _refreshDiseaseKnowledge({String? cropType}) async {
+    try {
+      final rows = await _supabase.getDiseaseKnowledge(cropType: cropType);
+      if (rows.isEmpty) return;
+      final remoteKnowledge =
+          rows.map(DiseaseKnowledgeModel.fromMap).toList(growable: false);
+      await _db.upsertRows(
+        AppConstants.diseaseKnowledgeTable,
+        remoteKnowledge.map((knowledge) => knowledge.toMap()),
+      );
+      _mergeDiseaseKnowledge(remoteKnowledge);
+      notifyListeners();
+    } catch (_) {
+      // Knowledge already came from SQLite or the bundled offline catalog.
+    }
   }
 
   Future<DiseaseDatasetImportSummary> importDiseaseKnowledgeDataset({

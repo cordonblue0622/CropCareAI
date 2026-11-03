@@ -20,9 +20,12 @@ import '../../../features/library/library_screen.dart';
 import '../../../shared/widgets/custom_text_field.dart';
 import '../../../services/notification_service.dart';
 import 'help_faq_screen.dart';
+import '../onboarding/guided_tour/guided_tour_targets.dart';
 
 class AccountScreen extends StatelessWidget {
-  const AccountScreen({super.key});
+  final VoidCallback? onReplayTour;
+
+  const AccountScreen({super.key, this.onReplayTour});
 
   static const String _supportEmail = 'cropcareai.team@gmail.com';
 
@@ -258,6 +261,7 @@ class AccountScreen extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(18, 18, 18, 112),
         children: [
           Container(
+            key: AppTourKeys.accountHeader,
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -461,6 +465,13 @@ class AccountScreen extends StatelessWidget {
           _SectionCard(
             title: 'Support',
             children: [
+              if (onReplayTour != null)
+                _NavItem(
+                  icon: Icons.play_circle_outline_rounded,
+                  label: 'Replay app tour',
+                  subtitle: 'See the guided introduction again',
+                  onTap: onReplayTour!,
+                ),
               _NavItem(
                 icon: Icons.help_outline,
                 label: 'Help & FAQ',

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cropcare_ai/core/constants/app_constants.dart';
@@ -7,10 +8,13 @@ import 'package:cropcare_ai/data/models/chat_message_model.dart';
 import 'package:cropcare_ai/data/models/chat_session_model.dart';
 import 'package:cropcare_ai/data/models/crop_model.dart';
 import 'package:cropcare_ai/data/models/diagnosis_model.dart';
+import 'package:cropcare_ai/data/models/progress_update_model.dart';
 import 'package:cropcare_ai/data/models/treatment_model.dart';
 import 'package:cropcare_ai/data/models/treatment_task_model.dart';
+import 'package:cropcare_ai/data/remote/ai_backend_service.dart';
 import 'package:cropcare_ai/data/remote/supabase_service.dart';
 import 'package:cropcare_ai/services/sync_service.dart';
+import 'package:cropcare_ai/core/utils/image_reference.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -21,6 +25,16 @@ class _FakeSupabaseService extends SupabaseService {
   final remoteRows = <String, List<Map<String, dynamic>>>{};
   final failUpsertsOnce = <String>{};
   int upsertCalls = 0;
+  int deleteCalls = 0;
+  final upsertedTables = <String>[];
+  String? ownerId = 'offline-user';
+  bool signedIn = false;
+
+  @override
+  String? get authenticatedUserId => ownerId;
+
+  @override
+  bool get isSignedIn => signedIn;
 
   List<Map<String, dynamic>> _rows(String table) =>
       remoteRows[table] ?? const [];
@@ -33,6 +47,7 @@ class _FakeSupabaseService extends SupabaseService {
     required Map<String, dynamic> data,
   }) async {
     upsertCalls++;
+    upsertedTables.add(table);
     if (failUpsertsOnce.remove(table)) {
       throw StateError('simulated $table synchronization failure');
     }
@@ -40,6 +55,23 @@ class _FakeSupabaseService extends SupabaseService {
     rows.removeWhere((row) => row['id'] == data['id']);
     rows.add(Map<String, dynamic>.from(data));
   }
+
+  @override
+  Future<void> deleteRecord({
+    required String table,
+    required String id,
+  }) async {
+    deleteCalls++;
+    remoteRows[table]?.removeWhere((row) => row['id'] == id);
+  }
+
+  @override
+  Future<String?> uploadChatImage({
+    required String userId,
+    required String messageId,
+    required List<int> bytes,
+  }) async =>
+      'https://storage.example/$userId/$messageId.jpg';
 
   @override
   Future<Map<String, dynamic>?> getProfile(String userId) async => null;
@@ -87,6 +119,39 @@ class _FakeSupabaseService extends SupabaseService {
       _rows(AppConstants.chatMessagesTable)
           .where((row) => row['session_id'] == sessionId)
           .toList();
+}
+
+class _FakeAiBackendService extends AiBackendService {
+  int assessmentCalls = 0;
+
+  _FakeAiBackendService({required super.supabase});
+
+  @override
+  Future<AiBackendProgressResponse> assessCropHealth({
+    required String cropType,
+    required String diseaseName,
+    int daysSinceTreatment = 0,
+    List<int>? imageBytes,
+    String? imageMimeType,
+    String? imageDataUrl,
+    String? previousImageReference,
+    String? previousAssessment,
+    String? previousProgressStatus,
+    String? previousUpdateDate,
+    List<String> completedTasks = const [],
+    String? note,
+    double? currentHealthScore,
+  }) async {
+    assessmentCalls++;
+    return const AiBackendProgressResponse(
+      accepted: true,
+      rejectionReason: null,
+      healthScore: 82,
+      progressStatus: 'improving',
+      assessment: 'New leaves show improvement.',
+      nextSteps: ['Continue daily inspection.'],
+    );
+  }
 }
 
 Map<String, List<Map<String, dynamic>>> _fixtureRows(DateTime now) {
@@ -300,6 +365,277 @@ void main() {
     expect(await database.queryChatMessages('session-offline'), hasLength(1));
   });
 
+  test('progress images stay local and analysis queues after submission sync',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final aiBackend = _FakeAiBackendService(supabase: supabase);
+    final sync = SyncService(
+      supabaseService: supabase,
+      dbHelper: database,
+      aiBackend: aiBackend,
+    );
+    final now = DateTime.utc(2026, 10, 31, 11);
+    final crop = CropModel(
+      id: 'crop-progress',
+      userId: 'offline-user',
+      cropType: CropType.tomato,
+      cropName: 'Tomato',
+      createdAt: now,
+      updatedAt: now,
+    );
+    final photo = buildInlineImageDataUrl([1, 2, 3, 4]);
+    final progress = ProgressUpdateModel(
+      id: 'progress-offline',
+      cropId: crop.id,
+      userId: crop.userId,
+      note: 'Offline check-in; AI analysis pending.',
+      imageUrl: photo,
+      progressStatus: ProgressStatus.insufficientData,
+      updateDate: now,
+      aiAnalysisStatus: AiAnalysisStatus.pending,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await sync.persistQueuedUpserts([
+      LocalSyncUpsert(
+        tableName: AppConstants.cropsTable,
+        recordId: crop.id,
+        localData: crop.toMap(),
+        remoteData: _remoteRow(AppConstants.cropsTable, crop.toMap()),
+      ),
+      LocalSyncUpsert(
+        tableName: AppConstants.progressUpdatesTable,
+        recordId: progress.id,
+        localData: progress.toMap(),
+        remoteData: progress.toRemoteMap(),
+      ),
+    ]);
+
+    await sync.reassessPendingPhotoCheckInsForTest(crop.userId);
+    expect(aiBackend.assessmentCalls, 0,
+        reason: 'AI analysis must wait for the submitted progress row to sync');
+    await sync.pushPendingChanges();
+    expect(
+      supabase
+          .remoteRows[AppConstants.progressUpdatesTable]!.single['image_url'],
+      startsWith('https://storage.example/'),
+    );
+    expect(
+      (await database.queryById(
+          AppConstants.progressUpdatesTable, progress.id))?['image_url'],
+      photo,
+      reason: 'Sync must preserve the local photo for offline viewing',
+    );
+
+    await sync.reassessPendingPhotoCheckInsForTest(crop.userId);
+    expect(aiBackend.assessmentCalls, 1);
+    final locallyAssessed = ProgressUpdateModel.fromMap(
+      (await database.queryById(
+          AppConstants.progressUpdatesTable, progress.id))!,
+    );
+    expect(locallyAssessed.aiAnalysisStatus, AiAnalysisStatus.completed);
+    expect(locallyAssessed.note, 'New leaves show improvement.');
+    expect(locallyAssessed.imageUrl, photo);
+
+    supabase.failUpsertsOnce.add(AppConstants.progressUpdatesTable);
+    await sync.pushPendingChanges();
+    expect(
+      (await database.getPendingSyncItems()).any(
+          (item) => item['table_name'] == AppConstants.progressUpdatesTable),
+      isTrue,
+    );
+    expect(
+      ProgressUpdateModel.fromMap(
+        (await database.queryById(
+            AppConstants.progressUpdatesTable, progress.id))!,
+      ).aiAnalysisStatus,
+      AiAnalysisStatus.completed,
+      reason: 'A cloud failure must not discard local AI results',
+    );
+
+    await sync.pushPendingChanges();
+    final remoteProgress =
+        supabase.remoteRows[AppConstants.progressUpdatesTable]!.single;
+    expect(remoteProgress['note'], 'New leaves show improvement.');
+    expect(remoteProgress['progress_status'], ProgressStatus.improving.value);
+    expect(remoteProgress.containsKey('ai_analysis_status'), isFalse,
+        reason: 'Local AI bookkeeping must not require a cloud schema change');
+    await sync.pullFromRemote(userId: crop.userId);
+    expect(
+      (await database.queryById(
+          AppConstants.progressUpdatesTable, progress.id))?['image_url'],
+      photo,
+      reason: 'Pulling the uploaded URL back must not erase local photo bytes',
+    );
+    expect(await database.getPendingSyncItems(), isEmpty);
+  });
+
+  test('queued writes wait for the authenticated owner', () async {
+    final supabase = _FakeSupabaseService()..ownerId = 'another-user';
+    final sync = SyncService(
+      supabaseService: supabase,
+      dbHelper: database,
+    );
+    final rows = _fixtureRows(DateTime.utc(2026, 10, 31, 12));
+    await sync.persistQueuedUpserts(_writes(rows));
+
+    await sync.pushPendingChanges();
+    expect(supabase.upsertCalls, 0);
+    expect(await database.getPendingSyncItems(), hasLength(6));
+
+    supabase.ownerId = 'offline-user';
+    await sync.pushPendingChanges();
+    expect(await database.getPendingSyncItems(), isEmpty);
+    expect(supabase.remoteCount(AppConstants.cropsTable), 1);
+  });
+
+  test('delete operations require a verifiable matching owner', () async {
+    final supabase = _FakeSupabaseService()..ownerId = 'another-user';
+    final sync = SyncService(
+      supabaseService: supabase,
+      dbHelper: database,
+    );
+    await sync.queueDelete(
+      tableName: AppConstants.cropsTable,
+      recordId: 'crop-owned-by-offline-user',
+      userId: 'offline-user',
+    );
+    await sync.queueDelete(
+      tableName: AppConstants.cropsTable,
+      recordId: 'crop-with-unknown-owner',
+    );
+
+    await sync.pushPendingChanges();
+    expect(supabase.deleteCalls, 0);
+    expect(await database.getPendingSyncItems(), hasLength(2));
+
+    supabase.ownerId = 'offline-user';
+    await sync.pushPendingChanges();
+    expect(supabase.deleteCalls, 1);
+    expect(await database.getPendingSyncItems(), hasLength(1));
+  });
+
+  test('remote image URLs do not replace the local diagnosis or chat photos',
+      () async {
+    final now = DateTime.utc(2026, 10, 31, 12, 30);
+    final diagnosis = DiagnosisModel(
+      id: 'diagnosis-with-photo',
+      cropId: 'crop-offline',
+      userId: 'offline-user',
+      diagnosisMode: DiagnosisMode.offline,
+      labelKey: 'tomato_early_blight',
+      diseaseName: 'Tomato Early Blight',
+      confidenceScore: 0.9,
+      diagnosedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    ).toMap()
+      ..['image_url'] = buildInlineImageDataUrl([1, 2, 3]);
+    final remoteDiagnosis = Map<String, dynamic>.from(diagnosis)
+      ..['image_url'] = 'https://storage.example/diagnosis.jpg';
+    final mergedDiagnosis = SyncService.preserveLocalImageReferences(
+      localRows: [diagnosis],
+      mergedRows: [remoteDiagnosis],
+    ).single;
+    expect(mergedDiagnosis['image_url'], diagnosis['image_url']);
+
+    final firstPhoto = buildInlineImageDataUrl([1, 2, 3]);
+    final secondPhoto = buildInlineImageDataUrl([4, 5, 6]);
+    final localMessage = ChatMessageModel(
+      id: 'message-with-photos',
+      sessionId: 'session-offline',
+      userId: 'offline-user',
+      role: MessageRole.user,
+      content: 'These leaves need checking.',
+      metadata: {
+        'image_url': firstPhoto,
+        'image_urls': [firstPhoto, secondPhoto],
+      },
+      createdAt: now,
+    ).toMap();
+    final remoteMessage = Map<String, dynamic>.from(localMessage)
+      ..['metadata'] = jsonEncode({
+        'image_url': 'https://storage.example/message-0.jpg',
+        'image_urls': [
+          'https://storage.example/message-0.jpg',
+          'https://storage.example/message-1.jpg',
+        ],
+      });
+    final mergedMessage = SyncService.preserveLocalChatImages(
+      localRows: [localMessage],
+      mergedRows: [remoteMessage],
+    ).single;
+    expect(
+      ChatMessageModel.fromMap(mergedMessage).imageUrls,
+      [firstPhoto, secondPhoto],
+    );
+  });
+
+  test('offline diagnosis and conversation photos upload and remain offline',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final sync = SyncService(
+      supabaseService: supabase,
+      dbHelper: database,
+    );
+    final now = DateTime.utc(2026, 10, 31, 12, 45);
+    final rows = _fixtureRows(now);
+    final diagnosisPhoto = buildInlineImageDataUrl([1, 3, 5]);
+    rows[AppConstants.diagnosesTable] = [
+      Map<String, dynamic>.from(rows[AppConstants.diagnosesTable]!.single)
+        ..['image_url'] = diagnosisPhoto,
+    ];
+    final firstPhoto = buildInlineImageDataUrl([2, 4, 6]);
+    final secondPhoto = buildInlineImageDataUrl([7, 8, 9]);
+    rows[AppConstants.chatMessagesTable]!.add(
+      ChatMessageModel(
+        id: 'offline-photo-message',
+        sessionId: 'session-offline',
+        userId: 'offline-user',
+        role: MessageRole.user,
+        content: 'Please check these leaves.',
+        metadata: {
+          'image_url': firstPhoto,
+          'image_urls': [firstPhoto, secondPhoto],
+        },
+        createdAt: now,
+      ).toMap(),
+    );
+    await sync.persistQueuedUpserts(_writes(rows));
+
+    await sync.pushPendingChanges();
+    final remoteDiagnosis =
+        supabase.remoteRows[AppConstants.diagnosesTable]!.single;
+    expect(
+        remoteDiagnosis['image_url'], startsWith('https://storage.example/'));
+    final remoteMessage = supabase.remoteRows[AppConstants.chatMessagesTable]!
+        .singleWhere((row) => row['id'] == 'offline-photo-message');
+    final rawRemoteMetadata = remoteMessage['metadata'];
+    final remoteMetadata = rawRemoteMetadata is String
+        ? jsonDecode(rawRemoteMetadata) as Map<String, dynamic>
+        : Map<String, dynamic>.from(rawRemoteMetadata as Map);
+    expect(remoteMetadata['image_urls'], hasLength(2));
+    expect(
+      (remoteMetadata['image_urls'] as List).every(
+          (url) => url.toString().startsWith('https://storage.example/')),
+      isTrue,
+    );
+
+    await sync.pullFromRemote(userId: 'offline-user');
+    final localDiagnosis = DiagnosisModel.fromMap(
+      (await database.queryDiagnosesForCrop('crop-offline')).single,
+    );
+    expect(localDiagnosis.imageUrl, diagnosisPhoto);
+    final localChatMessages =
+        await database.queryChatMessages('session-offline');
+    final localPhotoMessage = ChatMessageModel.fromMap(
+      localChatMessages
+          .singleWhere((row) => row['id'] == 'offline-photo-message'),
+    );
+    expect(localPhotoMessage.imageUrls, [firstPhoto, secondPhoto]);
+    expect(await database.getPendingSyncItems(), isEmpty);
+  });
+
   test('pulled cloud crop data remains locally available after restart',
       () async {
     final supabase = _FakeSupabaseService();
@@ -347,5 +683,158 @@ void main() {
     expect(messages, hasLength(1));
     expect(messages.single['content'], 'Offline diagnosis conversation');
     expect(await database.getPendingSyncItems(), isEmpty);
+  });
+
+  test('newer local edits replace stale queued payloads without duplicates',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final sync = SyncService(
+      supabaseService: supabase,
+      dbHelper: database,
+    );
+    final rows = _fixtureRows(DateTime.utc(2026, 10, 31, 9));
+    await sync.persistQueuedUpserts(_writes(rows));
+    final original = TreatmentTaskModel.fromMap(
+        rows[AppConstants.treatmentTasksTable]!.single);
+    final completed = original.copyWith(
+      status: TaskStatus.completed,
+      completedAt: DateTime.utc(2026, 11, 1, 8),
+      updatedAt: DateTime.utc(2026, 11, 1, 8),
+    );
+    await sync.persistQueuedUpserts([
+      LocalSyncUpsert(
+        tableName: AppConstants.treatmentTasksTable,
+        recordId: completed.id,
+        localData: completed.toMap(),
+        remoteData: _remoteRow(
+          AppConstants.treatmentTasksTable,
+          completed.toMap(),
+        ),
+      ),
+    ]);
+
+    final queuedTasks = (await database.getPendingSyncItems())
+        .where((item) =>
+            item['table_name'] == AppConstants.treatmentTasksTable &&
+            item['record_id'] == completed.id)
+        .toList();
+    expect(queuedTasks, hasLength(1));
+    final payload = jsonDecode(
+      (await database
+          .getPendingSyncItemPayload(queuedTasks.single['id'] as int))!,
+    ) as Map<String, dynamic>;
+    expect(payload['status'], TaskStatus.completed.value);
+
+    await sync.pushPendingChanges();
+    expect(await database.getPendingSyncItems(), isEmpty);
+    expect(
+      supabase.remoteRows[AppConstants.treatmentTasksTable]!
+          .singleWhere((row) => row['id'] == completed.id)['status'],
+      TaskStatus.completed.value,
+    );
+    expect(supabase.remoteCount(AppConstants.treatmentTasksTable), 1);
+  });
+
+  test('task sync does not overwrite an already-synced newer cloud treatment',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final sync = SyncService(
+      supabaseService: supabase,
+      dbHelper: database,
+    );
+    final rows = _fixtureRows(DateTime.utc(2026, 10, 31, 9));
+    await sync.persistQueuedUpserts(_writes(rows));
+    await sync.pushPendingChanges();
+    expect(await database.getPendingSyncItems(), isEmpty);
+
+    final remoteTreatment =
+        supabase.remoteRows[AppConstants.treatmentsTable]!.single;
+    remoteTreatment['notes'] = 'Newer cloud treatment notes';
+    remoteTreatment['updated_at'] = '2026-11-02T09:00:00.000Z';
+    final original = TreatmentTaskModel.fromMap(
+        rows[AppConstants.treatmentTasksTable]!.single);
+    final completed = original.copyWith(
+      status: TaskStatus.completed,
+      completedAt: DateTime.utc(2026, 11, 1, 8),
+      updatedAt: DateTime.utc(2026, 11, 1, 8),
+    );
+    await sync.persistQueuedUpserts([
+      LocalSyncUpsert(
+        tableName: AppConstants.treatmentTasksTable,
+        recordId: completed.id,
+        localData: completed.toMap(),
+        remoteData: _remoteRow(
+          AppConstants.treatmentTasksTable,
+          completed.toMap(),
+        ),
+      ),
+    ]);
+    supabase.upsertedTables.clear();
+
+    await sync.pushPendingChanges();
+
+    expect(supabase.upsertedTables, [AppConstants.treatmentTasksTable]);
+    expect(remoteTreatment['notes'], 'Newer cloud treatment notes');
+    expect(remoteTreatment['updated_at'], '2026-11-02T09:00:00.000Z');
+
+    remoteTreatment['notes'] = 'Cloud treatment to download';
+    final staleRemoteTask =
+        supabase.remoteRows[AppConstants.treatmentTasksTable]!.single
+          ..['status'] = TaskStatus.pending.value
+          ..['completed_at'] = null
+          ..['updated_at'] = '2026-10-31T09:00:00.000Z';
+    await sync.pullFromRemote(userId: 'offline-user');
+    final localTask = TreatmentTaskModel.fromMap(
+      (await database.queryById(
+          AppConstants.treatmentTasksTable, completed.id))!,
+    );
+    expect(localTask.status, TaskStatus.completed);
+    expect(localTask.completedAt, completed.completedAt);
+    expect(
+      (await database.queryById(AppConstants.treatmentsTable,
+          remoteTreatment['id'] as String))?['notes'],
+      'Cloud treatment to download',
+    );
+    expect(staleRemoteTask['status'], TaskStatus.pending.value);
+  });
+
+  test('restored connectivity automatically retries without losing local data',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final connectivity = StreamController<bool>.broadcast();
+    addTearDown(connectivity.close);
+    final sync = SyncService(
+      supabaseService: supabase,
+      dbHelper: database,
+      connectivityChanges: connectivity.stream,
+    );
+    final rows = _fixtureRows(DateTime.utc(2026, 10, 31, 9));
+    await sync.persistQueuedUpserts(_writes(rows));
+    supabase.failUpsertsOnce.add(AppConstants.cropsTable);
+    supabase.signedIn = true;
+
+    connectivity.add(true);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    expect(supabase.remoteCount(AppConstants.cropsTable), 0);
+    expect(await database.getPendingSyncItems(), isNotEmpty);
+    expect(
+      await database.queryById(AppConstants.cropsTable, 'crop-offline'),
+      isNotNull,
+    );
+    expect(
+      await database.queryDiagnosesForCrop('crop-offline'),
+      hasLength(1),
+    );
+
+    connectivity.add(false);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    connectivity.add(true);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+
+    expect(await database.getPendingSyncItems(), isEmpty);
+    for (final table in rows.keys) {
+      expect(supabase.remoteCount(table), 1, reason: '$table must auto-sync');
+    }
   });
 }

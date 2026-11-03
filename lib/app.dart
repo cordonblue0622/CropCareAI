@@ -435,13 +435,15 @@ class _CropCareAppState extends State<CropCareApp> {
             supabase: ctx.read<SupabaseService>(),
             db: ctx.read<DatabaseHelper>(),
             sync: ctx.read<SyncService>(),
+            connectivity: ctx.read<ConnectivityService>(),
           ),
-          update: (_, svc, db, sync, prev) =>
+          update: (ctx, svc, db, sync, prev) =>
               prev ??
               CropsProvider(
                 supabase: svc,
                 db: db,
                 sync: sync,
+                connectivity: ctx.read<ConnectivityService>(),
               ),
         ),
 

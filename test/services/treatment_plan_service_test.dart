@@ -54,7 +54,7 @@ void main() {
       expect(observationTasks, hasLength(7));
     });
 
-    test('groups each reviewed protocol day into one detailed task', () {
+    test('creates a checkable task for every reviewed protocol action', () {
       final steps = List.generate(
         14,
         (index) {
@@ -92,12 +92,18 @@ void main() {
         ),
         isTrue,
       );
-      expect(plan.tasks, hasLength(14));
-      expect(plan.tasks.first.title, 'Day 1: Initial inspection');
-      expect(plan.tasks.first.dueAt, start);
-      expect(plan.tasks[1].dueAt, DateTime(2026, 7, 28, 9));
-      expect(plan.tasks.first.description, contains('Inspect lower leaves.'));
-      expect(plan.tasks.first.description, contains('Why this matters:'));
+      expect(plan.tasks, hasLength(15));
+      final dayOneTasks = plan.tasks.where((task) => task.day == 1).toList();
+      expect(
+        dayOneTasks.map((task) => task.title),
+        containsAll(['Inspect lower leaves.', 'Take a starting photo.']),
+      );
+      expect(dayOneTasks.first.dueAt, start);
+      expect(dayOneTasks.first.description, contains('Why this matters:'));
+      expect(
+        plan.tasks.firstWhere((task) => task.day == 2).dueAt,
+        DateTime(2026, 7, 28, 9),
+      );
       expect(plan.tasks.last.day, 14);
     });
 

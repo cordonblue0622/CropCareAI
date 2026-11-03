@@ -16,6 +16,7 @@ import '../../../data/remote/supabase_service.dart';
 import '../../../services/connectivity_service.dart';
 import '../../../services/local_classifier_service.dart';
 import '../../../services/sync_service.dart';
+import '../../../services/treatment_action_parser.dart';
 
 class ChatProvider extends ChangeNotifier {
   static const Set<String> _supportedTreatmentCardCrops = {
@@ -63,20 +64,26 @@ class ChatProvider extends ChangeNotifier {
   // ─── Init ─────────────────────────────────────────────────────────────────
 
   Future<void> loadKnowledgeBase() async {
+    var canFetchRemote = false;
     try {
-      final rows = await _supabase.getDiseaseKnowledge();
-      if (rows.isNotEmpty) {
-        _knowledgeBase = _mergeBundledKnowledge(
-          rows.map(DiseaseKnowledgeModel.fromMap).toList(),
-        );
-        await _cacheRows(
-          AppConstants.diseaseKnowledgeTable,
-          _knowledgeBase.map((knowledge) => knowledge.toMap()),
-        );
-        notifyListeners();
-        return;
-      }
+      canFetchRemote = await _connectivity.isConnected;
     } catch (_) {}
+    if (canFetchRemote) {
+      try {
+        final rows = await _supabase.getDiseaseKnowledge();
+        if (rows.isNotEmpty) {
+          _knowledgeBase = _mergeBundledKnowledge(
+            rows.map(DiseaseKnowledgeModel.fromMap).toList(),
+          );
+          await _cacheRows(
+            AppConstants.diseaseKnowledgeTable,
+            _knowledgeBase.map((knowledge) => knowledge.toMap()),
+          );
+          notifyListeners();
+          return;
+        }
+      } catch (_) {}
+    }
 
     List<Map<String, dynamic>> cachedRows = const [];
     try {
@@ -326,10 +333,10 @@ class ChatProvider extends ChangeNotifier {
             ? (hintCropType?.trim().isNotEmpty == true
                 ? hintCropType!.trim().toLowerCase()
                 : null)
-        : _resolveConversationCropHint(
-            attachedDiagnosis: attachedDiagnosis,
-            explicitHint: hintCropType,
-          );
+            : _resolveConversationCropHint(
+                attachedDiagnosis: attachedDiagnosis,
+                explicitHint: hintCropType,
+              );
     final requiresFreshImage = attachedDiagnosis == null &&
         !hasConversationImage &&
         _requiresFreshImageForMessage(
@@ -730,17 +737,16 @@ class ChatProvider extends ChangeNotifier {
               : assistantDiseaseName;
       final assistantCropType =
           (aiMetadata['crop_type'] as String? ?? '').trim().toLowerCase();
-      final inferredCropType =
-          _supportedTreatmentCardCrops.contains(assistantCropType)
-              ? assistantCropType
-              : _inferCropType(
-                  labelKey:
-                      preferAssistantDiagnosis ? null : attachedDiagnosis?.labelKey,
-                  diseaseName: inferredDiseaseName,
-                  aiContent: assistantCropType.isNotEmpty
-                      ? assistantCropType
-                      : aiContent,
-                );
+      final inferredCropType = _supportedTreatmentCardCrops
+              .contains(assistantCropType)
+          ? assistantCropType
+          : _inferCropType(
+              labelKey:
+                  preferAssistantDiagnosis ? null : attachedDiagnosis?.labelKey,
+              diseaseName: inferredDiseaseName,
+              aiContent:
+                  assistantCropType.isNotEmpty ? assistantCropType : aiContent,
+            );
       final isSupportedCrop =
           _supportedTreatmentCardCrops.contains(inferredCropType);
       final metadataLabelKey =
@@ -775,6 +781,18 @@ class ChatProvider extends ChangeNotifier {
         content: '',
         metadata: {
           'type': 'add_crop_suggestion',
+          'diagnosis_id': !online &&
+                  attachedDiagnosis != null &&
+                  inferredDiseaseName.toLowerCase() ==
+                      attachedDiagnosis.diseaseName.trim().toLowerCase()
+              ? attachedDiagnosis.id
+              : const Uuid().v4(),
+          'diagnosed_at': !online &&
+                  attachedDiagnosis != null &&
+                  inferredDiseaseName.toLowerCase() ==
+                      attachedDiagnosis.diseaseName.trim().toLowerCase()
+              ? attachedDiagnosis.diagnosedAt.toIso8601String()
+              : aiMsg.createdAt.toIso8601String(),
           'disease_name': inferredDiseaseName,
           'label_key': inferredLabelKey,
           'severity': aiMetadata['severity'] ??
@@ -1878,8 +1896,8 @@ class ChatProvider extends ChangeNotifier {
       final sameDiagnosis =
           attachedDiagnosis.diseaseName.trim().toLowerCase() ==
               normalizedDiseaseName.toLowerCase();
-      final sameCrop = normalizedCropType.isEmpty ||
-          attachedCropType == normalizedCropType;
+      final sameCrop =
+          normalizedCropType.isEmpty || attachedCropType == normalizedCropType;
       if (sameDiagnosis && sameCrop) {
         knowledge = _knowledgeForDiagnosis(attachedDiagnosis);
       }
@@ -1913,14 +1931,7 @@ class ChatProvider extends ChangeNotifier {
     required String inferredCropType,
     bool allowHealthyFallback = true,
   }) {
-    final deduped = <String>[];
-    for (final action in recommendedActions) {
-      final normalized = action.trim();
-      if (normalized.isNotEmpty && !deduped.contains(normalized)) {
-        deduped.add(normalized);
-      }
-    }
-
+    final deduped = TreatmentActionParser.normalize(recommendedActions);
     if (deduped.isNotEmpty) {
       return deduped.take(7).toList();
     }
@@ -2174,16 +2185,7 @@ class ChatProvider extends ChangeNotifier {
   }
 
   List<String> _splitIntoActionSentences(String text) {
-    final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (normalized.isEmpty) {
-      return const [];
-    }
-
-    return normalized
-        .split(RegExp(r'(?<=[.!?])\s+'))
-        .map((part) => part.trim())
-        .where((part) => part.isNotEmpty)
-        .toList();
+    return TreatmentActionParser.split(text);
   }
 
   String _inferLabelKey({

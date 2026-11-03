@@ -86,6 +86,28 @@ extension UpdateSourceX on UpdateSource {
       UpdateSource.values.firstWhere((e) => e.name == v);
 }
 
+/// Local processing state for a progress photo's GPT assessment. This is
+/// intentionally separate from [ProgressStatus] and cloud queue state.
+enum AiAnalysisStatus { notRequired, pending, inProgress, completed, failed }
+
+extension AiAnalysisStatusX on AiAnalysisStatus {
+  String get value => switch (this) {
+        AiAnalysisStatus.notRequired => 'not_required',
+        AiAnalysisStatus.pending => 'pending',
+        AiAnalysisStatus.inProgress => 'in_progress',
+        AiAnalysisStatus.completed => 'completed',
+        AiAnalysisStatus.failed => 'failed',
+      };
+
+  static AiAnalysisStatus fromValue(String? value) => switch (value) {
+        'pending' => AiAnalysisStatus.pending,
+        'in_progress' => AiAnalysisStatus.inProgress,
+        'completed' => AiAnalysisStatus.completed,
+        'failed' => AiAnalysisStatus.failed,
+        _ => AiAnalysisStatus.notRequired,
+      };
+}
+
 // ─── Message Role ─────────────────────────────────────────────────────────────
 enum MessageRole { user, assistant, system }
 

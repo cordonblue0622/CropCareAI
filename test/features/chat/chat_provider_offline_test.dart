@@ -529,4 +529,59 @@ void main() {
       backend.response.recommendedActions,
     );
   });
+
+  test('online numbered treatment response never creates placeholder actions',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final backend = _TrackingAiBackendService(supabase: supabase)
+      ..response = const AiBackendChatResponse(
+        answer: 'What it is: Squash Powdery Mildew.\n'
+            'Treatment:\n'
+            '1. Remove infected lower leaves. Bag them and discard them; do not compost them.\n'
+            '2. Inspect fresh leaves every day.\n'
+            '3. Apply the labeled treatment only as directed.\n'
+            'Prevention: Keep foliage dry.',
+        recommendedActions: [],
+        warnings: [],
+        sources: ['openai-vision'],
+        model: 'test-online',
+        inAppCropScope: true,
+        showTreatmentUi: true,
+        verifiedCrop: 'squash',
+        verifiedDisease: 'Squash Powdery Mildew',
+      );
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: backend,
+      connectivity: _OnlineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+    );
+    addTearDown(provider.dispose);
+
+    await provider.sendMessage(
+      userId: 'online-user',
+      content: 'Please diagnose this squash leaf.',
+      attachedImageBytes: const [1, 2, 3],
+      hintCropType: 'squash',
+    );
+
+    final suggestion = provider.currentMessages.singleWhere(
+      (message) =>
+          message.role == MessageRole.system &&
+          message.metadata?['type'] == 'add_crop_suggestion',
+    );
+    final actions = (suggestion.metadata?['recommended_actions'] as List)
+        .map((action) => action.toString())
+        .toList();
+    expect(actions, [
+      '1. Remove infected lower leaves. Bag them and discard them; do not compost them.',
+      '2. Inspect fresh leaves every day.',
+      '3. Apply the labeled treatment only as directed.',
+    ]);
+    expect(actions, isNot(contains('1.')));
+    expect(actions, isNot(contains('2.')));
+    expect(actions, isNot(contains('3.')));
+    expect(backend.sendCallCount, 1);
+  });
 }
