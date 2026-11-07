@@ -931,15 +931,25 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         ? null
         : '${humanizeDiseaseLabel(primary.label)} '
             '(${(primary.confidence * 100).toStringAsFixed(0)}% confidence)';
+    final safetyNotes = detection.notes
+        .where((note) =>
+            note.startsWith('Possible crop-family mismatch:') ||
+            note.startsWith('The model has '))
+        .join(' ');
 
     if (detection.status.toLowerCase() == 'no_match') {
       if (selectedCropType != null && topGuess != null) {
         return 'I can\'t confidently confirm your selected ${_cropTypeLabel(selectedCropType)} crop offline from this photo. '
-            'Top offline guess: $topGuess. Upload a clearer close-up or go online for better assistance.';
+            'Top offline guess: $topGuess. ${safetyNotes.isEmpty ? '' : '$safetyNotes '}'
+            'Upload a clearer close-up or go online for better assistance.';
       }
       if (topGuess != null) {
         return 'I can\'t confidently confirm a supported crop diagnosis offline from this photo. '
-            'Top offline guess: $topGuess. Upload a clearer close-up or go online for better assistance.';
+            'Top offline guess: $topGuess. ${safetyNotes.isEmpty ? '' : '$safetyNotes '}'
+            'Upload a clearer close-up or go online for better assistance.';
+      }
+      if (safetyNotes.isNotEmpty) {
+        return '$safetyNotes Upload a clearer close-up or go online for better assistance.';
       }
       return detection.notes.isNotEmpty
           ? detection.notes.first

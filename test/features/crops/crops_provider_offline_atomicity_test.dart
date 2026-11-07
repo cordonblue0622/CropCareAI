@@ -261,6 +261,150 @@ void main() {
     expect(provider.crops.single.id, crop.id);
   });
 
+  test('adding a crop without diagnosis does not invent a diagnosis record',
+      () async {
+    final supabase = _OfflineSupabaseService();
+    final provider = CropsProvider(
+      supabase: supabase,
+      db: database,
+      sync: _NoopSyncService(
+        supabaseService: supabase,
+        dbHelper: database,
+      ),
+      connectivity: _OfflineConnectivityService(),
+    );
+    addTearDown(provider.dispose);
+
+    final cropId = await provider.addCropFromDiagnosis(
+      userId: 'offline-user',
+      diseaseName: '',
+      labelKey: '',
+      cropName: 'Healthy squash seedling',
+      cropType: CropType.squash,
+      severity: Severity.healthy,
+      diagnosisMode: DiagnosisMode.offline,
+    );
+
+    expect(cropId, isNotNull);
+    expect(await database.queryDiagnosesForCrop(cropId!), isEmpty);
+    expect(
+      (await database.queryById(AppConstants.cropsTable, cropId))?['crop_name'],
+      'Healthy squash seedling',
+    );
+    expect(
+      (await database.getPendingSyncItems())
+          .where((item) => item['table_name'] == AppConstants.diagnosesTable),
+      isEmpty,
+    );
+  });
+
+  test('crop addition repairs a missing local session row from its messages',
+      () async {
+    final now = DateTime(2026, 11, 3, 9);
+    final message = ChatMessageModel(
+      id: 'orphaned-conversation-message',
+      sessionId: 'orphaned-conversation',
+      userId: 'offline-user',
+      role: MessageRole.assistant,
+      content: 'Offline diagnosis and treatment context.',
+      createdAt: now,
+    );
+    await database.upsertRow(
+      AppConstants.chatMessagesTable,
+      message.toMap(),
+    );
+    final supabase = _OfflineSupabaseService();
+    final provider = CropsProvider(
+      supabase: supabase,
+      db: database,
+      sync: _NoopSyncService(
+        supabaseService: supabase,
+        dbHelper: database,
+      ),
+      connectivity: _OfflineConnectivityService(),
+    );
+    addTearDown(provider.dispose);
+
+    final cropId = await provider.addCropFromDiagnosis(
+      userId: 'offline-user',
+      diseaseName: 'Tomato Early Blight',
+      labelKey: 'tomato_early_blight',
+      cropName: 'Recovered tomato',
+      cropType: CropType.tomato,
+      severity: Severity.moderate,
+      treatmentSteps: const ['Inspect new leaves each day.'],
+      initialSummary: 'Offline TFLite diagnosis summary.',
+      diagnosisMode: DiagnosisMode.offline,
+      chatSessionId: message.sessionId,
+    );
+
+    expect(cropId, isNotNull);
+    final diagnosis = DiagnosisModel.fromMap(
+      (await database.queryDiagnosesForCrop(cropId!)).single,
+    );
+    final sessionRows = await database.queryChatSessionsByCrop(cropId);
+    expect(diagnosis.chatSessionId, message.sessionId);
+    expect(sessionRows, hasLength(1));
+    expect(sessionRows.single['id'], message.sessionId);
+    expect(sessionRows.single['crop_id'], cropId);
+    expect(
+      (await database.queryChatMessages(message.sessionId)).single['content'],
+      message.content,
+    );
+  });
+
+  test('adding a diagnosis never overwrites another crop with its ID',
+      () async {
+    final now = DateTime.now();
+    await database.upsertRow(
+      AppConstants.diagnosesTable,
+      DiagnosisModel(
+        id: 'shared-suggestion-id',
+        cropId: 'older-crop',
+        userId: 'offline-user',
+        diagnosisMode: DiagnosisMode.offline,
+        diseaseName: 'Tomato Early Blight',
+        diagnosedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      ).toMap(),
+    );
+    final supabase = _OfflineSupabaseService();
+    final provider = CropsProvider(
+      supabase: supabase,
+      db: database,
+      sync: _NoopSyncService(
+        supabaseService: supabase,
+        dbHelper: database,
+      ),
+      connectivity: _OfflineConnectivityService(),
+    );
+    addTearDown(provider.dispose);
+
+    final cropId = await provider.addCropFromDiagnosis(
+      userId: 'offline-user',
+      diseaseName: 'Tomato Early Blight',
+      labelKey: 'tomato_early_blight',
+      cropName: 'Second tomato crop',
+      cropType: CropType.tomato,
+      severity: Severity.moderate,
+      diagnosisMode: DiagnosisMode.offline,
+      diagnosisId: 'shared-suggestion-id',
+    );
+
+    expect(cropId, isNotNull);
+    final oldDiagnosis = await database.queryById(
+      AppConstants.diagnosesTable,
+      'shared-suggestion-id',
+    );
+    final newDiagnosis = DiagnosisModel.fromMap(
+      (await database.queryDiagnosesForCrop(cropId!)).single,
+    );
+    expect(oldDiagnosis?['crop_id'], 'older-crop');
+    expect(newDiagnosis.id, isNot('shared-suggestion-id'));
+    expect(newDiagnosis.cropId, cropId);
+  });
+
   test('offline detection crop and conversations survive a database restart',
       () async {
     final supabase = _OfflineSupabaseService();
@@ -433,9 +577,12 @@ void main() {
     );
     expect(persistedCard.metadata?['confidence_score'], 0.91);
 
-    final queuedTables = (await database.getPendingSyncItems())
-        .map((item) => item['table_name'])
+    final queuedItems = await database.getPendingSyncItems();
+    final queuedKeys = queuedItems
+        .map((item) => '${item['table_name']}:${item['record_id']}')
         .toSet();
+    expect(queuedKeys, hasLength(queuedItems.length));
+    final queuedTables = queuedItems.map((item) => item['table_name']).toSet();
     expect(
       queuedTables,
       containsAll([
@@ -623,6 +770,7 @@ void main() {
     final localSessions = (await database.queryChatSessionsByCrop(crop.id))
         .map(ChatSessionModel.fromMap)
         .toList();
+    expect(localSessions, hasLength(1));
     final localMessages = (await database.queryChatMessages(session.id))
         .map(ChatMessageModel.fromMap)
         .toList();

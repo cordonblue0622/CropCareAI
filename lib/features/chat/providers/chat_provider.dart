@@ -131,14 +131,45 @@ class ChatProvider extends ChangeNotifier {
 
   Future<void> fetchSessions(String userId) async {
     try {
-      final rows = await _supabase.getChatSessions(userId);
-      final fetchedSessions = rows.map(ChatSessionModel.fromMap).toList();
-      await _db.upsertRows(
-        AppConstants.chatSessionsTable,
-        fetchedSessions.map((session) => session.toMap()),
+      var localRows = <Map<String, dynamic>>[];
+      try {
+        localRows = await _db.queryByUserId(
+          AppConstants.chatSessionsTable,
+          userId,
+          includeDeleted: true,
+        );
+      } catch (error, stackTrace) {
+        _logCacheFailure('load local chat sessions', error, stackTrace);
+      }
+
+      var remoteRows = <Map<String, dynamic>>[];
+      try {
+        remoteRows = await _supabase.getChatSessions(userId);
+      } catch (error, stackTrace) {
+        _logCacheFailure('fetch remote chat sessions', error, stackTrace);
+      }
+
+      final pendingLocalIds = (await _db.getPendingSyncItems())
+          .where((item) =>
+              item['table_name'] == AppConstants.chatSessionsTable &&
+              (item['operation'] == 'UPSERT' ||
+                  item['operation'] == 'SOFT_DELETE'))
+          .map((item) => item['record_id'] as String?)
+          .whereType<String>()
+          .toSet();
+      final mergedRows = SyncService.mergeLocalAndRemoteRows(
+        localRows: localRows,
+        remoteRows: remoteRows,
+        pendingLocalIds: pendingLocalIds,
       );
-      _sessions = await _filterHistorySessions(fetchedSessions);
-    } catch (_) {
+      final mergedSessions = mergedRows
+          .map(ChatSessionModel.fromMap)
+          .where((session) => !session.isDeleted)
+          .toList();
+      await _cacheRows(AppConstants.chatSessionsTable, mergedRows);
+      _sessions = await _filterHistorySessions(mergedSessions);
+    } catch (error, stackTrace) {
+      _logCacheFailure('merge chat sessions', error, stackTrace);
       try {
         final rows =
             await _db.queryByUserId(AppConstants.chatSessionsTable, userId);
@@ -178,37 +209,60 @@ class ChatProvider extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
 
-    final messageRowsById = <String, Map<String, dynamic>>{};
+    final localRowsById = <String, Map<String, dynamic>>{};
     try {
       for (final row in await _db.queryChatMessages(session.id)) {
         final id = (row['id'] as String?)?.trim();
         if (id != null && id.isNotEmpty) {
-          messageRowsById[id] = Map<String, dynamic>.from(row);
+          localRowsById[id] = Map<String, dynamic>.from(row);
         }
       }
     } catch (error, stackTrace) {
       _logCacheFailure('read cached chat messages', error, stackTrace);
     }
 
+    var remoteRows = <Map<String, dynamic>>[];
     try {
-      for (final row in await _supabase.getChatMessages(session.id)) {
-        final id = (row['id'] as String?)?.trim();
-        if (id != null && id.isNotEmpty) {
-          messageRowsById[id] = Map<String, dynamic>.from(row);
-        }
+      if (await _connectivity.isConnected) {
+        remoteRows = await _supabase.getChatMessages(session.id);
       }
     } catch (_) {
-      // Continue with cached messages when the server is unavailable.
+      // The local conversation remains available if connectivity drops.
     }
 
+    var pendingMessageIds = <String>{};
     try {
-      _currentMessages = messageRowsById.values
+      pendingMessageIds = (await _db.getPendingSyncItems())
+          .where((item) =>
+              item['table_name'] == AppConstants.chatMessagesTable &&
+              (item['operation'] == 'UPSERT' ||
+                  item['operation'] == 'SOFT_DELETE' ||
+                  item['operation'] == 'DELETE'))
+          .map((item) => item['record_id'] as String?)
+          .whereType<String>()
+          .toSet();
+    } catch (error, stackTrace) {
+      _logCacheFailure('read pending chat messages', error, stackTrace);
+    }
+
+    final mergedRows = SyncService.mergeLocalAndRemoteRows(
+      localRows: localRowsById.values,
+      remoteRows: remoteRows,
+      pendingLocalIds: pendingMessageIds,
+    );
+    final rowsWithLocalImages = SyncService.preserveLocalChatImages(
+      localRows: localRowsById.values,
+      mergedRows: mergedRows,
+    );
+
+    try {
+      _currentMessages = rowsWithLocalImages
           .map(ChatMessageModel.fromMap)
           .toList()
         ..sort((left, right) => left.createdAt.compareTo(right.createdAt));
       await _db.upsertRows(
         AppConstants.chatMessagesTable,
-        _currentMessages.map((message) => message.toMap()),
+        rowsWithLocalImages,
       );
     } catch (error, stackTrace) {
       _logCacheFailure('load chat messages', error, stackTrace);
@@ -246,17 +300,112 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Opens an exact persisted conversation, including scan-only sessions that
+  /// are intentionally omitted from the visible chat drawer.
+  Future<bool> loadSessionById(
+    String sessionId, {
+    required String userId,
+  }) async {
+    final normalizedId = sessionId.trim();
+    if (normalizedId.isEmpty) return false;
+
+    final current = _currentSession;
+    if (current != null &&
+        current.id == normalizedId &&
+        current.userId == userId &&
+        !current.isDeleted) {
+      await loadSession(current);
+      return true;
+    }
+
+    try {
+      final localRow = await _db.queryById(
+        AppConstants.chatSessionsTable,
+        normalizedId,
+      );
+      if (localRow != null) {
+        final localSession = ChatSessionModel.fromMap(localRow);
+        if (localSession.userId == userId && !localSession.isDeleted) {
+          await loadSession(localSession);
+          return true;
+        }
+      }
+    } catch (error, stackTrace) {
+      _logCacheFailure('find exact local chat session', error, stackTrace);
+    }
+
+    if (!await _connectivity.isConnected) return false;
+
+    try {
+      final remoteRow = await _supabase.getChatSessionById(
+        userId: userId,
+        sessionId: normalizedId,
+      );
+      if (remoteRow != null) {
+        final remoteSession = ChatSessionModel.fromMap(remoteRow);
+        await _cacheRows(AppConstants.chatSessionsTable, [remoteRow]);
+        await loadSession(remoteSession);
+        return true;
+      }
+    } catch (_) {
+      // A missing remote session must not replace the local conversation.
+    }
+    return false;
+  }
+
   Future<void> linkCurrentSessionToCrop(String cropId) async {
     final current = _currentSession;
     if (current == null || cropId.isEmpty || current.cropId == cropId) {
       return;
     }
 
-    final updated = current.copyWith(
-      cropId: cropId,
+    await linkSessionToCrop(current.id, cropId);
+  }
+
+  /// Links the crop to the conversation that owns an action card, even if the
+  /// currently selected chat has changed since that card was rendered.
+  Future<void> linkSessionToCrop(String sessionId, String cropId) async {
+    final normalizedSessionId = sessionId.trim();
+    final normalizedCropId = cropId.trim();
+    if (normalizedSessionId.isEmpty || normalizedCropId.isEmpty) return;
+
+    ChatSessionModel? session;
+    final current = _currentSession;
+    if (current?.id == normalizedSessionId) {
+      session = current;
+    } else {
+      session = _sessions
+          .where((candidate) => candidate.id == normalizedSessionId)
+          .firstOrNull;
+    }
+    if (session == null) {
+      try {
+        final row = await _db.queryById(
+          AppConstants.chatSessionsTable,
+          normalizedSessionId,
+        );
+        if (row != null) session = ChatSessionModel.fromMap(row);
+      } catch (error, stackTrace) {
+        _logCacheFailure(
+          'find conversation to link to crop',
+          error,
+          stackTrace,
+        );
+      }
+    }
+    if (session == null ||
+        session.isDeleted ||
+        session.cropId == normalizedCropId) {
+      return;
+    }
+
+    final updated = session.copyWith(
+      cropId: normalizedCropId,
       updatedAt: DateTime.now(),
     );
-    _currentSession = updated;
+    if (_currentSession?.id == normalizedSessionId) {
+      _currentSession = updated;
+    }
 
     final idx = _sessions.indexWhere((s) => s.id == updated.id);
     if (idx != -1) {
@@ -337,6 +486,9 @@ class ChatProvider extends ChangeNotifier {
                 attachedDiagnosis: attachedDiagnosis,
                 explicitHint: hintCropType,
               );
+    final offlineImageCropConstraint = hintCropType?.trim().isNotEmpty == true
+        ? hintCropType!.trim().toLowerCase()
+        : (messageCropType.isNotEmpty ? messageCropType : resolvedHintCropType);
     final requiresFreshImage = attachedDiagnosis == null &&
         !hasConversationImage &&
         _requiresFreshImageForMessage(
@@ -618,9 +770,14 @@ class ChatProvider extends ChangeNotifier {
           };
         } else if (!online && hasAttachedImage) {
           try {
-            final localResult = await _localClassifier.classifyImage(
+            final rawLocalResult = await _localClassifier.classifyImage(
               imageBytes: imageAttachments.first,
               filename: 'chat-photo.jpg',
+              cropType: offlineImageCropConstraint,
+            );
+            final localResult = _rejectOfflineFamilyMismatch(
+              rawLocalResult,
+              expectedCropType: offlineImageCropConstraint,
             );
             aiContent = _buildOfflineImageResponse(localResult);
             final detection = localResult.primaryDetection;
@@ -1221,16 +1378,22 @@ class ChatProvider extends ChangeNotifier {
   }
 
   String _buildOfflineImageResponse(AiBackendDetectResponse result) {
+    final familyMismatchNote = result.notes.cast<String?>().firstWhere(
+          (note) => note?.startsWith('Possible crop-family mismatch:') == true,
+          orElse: () => null,
+        );
     final detection = result.primaryDetection;
     if (detection == null) {
-      return 'The offline scanner could not identify this photo confidently. '
+      return '${familyMismatchNote == null ? '' : '$familyMismatchNote\n\n'}'
+          'The offline scanner could not identify this photo confidently. '
           'Try a clear, close photo of the affected leaf, then go online for a more accurate AI review.';
     }
 
     final confidence = (detection.confidence * 100).toStringAsFixed(0);
     final crop = (result.cropType ?? '').trim();
     if (result.status != 'ok') {
-      return 'The offline scanner is not confident enough to diagnose this photo.\n\n'
+      return '${familyMismatchNote == null ? '' : '$familyMismatchNote\n\n'}'
+          'The offline scanner is not confident enough to diagnose this photo.\n\n'
           'Top preliminary guess: ${detection.label} ($confidence% confidence).\n\n'
           'Retake the photo in good light and go online for a more accurate AI review before treating the plant.';
     }
@@ -1238,6 +1401,33 @@ class ChatProvider extends ChangeNotifier {
     final cropDescription = crop.isEmpty ? '' : ' from the $crop crop family';
     return 'Offline scan result: ${detection.label}$cropDescription ($confidence% confidence).\n\n'
         'This is a preliminary on-device result. Go online for a more accurate conversational AI review before starting treatment.';
+  }
+
+  AiBackendDetectResponse _rejectOfflineFamilyMismatch(
+    AiBackendDetectResponse result, {
+    required String? expectedCropType,
+  }) {
+    final expected = (expectedCropType ?? '').trim().toLowerCase();
+    final predicted = (result.cropType ?? '').trim().toLowerCase();
+    if (expected.isEmpty ||
+        result.status.toLowerCase() != 'ok' ||
+        predicted == expected) {
+      return result;
+    }
+
+    final label = result.primaryDetection?.label;
+    final mismatch =
+        'Possible crop-family mismatch: the offline model returned '
+        '${label == null ? 'a result' : label} from the $predicted family '
+        'while $expected was selected. This is not a confirmed diagnosis.';
+    return AiBackendDetectResponse(
+      status: 'no_match',
+      source: result.source,
+      cropType: expected,
+      detections: const [],
+      model: result.model,
+      notes: [mismatch],
+    );
   }
 
   _OfflineTopGuess? _extractTopGuessFromPrompt(String text) {

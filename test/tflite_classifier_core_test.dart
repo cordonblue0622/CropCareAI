@@ -81,7 +81,11 @@ void main() {
       inputHeight: 1,
       inputWidth: 3,
     ) as List<List<List<List<double>>>>;
-    expect(downsampled[0][0].map((pixel) => pixel[0]).toList(), [30, 150, 239]);
+    final downsampleValues =
+        downsampled[0][0].map((pixel) => pixel[0]).toList();
+    expect(downsampleValues[0], closeTo(16.6667, 0.01));
+    expect(downsampleValues[1], 150.0);
+    expect(downsampleValues[2], closeTo(245.8333, 0.01));
   });
 
   test('selected crop restricts ranking without inflating probabilities', () {
@@ -250,7 +254,11 @@ void main() {
         preserveProvidedScores: true,
       );
 
-      expect(result.status, 'ok', reason: entry.key);
+      expect(
+        result.status,
+        entry.key == 'squash' ? 'no_match' : 'ok',
+        reason: entry.key,
+      );
       expect(result.cropType, entry.key, reason: entry.key);
       expect(
         result.primaryDetection?.labelKey,
@@ -275,6 +283,13 @@ void main() {
         contains('was not used for diagnosis'),
         reason: '${entry.key} retains the global mismatch for diagnostics',
       );
+      if (entry.key == 'squash') {
+        expect(
+          result.notes.join(' '),
+          contains('no healthy-leaf class'),
+          reason: 'the shipped Squash model lacks a healthy baseline',
+        );
+      }
     }
   });
 
@@ -351,6 +366,7 @@ void main() {
     expect(result.detections, hasLength(1));
     expect(result.notes.join(' '), contains('below the 70%'));
     expect(result.notes.join(' '), contains('Eggplant Insect Pest'));
+    expect(result.notes.join(' '), contains('Possible crop-family mismatch'));
   });
 
   test('confidence margin is calculated within the selected family', () {

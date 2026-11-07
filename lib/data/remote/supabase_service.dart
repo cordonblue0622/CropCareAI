@@ -598,6 +598,19 @@ class SupabaseService {
         .order('last_message_at', ascending: false);
   }
 
+  Future<Map<String, dynamic>?> getChatSessionById({
+    required String userId,
+    required String sessionId,
+  }) async {
+    return _client
+        .from('chat_sessions')
+        .select()
+        .eq('id', sessionId)
+        .eq('user_id', userId)
+        .eq('is_deleted', false)
+        .maybeSingle();
+  }
+
   Future<void> upsertChatSession(Map<String, dynamic> session) async {
     await _client.from('chat_sessions').upsert(session);
   }

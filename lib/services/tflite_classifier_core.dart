@@ -162,9 +162,30 @@ class TfliteClassifierCore {
     final predictedCropType = labelSpec.cropType?.value;
     final predictedCropFamily = labelSpec.cropFamily;
     final globalTopSpec = _labelSpecFor(labels[globalRanking.first]);
+    final globalTopScore = normalizedScores[globalRanking.first];
     final globalMismatchNote = hasSelectedCrop &&
             globalTopSpec.cropFamily != requestedCropType
         ? 'Global highest prediction ${globalTopSpec.displayLabel} is outside the selected $requestedCropType family and was not used for diagnosis.'
+        : null;
+    final familyForCoverage =
+        hasSelectedCrop ? requestedCropType : predictedCropFamily;
+    final familyLabels = labels
+        .where((label) => cropFamilyForLabel(label) == familyForCoverage)
+        .toList(growable: false);
+    final hasHealthyBaseline = familyLabels.any(_isHealthyLabel);
+    final hasSufficientFamilyCoverage =
+        familyLabels.length >= 2 && hasHealthyBaseline;
+    final familyCoverageNote = hasSufficientFamilyCoverage
+        ? null
+        : 'The model has ${familyLabels.length} class${familyLabels.length == 1 ? '' : 'es'} for the ${familyForCoverage ?? 'predicted'} family${hasHealthyBaseline ? '' : ' and no healthy-leaf class'}; it cannot safely confirm a diagnosis for this family.';
+    final possibleFamilyMismatch = hasSelectedCrop &&
+        globalTopSpec.cropFamily != requestedCropType &&
+        globalTopScore >= AppConstants.temporaryScannerAcceptedConfidence &&
+        (score < AppConstants.temporaryScannerAcceptedConfidence ||
+            globalTopScore - score >=
+                AppConstants.temporaryScannerAcceptedMargin);
+    final possibleFamilyMismatchNote = possibleFamilyMismatch
+        ? 'Possible crop-family mismatch: the full-model top class ${globalTopSpec.displayLabel} scored ${(globalTopScore * 100).toStringAsFixed(1)}%, while the strongest $requestedCropType class scored ${(score * 100).toStringAsFixed(1)}%. The other-family class is not confirmed as a diagnosis.'
         : null;
     final sameCropConfidence = predictedCropType == null
         ? score
@@ -228,7 +249,10 @@ class TfliteClassifierCore {
       );
     }
 
-    if (isBelowAcceptedConfidence || isAmbiguous) {
+    if (isBelowAcceptedConfidence ||
+        isAmbiguous ||
+        !hasSufficientFamilyCoverage ||
+        possibleFamilyMismatch) {
       final rejectionNotes = <String>[];
       if (isBelowAcceptedConfidence) {
         rejectionNotes.add(
@@ -239,6 +263,12 @@ class TfliteClassifierCore {
         rejectionNotes.add(
           'Top prediction margin was ${(scoreMargin * 100).toStringAsFixed(1)}%, below the ${(AppConstants.temporaryScannerAcceptedMargin * 100).toStringAsFixed(0)}% confidence-gap threshold. The scan is too ambiguous to diagnose safely.',
         );
+      }
+      if (familyCoverageNote != null) {
+        rejectionNotes.add(familyCoverageNote);
+      }
+      if (possibleFamilyMismatchNote != null) {
+        rejectionNotes.add(possibleFamilyMismatchNote);
       }
       return AiBackendDetectResponse(
         status: 'no_match',
@@ -357,24 +387,16 @@ class TfliteClassifierCore {
       throw Exception('Failed to decode image for TFLite inference.');
     }
 
-    final resized = _resizeWithTrainingBilinear(
+    final resizedRgb = _resizeWithTrainingBilinear(
       img.bakeOrientation(decoded),
       width: inputWidth,
       height: inputHeight,
     );
 
     if (inputDtype == TfliteInputDtype.uint8) {
-      final buffer = Uint8List(inputHeight * inputWidth * 3);
-      var offset = 0;
-      for (var y = 0; y < inputHeight; y++) {
-        for (var x = 0; x < inputWidth; x++) {
-          final pixel = resized.getPixel(x, y);
-          buffer[offset++] = pixel.r.toInt();
-          buffer[offset++] = pixel.g.toInt();
-          buffer[offset++] = pixel.b.toInt();
-        }
-      }
-      return buffer;
+      return Uint8List.fromList(
+        resizedRgb.map((value) => value.round().clamp(0, 255).toInt()).toList(),
+      );
     }
 
     return [
@@ -382,14 +404,11 @@ class TfliteClassifierCore {
         inputHeight,
         (y) => List.generate(
           inputWidth,
-          (x) {
-            final pixel = resized.getPixel(x, y);
-            return [
-              pixel.r.toDouble(),
-              pixel.g.toDouble(),
-              pixel.b.toDouble(),
-            ];
-          },
+          (x) => [
+            resizedRgb[(y * inputWidth + x) * 3],
+            resizedRgb[(y * inputWidth + x) * 3 + 1],
+            resizedRgb[(y * inputWidth + x) * 3 + 2],
+          ],
         ),
       ),
     ];
@@ -465,103 +484,50 @@ class TfliteClassifierCore {
         .replaceAll(RegExp(r'_+'), '_')
         .replaceAll(RegExp(r'^_|_$'), '');
   }
+
+  bool _isHealthyLabel(String rawLabel) =>
+      _normalizeLabelKey(rawLabel).split('_').contains('healthy');
 }
 
-/// Mirrors Keras/Pillow bilinear resizing: pixel-center coordinates and a
-/// widened triangular filter when downsampling. The two separable passes
-/// retain the antialiasing behavior used by image_dataset_from_directory.
-img.Image _resizeWithTrainingBilinear(
+/// Mirrors TensorFlow's default bilinear resize used by
+/// `image_dataset_from_directory`: pixel-center sampling, edge clamping, and
+/// no antialias filter while downsampling. Keep values fractional to match the
+/// float32 image tensors used for training.
+Float32List _resizeWithTrainingBilinear(
   img.Image source, {
   required int width,
   required int height,
 }) {
-  final horizontalContributions = _bilinearContributions(source.width, width);
-  final horizontallyResized = img.Image(
-    width: width,
-    height: source.height,
-    numChannels: 3,
-  );
-
-  for (var y = 0; y < source.height; y++) {
-    for (var x = 0; x < width; x++) {
-      var red = 0.0;
-      var green = 0.0;
-      var blue = 0.0;
-      for (final contribution in horizontalContributions[x]) {
-        final pixel = source.getPixel(contribution.index, y);
-        red += pixel.r.toDouble() * contribution.weight;
-        green += pixel.g.toDouble() * contribution.weight;
-        blue += pixel.b.toDouble() * contribution.weight;
-      }
-      horizontallyResized.setPixelRgb(
-        x,
-        y,
-        red.round(),
-        green.round(),
-        blue.round(),
-      );
-    }
-  }
-
-  final verticalContributions = _bilinearContributions(source.height, height);
-  final resized = img.Image(width: width, height: height, numChannels: 3);
+  final resized = Float32List(width * height * 3);
+  final scaleX = source.width / width;
+  final scaleY = source.height / height;
   for (var y = 0; y < height; y++) {
+    final sourceY =
+        ((y + 0.5) * scaleY - 0.5).clamp(0.0, (source.height - 1).toDouble());
+    final topY = sourceY.floor();
+    final bottomY = math.min(topY + 1, source.height - 1);
+    final weightY = sourceY - topY;
     for (var x = 0; x < width; x++) {
-      var red = 0.0;
-      var green = 0.0;
-      var blue = 0.0;
-      for (final contribution in verticalContributions[y]) {
-        final pixel = horizontallyResized.getPixel(x, contribution.index);
-        red += pixel.r.toDouble() * contribution.weight;
-        green += pixel.g.toDouble() * contribution.weight;
-        blue += pixel.b.toDouble() * contribution.weight;
+      final sourceX =
+          ((x + 0.5) * scaleX - 0.5).clamp(0.0, (source.width - 1).toDouble());
+      final leftX = sourceX.floor();
+      final rightX = math.min(leftX + 1, source.width - 1);
+      final weightX = sourceX - leftX;
+      final topLeft = source.getPixel(leftX, topY);
+      final topRight = source.getPixel(rightX, topY);
+      final bottomLeft = source.getPixel(leftX, bottomY);
+      final bottomRight = source.getPixel(rightX, bottomY);
+      final offset = (y * width + x) * 3;
+      for (var channel = 0; channel < 3; channel++) {
+        final top = topLeft[channel].toDouble() * (1 - weightX) +
+            topRight[channel].toDouble() * weightX;
+        final bottom = bottomLeft[channel].toDouble() * (1 - weightX) +
+            bottomRight[channel].toDouble() * weightX;
+        resized[offset + channel] = top * (1 - weightY) + bottom * weightY;
       }
-      resized.setPixelRgb(
-        x,
-        y,
-        red.round(),
-        green.round(),
-        blue.round(),
-      );
     }
   }
   return resized;
-}
-
-List<List<_ResizeContribution>> _bilinearContributions(
-  int sourceLength,
-  int targetLength,
-) {
-  final scale = sourceLength / targetLength;
-  final filterScale = math.max(1.0, scale);
-  return List.generate(targetLength, (targetIndex) {
-    final center = (targetIndex + 0.5) * scale;
-    final first = math.max(0, (center - filterScale).floor());
-    final end = math.min(sourceLength, (center + filterScale).ceil());
-    final weights = <_ResizeContribution>[];
-    var totalWeight = 0.0;
-    for (var sourceIndex = first; sourceIndex < end; sourceIndex++) {
-      final distance = ((sourceIndex + 0.5 - center) / filterScale).abs();
-      final weight = math.max(0.0, 1.0 - distance);
-      if (weight > 0) {
-        weights.add(_ResizeContribution(sourceIndex, weight));
-        totalWeight += weight;
-      }
-    }
-    return weights
-        .map((contribution) => _ResizeContribution(
-              contribution.index,
-              contribution.weight / totalWeight,
-            ))
-        .toList(growable: false);
-  }, growable: false);
-}
-
-class _ResizeContribution {
-  final int index;
-  final double weight;
-
-  const _ResizeContribution(this.index, this.weight);
 }
 
 class _LabelSpec {

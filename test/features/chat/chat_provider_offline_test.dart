@@ -2,6 +2,8 @@ import 'package:cropcare_ai/core/constants/app_constants.dart';
 import 'package:cropcare_ai/core/constants/app_enums.dart';
 import 'package:cropcare_ai/data/local/database_helper.dart';
 import 'package:cropcare_ai/data/models/diagnosis_model.dart';
+import 'package:cropcare_ai/data/models/chat_message_model.dart';
+import 'package:cropcare_ai/data/models/chat_session_model.dart';
 import 'package:cropcare_ai/data/remote/ai_backend_service.dart';
 import 'package:cropcare_ai/data/remote/supabase_service.dart';
 import 'package:cropcare_ai/features/chat/providers/chat_provider.dart';
@@ -24,6 +26,8 @@ class _OnlineConnectivityService extends ConnectivityService {
 }
 
 class _FakeSupabaseService extends SupabaseService {
+  List<Map<String, dynamic>> remoteMessages = const [];
+
   @override
   Future<List<Map<String, dynamic>>> getDiseaseKnowledge({
     String? cropType,
@@ -35,6 +39,10 @@ class _FakeSupabaseService extends SupabaseService {
 
   @override
   Future<void> upsertChatSession(Map<String, dynamic> session) async {}
+
+  @override
+  Future<List<Map<String, dynamic>>> getChatMessages(String sessionId) async =>
+      remoteMessages;
 
   @override
   Future<String?> uploadChatImage({
@@ -56,12 +64,15 @@ class _NoopSyncService extends SyncService {
 }
 
 class _FakeLocalClassifierService extends LocalClassifierService {
+  String? lastCropType;
+
   @override
   Future<AiBackendDetectResponse> classifyImage({
     required List<int> imageBytes,
     required String filename,
     String? cropType,
   }) async {
+    lastCropType = cropType;
     return const AiBackendDetectResponse(
       status: 'ok',
       source: 'local-tflite',
@@ -583,5 +594,144 @@ void main() {
     expect(actions, isNot(contains('2.')));
     expect(actions, isNot(contains('3.')));
     expect(backend.sendCallCount, 1);
+  });
+
+  test('linking an add-crop card updates its own session, not the active chat',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: AiBackendService(supabase: supabase),
+      connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+    );
+    addTearDown(provider.dispose);
+
+    await provider.startNewSession('offline-user');
+    final activeSessionId = provider.currentSession!.id;
+    final now = DateTime.now();
+    final cardSession = ChatSessionModel(
+      id: 'card-session',
+      userId: 'offline-user',
+      createdAt: now,
+      updatedAt: now,
+    );
+    await database.upsertRow(
+      AppConstants.chatSessionsTable,
+      cardSession.toMap(),
+    );
+
+    await provider.linkSessionToCrop(cardSession.id, 'crop-from-card');
+
+    final active = await database.queryById(
+      AppConstants.chatSessionsTable,
+      activeSessionId,
+    );
+    final card = await database.queryById(
+      AppConstants.chatSessionsTable,
+      cardSession.id,
+    );
+    expect(provider.currentSession?.id, activeSessionId);
+    expect(active?['crop_id'], isNull);
+    expect(card?['crop_id'], 'crop-from-card');
+  });
+
+  test(
+      'loading a conversation preserves a pending local message over stale cloud data',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final sync = _NoopSyncService(
+      supabaseService: supabase,
+      dbHelper: database,
+    );
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: AiBackendService(supabase: supabase),
+      connectivity: _OnlineConnectivityService(),
+      sync: sync,
+    );
+    addTearDown(provider.dispose);
+
+    final now = DateTime.now();
+    final session = ChatSessionModel(
+      id: 'queued-session',
+      userId: 'offline-user',
+      createdAt: now,
+      updatedAt: now,
+    );
+    final localMessage = ChatMessageModel(
+      id: 'queued-message',
+      sessionId: session.id,
+      userId: session.userId,
+      role: MessageRole.assistant,
+      content: 'The complete local TFLite conversation.',
+      metadata: {'image_url': 'data:image/jpeg;base64,AQID'},
+      createdAt: now,
+    );
+    await sync.persistQueuedUpserts([
+      LocalSyncUpsert(
+        tableName: AppConstants.chatMessagesTable,
+        recordId: localMessage.id,
+        localData: localMessage.toMap(),
+        remoteData: localMessage.toMap(),
+      ),
+    ]);
+    supabase.remoteMessages = [
+      {
+        ...localMessage.toMap(),
+        'content': 'Stale cloud response',
+        'metadata': <String, dynamic>{},
+      },
+    ];
+
+    await provider.loadSession(session);
+
+    expect(provider.currentMessages, hasLength(1));
+    expect(provider.currentMessages.single.content,
+        'The complete local TFLite conversation.');
+    expect(provider.currentMessages.single.imageUrl,
+        'data:image/jpeg;base64,AQID');
+  });
+
+  test('offline chat applies the selected crop and withholds another family',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final classifier = _FakeLocalClassifierService();
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: _TrackingAiBackendService(supabase: supabase),
+      connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+      localClassifier: classifier,
+    );
+    addTearDown(provider.dispose);
+
+    await provider.sendMessage(
+      userId: 'offline-user',
+      content: 'Please analyze this leaf photo.',
+      attachedImageBytes: const [1, 2, 3],
+      hintCropType: 'squash',
+    );
+
+    final assistantMessage = provider.currentMessages.firstWhere(
+      (message) => message.role == MessageRole.assistant,
+    );
+    expect(classifier.lastCropType, 'squash');
+    expect(assistantMessage.content, contains('Possible crop-family mismatch'));
+    expect(assistantMessage.content,
+        contains('This is not a confirmed diagnosis'));
+    expect(assistantMessage.content, isNot(contains('Offline scan result:')));
+    expect(assistantMessage.metadata?['crop_type'], 'squash');
+    expect(assistantMessage.metadata?['disease_name'], isEmpty);
+    expect(assistantMessage.metadata?['show_treatment_card'], false);
+    expect(
+      provider.currentMessages.any(
+        (message) => message.metadata?['type'] == 'add_crop_suggestion',
+      ),
+      isFalse,
+    );
   });
 }

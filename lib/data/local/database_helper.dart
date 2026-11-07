@@ -1011,11 +1011,23 @@ class DatabaseHelper {
       String cropId) async {
     if (_isDisabledOnPlatform) return [];
     final db = await database;
-    return db.query(
-      AppConstants.chatSessionsTable,
-      where: 'crop_id = ? AND is_deleted = 0',
-      whereArgs: [cropId],
-      orderBy: 'last_message_at DESC, created_at DESC',
+    return db.rawQuery(
+      '''
+      SELECT DISTINCT s.*
+      FROM ${AppConstants.chatSessionsTable} s
+      WHERE s.is_deleted = 0
+        AND (
+          s.crop_id = ?
+          OR EXISTS (
+            SELECT 1 FROM ${AppConstants.diagnosesTable} d
+            WHERE d.chat_session_id = s.id
+              AND d.crop_id = ?
+              AND d.is_deleted = 0
+          )
+        )
+      ORDER BY s.last_message_at DESC, s.created_at DESC
+      ''',
+      [cropId, cropId],
     );
   }
 

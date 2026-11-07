@@ -760,6 +760,36 @@ class CropsProvider extends ChangeNotifier {
   }) async {
     try {
       _error = null;
+      var normalizedDiseaseName = diseaseName.trim();
+      if (normalizedDiseaseName.isEmpty && labelKey.trim().isNotEmpty) {
+        final labelKnowledge = await _findLocalDiseaseKnowledge(
+          cropType: cropType,
+          diseaseName: '',
+          labelKey: labelKey,
+        );
+        normalizedDiseaseName = labelKnowledge?.diseaseName.trim() ?? '';
+      }
+
+      // A crop can be added without a diagnosis. In that case the crop row
+      // itself is the durable addition audit event; never invent a condition
+      // just to create a diagnosis row.
+      if (normalizedDiseaseName.isEmpty) {
+        final added = await addCrop(
+          userId: userId,
+          cropType: cropType,
+          cropName: cropName.trim(),
+          locationLabel: locationLabel,
+          notes: notes,
+          plantedAt: plantedAt,
+        );
+        if (!added) return null;
+        return _crops
+            .where((crop) =>
+                crop.userId == userId && crop.cropName == cropName.trim())
+            .firstOrNull
+            ?.id;
+      }
+
       _error = validateUniqueCropName(cropName: cropName);
       if (_error != null) {
         notifyListeners();
@@ -801,9 +831,6 @@ class CropsProvider extends ChangeNotifier {
         ),
       ];
 
-      final normalizedDiseaseName = diseaseName.trim().isEmpty
-          ? '${cropType.name[0].toUpperCase()}${cropType.name.substring(1)} condition'
-          : diseaseName.trim();
       String? linkedChatSessionId = chatSessionId;
       if (!kIsWeb && chatSessionId != null && chatSessionId.isNotEmpty) {
         final session = await _db.queryById(
@@ -811,11 +838,46 @@ class CropsProvider extends ChangeNotifier {
           chatSessionId,
         );
         if (session == null) {
-          linkedChatSessionId = null;
-          debugPrint(
-            '[CropsProvider] Chat session $chatSessionId was not found '
-            'locally; saving the diagnosis without a session link.',
-          );
+          // A chat message may already be durable even if an earlier partial
+          // save omitted its session row. Rebuild that same session ID from
+          // its saved messages so the diagnosis retains an exact conversation
+          // link through offline persistence and cloud synchronization.
+          final messageRows = (await _db.queryChatMessages(chatSessionId))
+              .where((row) => row['user_id'] == userId)
+              .toList(growable: false);
+          final messageTimes = messageRows
+              .map((row) => DateTime.tryParse(
+                    row['created_at'] as String? ?? '',
+                  ))
+              .whereType<DateTime>()
+              .toList()
+            ..sort();
+          if (messageRows.isEmpty) {
+            linkedChatSessionId = null;
+          } else {
+            final recoveredSession = ChatSessionModel(
+              id: chatSessionId,
+              userId: userId,
+              cropId: cropId,
+              title: 'Crop consultation',
+              isOfflineSession: diagnosisMode == DiagnosisMode.offline,
+              lastMessageAt: messageTimes.isEmpty ? now : messageTimes.last,
+              createdAt: messageTimes.isEmpty ? now : messageTimes.first,
+              updatedAt: now,
+            );
+            final localSession = recoveredSession.toMap();
+            final remoteSession = Map<String, dynamic>.from(localSession)
+              ..['is_offline_session'] = recoveredSession.isOfflineSession
+              ..['is_deleted'] = recoveredSession.isDeleted;
+            pendingWrites.add(
+              LocalSyncUpsert(
+                tableName: AppConstants.chatSessionsTable,
+                recordId: chatSessionId,
+                localData: localSession,
+                remoteData: remoteSession,
+              ),
+            );
+          }
         } else {
           final localSession = Map<String, dynamic>.from(session)
             ..['crop_id'] = cropId
@@ -840,10 +902,17 @@ class CropsProvider extends ChangeNotifier {
         }
       }
 
+      var storedDiagnosisId = diagnosisId?.trim() ?? '';
+      if (storedDiagnosisId.isEmpty ||
+          await _db.queryById(AppConstants.diagnosesTable, storedDiagnosisId) !=
+              null) {
+        // Reusing a diagnosis ID from another crop would overwrite its crop
+        // relationship. Each crop receives one stable diagnosis ID of its own.
+        storedDiagnosisId = const Uuid().v4();
+      }
+
       final diagnosis = DiagnosisModel(
-        id: diagnosisId?.trim().isNotEmpty == true
-            ? diagnosisId!.trim()
-            : const Uuid().v4(),
+        id: storedDiagnosisId,
         cropId: cropId,
         userId: userId,
         chatSessionId: linkedChatSessionId,

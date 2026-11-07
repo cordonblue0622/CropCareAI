@@ -66,6 +66,7 @@ class _RecordingChatProvider extends ChatProvider {
   final List<ChatSessionModel> _availableSessions = [];
   ChatSessionModel? _session;
   int sendCallCount = 0;
+  int startSessionCallCount = 0;
 
   @override
   List<ChatMessageModel> get currentMessages => _messages;
@@ -102,7 +103,22 @@ class _RecordingChatProvider extends ChatProvider {
   }
 
   @override
+  Future<bool> loadSessionById(
+    String sessionId, {
+    required String userId,
+  }) async {
+    final session = _availableSessions
+        .where((candidate) =>
+            candidate.id == sessionId && candidate.userId == userId)
+        .firstOrNull;
+    if (session == null) return false;
+    await loadSession(session);
+    return true;
+  }
+
+  @override
   Future<void> startNewSession(String userId, {String? cropId}) async {
+    startSessionCallCount++;
     final now = DateTime.now();
     _session = ChatSessionModel(
       id: 'scan-session',
@@ -345,5 +361,64 @@ void main() {
     expect(chatProvider.currentSession?.id, 'saved-session');
     expect(chatProvider.sendCallCount, 0);
     expect(find.text('Past eggplant diagnosis conversation'), findsOneWidget);
+  });
+
+  testWidgets('missing linked conversation does not open a generic chat',
+      (tester) async {
+    final now = DateTime.now();
+    final diagnosis = DiagnosisModel(
+      id: 'diagnosis-with-missing-session',
+      cropId: 'crop-1',
+      userId: 'saved-user',
+      chatSessionId: 'missing-session',
+      diagnosisMode: DiagnosisMode.offline,
+      diseaseName: 'Eggplant Leaf Spot',
+      diagnosedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    );
+    final supabase = _FakeSupabaseService();
+    final authRepository = _DelayedAuthRepository(
+      supabaseService: supabase,
+      dbHelper: database,
+    );
+    final authProvider = AuthProvider(authRepository: authRepository);
+    final chatProvider = _RecordingChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: AiBackendService(supabase: supabase),
+      connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+    );
+    addTearDown(authProvider.dispose);
+    addTearDown(chatProvider.dispose);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<AuthProvider>.value(value: authProvider),
+          ChangeNotifierProvider<ChatProvider>.value(value: chatProvider),
+        ],
+        child: MaterialApp(
+          home: ChatScreen(
+            cropId: 'crop-1',
+            initialDiagnosis: diagnosis,
+            startFreshSession: false,
+          ),
+        ),
+      ),
+    );
+    authRepository.completeRestoration(
+      const UserModel(id: 'saved-user', email: 'saved@example.com'),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(chatProvider.startSessionCallCount, 0);
+    expect(chatProvider.sendCallCount, 0);
+    expect(
+      find.text('This diagnosis conversation is unavailable on this device.'),
+      findsOneWidget,
+    );
   });
 }

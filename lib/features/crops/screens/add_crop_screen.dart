@@ -81,11 +81,11 @@ class _AddCropScreenState extends State<AddCropScreen> {
           Navigator.pop(context);
           if (syncWarning != null) {
             messenger.showSnackBar(
-              SnackBar(
-                content: const Text(
+              const SnackBar(
+                content: Text(
                   "Crop saved successfully on this device. It will automatically sync when you're back online.",
                 ),
-                duration: const Duration(seconds: 8),
+                duration: Duration(seconds: 8),
               ),
             );
           }

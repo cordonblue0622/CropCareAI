@@ -134,18 +134,15 @@ class _ChatScreenState extends State<ChatScreen> {
     if (widget.startFreshSession) {
       await chat.startNewSession(user.id, cropId: widget.cropId);
     } else if ((widget.initialDiagnosis?.chatSessionId ?? '').isNotEmpty) {
-      await chat.fetchSessions(user.id);
       final diagnosisSessionId = widget.initialDiagnosis!.chatSessionId!;
-      final diagnosisSession = chat.sessions
-          .where((session) =>
-              session.id == diagnosisSessionId && !session.isDeleted)
-          .cast<ChatSessionModel?>()
-          .firstOrNull;
-      if (diagnosisSession != null) {
-        await chat.loadSession(diagnosisSession);
-        loadedExistingSession = true;
-      } else {
-        await chat.startNewSession(user.id, cropId: widget.cropId);
+      loadedExistingSession = await chat.loadSessionById(
+        diagnosisSessionId,
+        userId: user.id,
+      );
+      if (!loadedExistingSession) {
+        _sendErrorMessage =
+            'This diagnosis conversation is unavailable on this device.';
+        return;
       }
     } else if (widget.cropId != null) {
       await chat.fetchSessions(user.id);
@@ -870,7 +867,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
     if (message.role == MessageRole.system) {
       final meta = message.metadata ?? {};
       if (meta['type'] == 'add_crop_suggestion') {
-        return _buildAddCropCard(context, meta);
+        return _buildAddCropCard(context, message, meta);
       }
       return const SizedBox.shrink();
     }
@@ -1130,10 +1127,19 @@ class _MessageBubbleState extends State<_MessageBubble> {
     );
   }
 
-  Widget _buildAddCropCard(BuildContext context, Map<String, dynamic> meta) {
+  Widget _buildAddCropCard(
+    BuildContext context,
+    ChatMessageModel message,
+    Map<String, dynamic> meta,
+  ) {
+    final chatProvider = context.watch<ChatProvider>();
     final alreadyLinked =
-        context.watch<ChatProvider>().currentSession?.cropId?.isNotEmpty ==
-            true;
+        (chatProvider.currentSession?.id == message.sessionId &&
+                chatProvider.currentSession?.cropId?.isNotEmpty == true) ||
+            chatProvider.sessions.any((session) =>
+                session.id == message.sessionId &&
+                session.cropId?.isNotEmpty == true &&
+                !session.isDeleted);
     final diseaseName = meta['disease_name'] as String? ?? '';
     final labelKey = meta['label_key'] as String? ?? '';
     final diagnosisId = meta['diagnosis_id'] as String?;
@@ -1254,6 +1260,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
                                       : diseaseName.split(' ').first,
                         );
                         _showAddCropFromCardDialog(context,
+                            chatSessionId: message.sessionId,
                             diseaseName: diseaseName,
                             labelKey: labelKey,
                             rawSeverity: rawSeverity,
@@ -1282,6 +1289,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
 
   void _showAddCropFromCardDialog(
     BuildContext context, {
+    required String chatSessionId,
     required String diseaseName,
     required String labelKey,
     required String rawSeverity,
@@ -1415,11 +1423,14 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     diagnosisMode: diagnosisMode,
                     diagnosisId: diagnosisId,
                     diagnosedAt: diagnosedAt,
-                    chatSessionId: chatProvider.currentSession?.id,
+                    chatSessionId: chatSessionId,
                   );
                   if (!messenger.mounted) return;
                   if (cropId != null) {
-                    await chatProvider.linkCurrentSessionToCrop(cropId);
+                    await chatProvider.linkSessionToCrop(
+                      chatSessionId,
+                      cropId,
+                    );
                     if (!messenger.mounted) return;
                     final syncWarning = cropsProvider.error;
                     messenger.showSnackBar(
