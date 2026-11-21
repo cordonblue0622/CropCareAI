@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
@@ -17,6 +19,9 @@ import '../../../services/connectivity_service.dart';
 import '../../../services/local_classifier_service.dart';
 import '../../../services/sync_service.dart';
 import '../../../services/treatment_action_parser.dart';
+
+List<String> _encodeChatImages(List<Uint8List> images) =>
+    images.map(buildInlineImageDataUrl).toList(growable: false);
 
 class ChatProvider extends ChangeNotifier {
   static const Set<String> _supportedTreatmentCardCrops = {
@@ -40,6 +45,8 @@ class ChatProvider extends ChangeNotifier {
   List<DiseaseKnowledgeModel> _knowledgeBase = [];
   bool _isLoading = false;
   bool _isTyping = false;
+  final Map<String, String> _submissionStates = {};
+  String? submissionState(String messageId) => _submissionStates[messageId];
 
   ChatProvider({
     required SupabaseService supabase,
@@ -426,591 +433,665 @@ class ChatProvider extends ChangeNotifier {
     List<int>? attachedImageBytes,
     List<List<int>> attachedImageBytesList = const [],
     String? attachedAudioPath,
+    bool transcribeAudio = false,
     String? attachedVideoPath,
     String? attachedImageMimeType,
     bool isVideoFrame = false,
     String? hintCropType,
+    VoidCallback? onQueued,
   }) async {
-    if (_currentSession == null) {
-      await startNewSession(userId);
+    if (_isTyping) throw StateError('A chat response is already processing.');
+    if (attachedImageBytesList.any((bytes) => bytes.isEmpty)) {
+      throw ArgumentError(
+          'An attached photo is empty. Please select it again.');
     }
+    _isTyping = true;
+    final deliveryTimer = Stopwatch()..start();
+    try {
+      Future<void>? sessionSave;
+      if (_currentSession == null) {
+        sessionSave = startNewSession(userId);
+      }
 
-    if (_knowledgeBase.isEmpty) {
-      await loadKnowledgeBase();
-    }
-
-    final online = await _connectivity.isConnected;
-    if (!online) {
-      await _markCurrentSessionOffline();
-    }
-
-    final provisionalSuggestionIndex = _currentMessages.indexWhere(
-      (message) =>
-          message.role == MessageRole.system &&
-          message.metadata?['type'] == 'add_crop_suggestion' &&
-          message.metadata?['diagnosis_mode'] == DiagnosisMode.offline.value,
-    );
-    final hasProvisionalOfflineSuggestion = provisionalSuggestionIndex >= 0;
-    final hasShownAddCropSuggestion = _currentMessages.any(
-      (message) =>
-          message.role == MessageRole.system &&
-          message.metadata?['type'] == 'add_crop_suggestion',
-    );
-    final imageAttachments = attachedImageBytesList
-        .where((bytes) => bytes.isNotEmpty)
-        .map(Uint8List.fromList)
-        .toList();
-    if (imageAttachments.isEmpty &&
-        attachedImageBytes != null &&
-        attachedImageBytes.isNotEmpty) {
-      imageAttachments.add(Uint8List.fromList(attachedImageBytes));
-    }
-    final hasAttachedImage = imageAttachments.isNotEmpty;
-    final conversationImages =
-        hasAttachedImage ? imageAttachments : _recentConversationImageBytes();
-    final hasConversationImage = conversationImages.isNotEmpty;
-    final previousImageReference = _latestConversationImageReference();
-    final messageCropType = _inferCropType(
-      labelKey: null,
-      diseaseName: '',
-      aiContent: content,
-    );
-    final isFreshUnscopedPhoto = hasAttachedImage && attachedDiagnosis == null;
-    final resolvedHintCropType = isFreshUnscopedPhoto
-        ? (messageCropType.isEmpty ? null : messageCropType)
-        : hasAttachedImage && attachedDiagnosis != null
-            ? (hintCropType?.trim().isNotEmpty == true
-                ? hintCropType!.trim().toLowerCase()
-                : null)
-            : _resolveConversationCropHint(
-                attachedDiagnosis: attachedDiagnosis,
-                explicitHint: hintCropType,
-              );
-    final offlineImageCropConstraint = hintCropType?.trim().isNotEmpty == true
-        ? hintCropType!.trim().toLowerCase()
-        : (messageCropType.isNotEmpty ? messageCropType : resolvedHintCropType);
-    final requiresFreshImage = attachedDiagnosis == null &&
-        !hasConversationImage &&
-        _requiresFreshImageForMessage(
-          content,
-          resolvedHintCropType: resolvedHintCropType,
-        );
-
-    final conversationHistory = _recentConversationHistory();
-
-    // Upload image to Supabase Storage so it survives history loads
-    final msgId = const Uuid().v4();
-    final uploadedImageUrls = <String>[];
-    if (online && hasAttachedImage) {
-      for (var index = 0; index < imageAttachments.length; index++) {
-        try {
-          final uploadedImageUrl = await _supabase.uploadChatImage(
-            userId: userId,
-            messageId: '$msgId-$index',
-            bytes: imageAttachments[index],
+      final provisionalSuggestionIndex = _currentMessages.indexWhere(
+        (message) =>
+            message.role == MessageRole.system &&
+            message.metadata?['type'] == 'add_crop_suggestion' &&
+            message.metadata?['diagnosis_mode'] == DiagnosisMode.offline.value,
+      );
+      final hasProvisionalOfflineSuggestion = provisionalSuggestionIndex >= 0;
+      final hasShownAddCropSuggestion = _currentMessages.any(
+        (message) =>
+            message.role == MessageRole.system &&
+            message.metadata?['type'] == 'add_crop_suggestion',
+      );
+      final imageAttachments = attachedImageBytesList
+          .where((bytes) => bytes.isNotEmpty)
+          .map(Uint8List.fromList)
+          .toList();
+      if (imageAttachments.isEmpty &&
+          attachedImageBytes != null &&
+          attachedImageBytes.isNotEmpty) {
+        imageAttachments.add(Uint8List.fromList(attachedImageBytes));
+      }
+      final hasAttachedImage = imageAttachments.isNotEmpty;
+      final conversationImages =
+          hasAttachedImage ? imageAttachments : _recentConversationImageBytes();
+      final hasConversationImage = conversationImages.isNotEmpty;
+      final previousImageReference = _latestConversationImageReference();
+      final messageCropType = _inferCropType(
+        labelKey: null,
+        diseaseName: '',
+        aiContent: content,
+      );
+      final isFreshUnscopedPhoto =
+          hasAttachedImage && attachedDiagnosis == null;
+      var resolvedHintCropType = isFreshUnscopedPhoto
+          ? (messageCropType.isEmpty ? null : messageCropType)
+          : hasAttachedImage && attachedDiagnosis != null
+              ? (hintCropType?.trim().isNotEmpty == true
+                  ? hintCropType!.trim().toLowerCase()
+                  : null)
+              : _resolveConversationCropHint(
+                  attachedDiagnosis: attachedDiagnosis,
+                  explicitHint: hintCropType,
+                );
+      final offlineImageCropConstraint = hintCropType?.trim().isNotEmpty == true
+          ? hintCropType!.trim().toLowerCase()
+          : (messageCropType.isNotEmpty
+              ? messageCropType
+              : resolvedHintCropType);
+      var requiresFreshImage = attachedDiagnosis == null &&
+          !hasConversationImage &&
+          _requiresFreshImageForMessage(
+            content,
+            resolvedHintCropType: resolvedHintCropType,
           );
-          if (uploadedImageUrl != null) uploadedImageUrls.add(uploadedImageUrl);
-        } catch (error, stackTrace) {
-          debugPrint('Chat image upload failed; using local image: $error');
-          debugPrintStack(stackTrace: stackTrace);
+
+      final conversationHistory = _recentConversationHistory();
+
+      // Existing durable sync uploads every inline reference in the background.
+      final msgId = const Uuid().v4();
+      var persistedImageReferences = <String>[];
+      String? persistedImageReference;
+      final normalizedVideoPath = attachedVideoPath?.trim();
+      final userMetadata = <String, dynamic>{
+        if (normalizedVideoPath != null && normalizedVideoPath.isNotEmpty)
+          'video_url': normalizedVideoPath,
+        if (attachedAudioPath != null && attachedAudioPath.trim().isNotEmpty)
+          'audio_path': attachedAudioPath.trim(),
+        if (hideMessageTextInUi) 'hide_text': true,
+      };
+
+      var userMsg = ChatMessageModel(
+        id: msgId,
+        sessionId: _currentSession!.id,
+        userId: userId,
+        role: MessageRole.user,
+        content: content,
+        createdAt: DateTime.now(),
+        metadata: userMetadata.isEmpty ? null : userMetadata,
+        imageBytes: hasAttachedImage &&
+                (normalizedVideoPath == null || normalizedVideoPath.isEmpty)
+            ? imageAttachments.first
+            : null,
+        imageBytesList: hasAttachedImage &&
+                (normalizedVideoPath == null || normalizedVideoPath.isEmpty)
+            ? imageAttachments
+            : null,
+        isVideoFrame: isVideoFrame &&
+            (normalizedVideoPath == null || normalizedVideoPath.isEmpty),
+      );
+      _submissionStates[msgId] = 'Saving on device...';
+      _currentMessages.add(userMsg);
+      notifyListeners();
+
+      try {
+        await sessionSave;
+        if (hasAttachedImage) {
+          persistedImageReferences =
+              await compute(_encodeChatImages, imageAttachments);
+          persistedImageReference = persistedImageReferences.first;
+          userMetadata['image_url'] = persistedImageReference;
+          userMetadata['image_urls'] = persistedImageReferences;
+          if (normalizedVideoPath != null && normalizedVideoPath.isNotEmpty) {
+            userMetadata['video_poster_url'] = persistedImageReference;
+          }
+          userMsg = userMsg.copyWith(metadata: userMetadata);
+          final index = _currentMessages.indexWhere((m) => m.id == msgId);
+          if (index >= 0) _currentMessages[index] = userMsg;
+        }
+        await _saveMessage(userMsg);
+      } catch (_) {
+        // Retry belongs to the composer before durable acceptance.
+        _currentMessages.removeWhere((message) => message.id == msgId);
+        rethrow;
+      }
+      _submissionStates[msgId] = 'Saved on device';
+      notifyListeners();
+      debugPrint(
+          'Chat queued locally in ${deliveryTimer.elapsedMilliseconds}ms (images=${imageAttachments.length}).');
+      onQueued?.call();
+      final online = await _connectivity.isConnected;
+      if (!online) await _markCurrentSessionOffline();
+      if (_knowledgeBase.isEmpty) {
+        try {
+          final cached = await _db.queryDiseaseKnowledge('');
+          _knowledgeBase = _mergeBundledKnowledge(
+            cached.map(DiseaseKnowledgeModel.fromMap).toList(),
+          );
+        } catch (_) {
+          _knowledgeBase = BundledDiseaseKnowledge.records();
         }
       }
-    }
-    final localImageReferences =
-        imageAttachments.map(buildInlineImageDataUrl).toList(growable: false);
-    final persistedImageReferences =
-        uploadedImageUrls.isNotEmpty ? uploadedImageUrls : localImageReferences;
-    final persistedImageReference = persistedImageReferences.isEmpty
-        ? null
-        : persistedImageReferences.first;
-    final normalizedVideoPath = attachedVideoPath?.trim();
-    final userMetadata = <String, dynamic>{
-      if (persistedImageReference != null) 'image_url': persistedImageReference,
-      if (persistedImageReferences.isNotEmpty)
-        'image_urls': persistedImageReferences,
-      if (normalizedVideoPath != null && normalizedVideoPath.isNotEmpty)
-        'video_url': normalizedVideoPath,
-      if (normalizedVideoPath != null &&
-          normalizedVideoPath.isNotEmpty &&
-          persistedImageReference != null)
-        'video_poster_url': persistedImageReference,
-      if (attachedAudioPath != null && attachedAudioPath.trim().isNotEmpty)
-        'audio_path': attachedAudioPath.trim(),
-      if (hideMessageTextInUi) 'hide_text': true,
-    };
 
-    final userMsg = ChatMessageModel(
-      id: msgId,
-      sessionId: _currentSession!.id,
-      userId: userId,
-      role: MessageRole.user,
-      content: content,
-      createdAt: DateTime.now(),
-      metadata: userMetadata.isEmpty ? null : userMetadata,
-      imageBytes: hasAttachedImage &&
-              (normalizedVideoPath == null || normalizedVideoPath.isEmpty)
-          ? imageAttachments.first
-          : null,
-      imageBytesList: hasAttachedImage &&
-              (normalizedVideoPath == null || normalizedVideoPath.isEmpty)
-          ? imageAttachments
-          : null,
-      isVideoFrame: isVideoFrame &&
-          (normalizedVideoPath == null || normalizedVideoPath.isEmpty),
-    );
-    _currentMessages.add(userMsg);
-    notifyListeners();
+      // Build AI response
+      _isTyping = true;
+      notifyListeners();
 
-    await _saveMessage(userMsg);
+      String aiContent = '';
+      Map<String, dynamic>? aiMetadata;
 
-    // Build AI response
-    _isTyping = true;
-    notifyListeners();
+      if (transcribeAudio && attachedAudioPath != null) {
+        try {
+          if (!online) {
+            throw StateError(
+                'Voice transcription requires an internet connection.');
+          }
+          final transcript = await _aiBackend.transcribeAudio(
+            audioBytes: await File(attachedAudioPath).readAsBytes(),
+            filename: attachedAudioPath.split(RegExp(r'[/\\]')).last,
+          );
+          if (transcript.transcript.trim().isEmpty) {
+            throw StateError('No speech was detected. Please record again.');
+          }
+          content = transcript.transcript.trim();
+          final updatedVoice = userMsg.copyWith(
+              content: content,
+              metadata: {...?userMsg.metadata, 'hide_text': false});
+          final index = _currentMessages.indexWhere((m) => m.id == msgId);
+          if (index >= 0) _currentMessages[index] = updatedVoice;
+          notifyListeners();
+          await _saveMessage(updatedVoice);
 
-    String aiContent = '';
-    Map<String, dynamic>? aiMetadata;
-
-    if (requiresFreshImage) {
-      aiContent = _buildImageRequiredResponse();
-      aiMetadata = {
-        'model': 'local-request-photo',
-        'sources': const <String>[],
-        'recommended_actions': const <String>[],
-        'warnings': const <String>[],
-        'in_app_crop_scope': false,
-        'show_treatment_card': false,
-      };
-    } else {
-      try {
-        if (!online) {
-          throw Exception('offline');
+          resolvedHintCropType = _resolveConversationCropHint(
+            attachedDiagnosis: attachedDiagnosis,
+            explicitHint: hintCropType,
+          );
+          requiresFreshImage = attachedDiagnosis == null &&
+              !hasConversationImage &&
+              _requiresFreshImageForMessage(content,
+                  resolvedHintCropType: resolvedHintCropType);
+        } catch (error) {
+          aiContent = online
+              ? 'Voice transcription could not finish. Your recording is saved on this device. Please record again or type your message.'
+              : 'Voice transcription requires an internet connection. Your recording is saved on this device.';
+          aiMetadata = {
+            'model': 'transcription-unavailable',
+            'show_treatment_card': false,
+            'in_app_crop_scope': false,
+          };
+          debugPrint('Chat transcription failed: $error');
         }
-        final backendResponse = await _aiBackend.sendChatMessage(
-          userMessage: content,
-          cropId: isFreshUnscopedPhoto
-              ? null
-              : attachedDiagnosis?.cropId.isNotEmpty == true
-                  ? attachedDiagnosis!.cropId
-                  : _currentSession?.cropId,
-          diagnosis: attachedDiagnosis,
-          imageBytes:
-              conversationImages.isEmpty ? null : conversationImages.first,
-          imageBytesList: conversationImages,
-          imagesFromPreviousTurns: !hasAttachedImage && hasConversationImage,
-          imageMimeType: attachedImageMimeType,
-          conversationHistory: conversationHistory,
-          hintCropType: resolvedHintCropType,
-        );
-        final parsedDiseaseName = _inferDiseaseName(backendResponse.answer);
-        final backendDiseaseName = backendResponse.verifiedDisease.isNotEmpty
-            ? backendResponse.verifiedDisease
-            : parsedDiseaseName;
-        final inferredDiseaseName = !backendResponse.inAppCropScope
-            ? ''
-            : backendDiseaseName.isNotEmpty
-                ? backendDiseaseName
-                : (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
-                    ? attachedDiagnosis!.diseaseName.trim()
-                    : '';
-        final inferredCropType = _inferCropType(
-          labelKey: backendDiseaseName.isNotEmpty
-              ? null
-              : attachedDiagnosis?.labelKey,
-          diseaseName: inferredDiseaseName,
-          aiContent: backendResponse.answer,
-        );
-        final effectiveCropType = backendResponse.verifiedCrop.isNotEmpty
-            ? backendResponse.verifiedCrop
-            : inferredCropType.isNotEmpty
-                ? inferredCropType
-                : (resolvedHintCropType ?? '');
-        final inferredLabelKey = backendDiseaseName.isNotEmpty
-            ? _inferLabelKey(
-                diseaseName: inferredDiseaseName,
-                cropType: effectiveCropType,
-              )
-            : (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
-                ? attachedDiagnosis!.labelKey!.trim()
-                : _inferLabelKey(
-                    diseaseName: inferredDiseaseName,
-                    cropType: effectiveCropType,
-                  );
-        final requiresMoreInput =
-            _needsAdditionalInputResponse(backendResponse.answer);
-        final isOnlineConfirmationOfOfflineResult = online &&
-            hasProvisionalOfflineSuggestion &&
-            hasConversationImage &&
-            backendResponse.sources.contains('openai-vision') &&
-            !requiresMoreInput &&
-            backendResponse.inAppCropScope &&
-            inferredDiseaseName.isNotEmpty;
-        final hasPhotoGroundedDiagnosis = hasConversationImage &&
-            _supportedTreatmentCardCrops.contains(effectiveCropType) &&
-            inferredDiseaseName.isNotEmpty;
-        final extractedResponseActions = _extractTreatmentActionsFromContent(
-          backendResponse.answer,
-          inferredCropType: effectiveCropType,
-          inferredDiseaseName: inferredDiseaseName,
-        );
-        final backendAllowsPlan = !requiresMoreInput &&
-            backendResponse.inAppCropScope &&
-            (backendResponse.showTreatmentUi ||
-                (hasPhotoGroundedDiagnosis &&
-                    (backendResponse.recommendedActions.isNotEmpty ||
-                        extractedResponseActions.isNotEmpty)));
-        final normalizedActions = backendAllowsPlan
-            ? (backendResponse.recommendedActions.isNotEmpty
-                ? backendResponse.recommendedActions
-                : extractedResponseActions)
-            : const <String>[];
-        final verifiedFallbackActions = backendAllowsPlan
-            ? _fallbackRecommendedActions(
-                attachedDiagnosis: isOnlineConfirmationOfOfflineResult
-                    ? null
-                    : attachedDiagnosis,
-                inferredDiseaseName: inferredDiseaseName,
-                inferredCropType: effectiveCropType,
-              )
-            : const <String>[];
-        final effectiveActions = _resolveRecommendedActions(
-          recommendedActions: normalizedActions.isNotEmpty
-              ? normalizedActions
-              : verifiedFallbackActions,
-          inferredDiseaseName: inferredDiseaseName,
-          inferredCropType: effectiveCropType,
-          allowHealthyFallback: backendAllowsPlan,
-        );
-        final planTitle = _planTitleForDiagnosis(inferredDiseaseName);
-        // Store recommended_actions in metadata but DON'T append them to text
-        // — they are rendered as an interactive checklist in the UI.
-        aiContent = _formatBackendResponse(backendResponse);
-        final showTreatmentCard = backendAllowsPlan &&
-            backendResponse.inAppCropScope &&
-            (!hasShownAddCropSuggestion ||
-                isOnlineConfirmationOfOfflineResult ||
-                hasAttachedImage) &&
-            _shouldShowTreatmentCard(
-              attachedDiagnosis: attachedDiagnosis,
-              recommendedActions: effectiveActions,
-              inferredDiseaseName: inferredDiseaseName,
-              inferredCropType: effectiveCropType,
-              aiContent: backendResponse.answer,
-            );
+      }
+
+      if (aiMetadata != null) {
+        // Transcription failed; do not ask AI to analyze placeholder text.
+      } else if (requiresFreshImage) {
+        aiContent = _buildImageRequiredResponse();
         aiMetadata = {
-          'model': backendResponse.model,
-          'sources': backendResponse.sources,
-          'recommended_actions':
-              showTreatmentCard ? effectiveActions : const <String>[],
-          'warnings':
-              showTreatmentCard ? backendResponse.warnings : const <String>[],
-          'disease_name': inferredDiseaseName,
-          'crop_type': effectiveCropType,
-          'label_key': inferredLabelKey,
-          'severity': _resolveConversationSeverity(
-            attachedDiagnosis: attachedDiagnosis,
-            inferredDiseaseName: inferredDiseaseName,
-            aiContent: backendResponse.answer,
-          ).value,
-          'in_app_crop_scope': backendResponse.inAppCropScope,
-          'show_treatment_card': showTreatmentCard,
-          if (showTreatmentCard) 'plan_title': planTitle,
+          'model': 'local-request-photo',
+          'sources': const <String>[],
+          'recommended_actions': const <String>[],
+          'warnings': const <String>[],
+          'in_app_crop_scope': false,
+          'show_treatment_card': false,
         };
-      } catch (error) {
-        await Future.delayed(const Duration(milliseconds: 500));
-        if (!online &&
-            attachedDiagnosis != null &&
-            (attachedDiagnosis.confidenceScore ?? 0) >=
-                AppConstants.temporaryScannerAcceptedConfidence) {
-          final cropType = _inferCropType(
-            labelKey: attachedDiagnosis.labelKey,
-            diseaseName: attachedDiagnosis.diseaseName,
-            aiContent: '',
+      } else {
+        try {
+          if (!online) {
+            throw Exception('offline');
+          }
+          final backendResponse = await _aiBackend.sendChatMessage(
+            userMessage: content,
+            cropId: isFreshUnscopedPhoto
+                ? null
+                : attachedDiagnosis?.cropId.isNotEmpty == true
+                    ? attachedDiagnosis!.cropId
+                    : _currentSession?.cropId,
+            diagnosis: attachedDiagnosis,
+            imageBytes:
+                conversationImages.isEmpty ? null : conversationImages.first,
+            imageBytesList: conversationImages,
+            imagesFromPreviousTurns: !hasAttachedImage && hasConversationImage,
+            imageMimeType: attachedImageMimeType,
+            conversationHistory: conversationHistory,
+            hintCropType: resolvedHintCropType,
           );
-          final actions = _fallbackRecommendedActions(
-            attachedDiagnosis: attachedDiagnosis,
-            inferredDiseaseName: attachedDiagnosis.diseaseName,
-            inferredCropType: cropType,
+          final parsedDiseaseName = _inferDiseaseName(backendResponse.answer);
+          final backendDiseaseName = backendResponse.verifiedDisease.isNotEmpty
+              ? backendResponse.verifiedDisease
+              : parsedDiseaseName;
+          final inferredDiseaseName = !backendResponse.inAppCropScope
+              ? ''
+              : backendDiseaseName.isNotEmpty
+                  ? backendDiseaseName
+                  : (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
+                      ? attachedDiagnosis!.diseaseName.trim()
+                      : '';
+          final inferredCropType = _inferCropType(
+            labelKey: backendDiseaseName.isNotEmpty
+                ? null
+                : attachedDiagnosis?.labelKey,
+            diseaseName: inferredDiseaseName,
+            aiContent: backendResponse.answer,
           );
-          final showTreatmentCard = !hasShownAddCropSuggestion &&
+          final effectiveCropType = backendResponse.verifiedCrop.isNotEmpty
+              ? backendResponse.verifiedCrop
+              : inferredCropType.isNotEmpty
+                  ? inferredCropType
+                  : (resolvedHintCropType ?? '');
+          final inferredLabelKey = backendDiseaseName.isNotEmpty
+              ? _inferLabelKey(
+                  diseaseName: inferredDiseaseName,
+                  cropType: effectiveCropType,
+                )
+              : (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
+                  ? attachedDiagnosis!.labelKey!.trim()
+                  : _inferLabelKey(
+                      diseaseName: inferredDiseaseName,
+                      cropType: effectiveCropType,
+                    );
+          final requiresMoreInput =
+              _needsAdditionalInputResponse(backendResponse.answer);
+          final isOnlineConfirmationOfOfflineResult = online &&
+              hasProvisionalOfflineSuggestion &&
+              hasConversationImage &&
+              backendResponse.sources.contains('openai-vision') &&
+              !requiresMoreInput &&
+              backendResponse.inAppCropScope &&
+              inferredDiseaseName.isNotEmpty;
+          final hasPhotoGroundedDiagnosis = hasConversationImage &&
+              _supportedTreatmentCardCrops.contains(effectiveCropType) &&
+              inferredDiseaseName.isNotEmpty;
+          final extractedResponseActions = _extractTreatmentActionsFromContent(
+            backendResponse.answer,
+            inferredCropType: effectiveCropType,
+            inferredDiseaseName: inferredDiseaseName,
+          );
+          final backendAllowsPlan = !requiresMoreInput &&
+              backendResponse.inAppCropScope &&
+              (backendResponse.showTreatmentUi ||
+                  (hasPhotoGroundedDiagnosis &&
+                      (backendResponse.recommendedActions.isNotEmpty ||
+                          extractedResponseActions.isNotEmpty)));
+          final normalizedActions = backendAllowsPlan
+              ? (backendResponse.recommendedActions.isNotEmpty
+                  ? backendResponse.recommendedActions
+                  : extractedResponseActions)
+              : const <String>[];
+          final verifiedFallbackActions = backendAllowsPlan
+              ? _fallbackRecommendedActions(
+                  attachedDiagnosis: isOnlineConfirmationOfOfflineResult
+                      ? null
+                      : attachedDiagnosis,
+                  inferredDiseaseName: inferredDiseaseName,
+                  inferredCropType: effectiveCropType,
+                )
+              : const <String>[];
+          final effectiveActions = _resolveRecommendedActions(
+            recommendedActions: normalizedActions.isNotEmpty
+                ? normalizedActions
+                : verifiedFallbackActions,
+            inferredDiseaseName: inferredDiseaseName,
+            inferredCropType: effectiveCropType,
+            allowHealthyFallback: backendAllowsPlan,
+          );
+          final planTitle = _planTitleForDiagnosis(inferredDiseaseName);
+          // Store recommended_actions in metadata but DON'T append them to text
+          // — they are rendered as an interactive checklist in the UI.
+          aiContent = _formatBackendResponse(backendResponse);
+          final showTreatmentCard = backendAllowsPlan &&
+              backendResponse.inAppCropScope &&
+              (!hasShownAddCropSuggestion ||
+                  isOnlineConfirmationOfOfflineResult ||
+                  hasAttachedImage) &&
               _shouldShowTreatmentCard(
                 attachedDiagnosis: attachedDiagnosis,
-                recommendedActions: actions,
-                inferredDiseaseName: attachedDiagnosis.diseaseName,
-                inferredCropType: cropType,
-                aiContent: attachedDiagnosis.summary ?? '',
+                recommendedActions: effectiveActions,
+                inferredDiseaseName: inferredDiseaseName,
+                inferredCropType: effectiveCropType,
+                aiContent: backendResponse.answer,
               );
-          aiContent = _formatDiagnosisResponse(
-            attachedDiagnosis,
-            _knowledgeForDiagnosis(attachedDiagnosis),
-          );
           aiMetadata = {
-            'model': attachedDiagnosis.modelName ?? 'local-tflite',
-            'model_version': attachedDiagnosis.modelVersion,
-            'confidence_score': attachedDiagnosis.confidenceScore,
-            'result_label': attachedDiagnosis.resultLabel,
-            'detected_regions_json': attachedDiagnosis.detectedRegionsJson,
-            'video_url': attachedDiagnosis.videoUrl,
-            'sources': const ['local-tflite'],
+            'model': backendResponse.model,
+            'sources': backendResponse.sources,
             'recommended_actions':
-                showTreatmentCard ? actions : const <String>[],
-            'warnings': const [
-              'This diagnosis was generated offline. You can go online to confirm it with conversational AI.'
-            ],
-            'disease_name': attachedDiagnosis.diseaseName,
-            'crop_type': cropType,
-            'label_key': attachedDiagnosis.labelKey ?? '',
-            'severity': attachedDiagnosis.severity.value,
-            'diagnosis_mode': DiagnosisMode.offline.value,
-            'in_app_crop_scope':
-                _supportedTreatmentCardCrops.contains(cropType),
+                showTreatmentCard ? effectiveActions : const <String>[],
+            'warnings':
+                showTreatmentCard ? backendResponse.warnings : const <String>[],
+            'disease_name': inferredDiseaseName,
+            'crop_type': effectiveCropType,
+            'label_key': inferredLabelKey,
+            'severity': _resolveConversationSeverity(
+              attachedDiagnosis: attachedDiagnosis,
+              inferredDiseaseName: inferredDiseaseName,
+              aiContent: backendResponse.answer,
+            ).value,
+            'in_app_crop_scope': backendResponse.inAppCropScope,
             'show_treatment_card': showTreatmentCard,
-            if (showTreatmentCard)
-              'plan_title':
-                  _planTitleForDiagnosis(attachedDiagnosis.diseaseName),
+            if (showTreatmentCard) 'plan_title': planTitle,
           };
-        } else if (!online && hasAttachedImage) {
-          try {
-            final rawLocalResult = await _localClassifier.classifyImage(
-              imageBytes: imageAttachments.first,
-              filename: 'chat-photo.jpg',
-              cropType: offlineImageCropConstraint,
+        } catch (error) {
+          debugPrint(
+              'Chat AI failed (online=$online, images=${conversationImages.length}): $error');
+          if (!online && imageAttachments.length > 1) {
+            aiContent =
+                'These photos are saved on this device. Offline diagnosis supports one photo at a time. Please reconnect and resend them together for online analysis, or send one photo for offline diagnosis.';
+          } else if (!online &&
+              attachedDiagnosis != null &&
+              (attachedDiagnosis.confidenceScore ?? 0) >=
+                  AppConstants.temporaryScannerAcceptedConfidence) {
+            final cropType = _inferCropType(
+              labelKey: attachedDiagnosis.labelKey,
+              diseaseName: attachedDiagnosis.diseaseName,
+              aiContent: '',
             );
-            final localResult = _rejectOfflineFamilyMismatch(
-              rawLocalResult,
-              expectedCropType: offlineImageCropConstraint,
+            final actions = _fallbackRecommendedActions(
+              attachedDiagnosis: attachedDiagnosis,
+              inferredDiseaseName: attachedDiagnosis.diseaseName,
+              inferredCropType: cropType,
             );
-            aiContent = _buildOfflineImageResponse(localResult);
-            final detection = localResult.primaryDetection;
-            final cropType = (localResult.cropType ?? '').trim();
-            final diseaseName = localResult.status == 'ok'
-                ? (detection?.label ?? '').trim()
-                : '';
-            final actions = localResult.status == 'ok'
-                ? _fallbackRecommendedActions(
-                    inferredDiseaseName: diseaseName,
-                    inferredCropType: cropType,
-                  )
-                : const <String>[];
             final showTreatmentCard = !hasShownAddCropSuggestion &&
-                localResult.status == 'ok' &&
                 _shouldShowTreatmentCard(
-                  attachedDiagnosis: null,
+                  attachedDiagnosis: attachedDiagnosis,
                   recommendedActions: actions,
-                  inferredDiseaseName: diseaseName,
+                  inferredDiseaseName: attachedDiagnosis.diseaseName,
                   inferredCropType: cropType,
-                  aiContent: aiContent,
+                  aiContent: attachedDiagnosis.summary ?? '',
                 );
+            aiContent = _formatDiagnosisResponse(
+              attachedDiagnosis,
+              _knowledgeForDiagnosis(attachedDiagnosis),
+            );
             aiMetadata = {
-              'model': localResult.model.name,
-              'model_version': localResult.model.version,
-              'confidence_score': detection?.confidence,
-              'result_label': detection?.label,
-              'detected_regions_json': localResult.toDetectedRegionsJson(),
+              'model': attachedDiagnosis.modelName ?? 'local-tflite',
+              'model_version': attachedDiagnosis.modelVersion,
+              'confidence_score': attachedDiagnosis.confidenceScore,
+              'result_label': attachedDiagnosis.resultLabel,
+              'detected_regions_json': attachedDiagnosis.detectedRegionsJson,
+              'video_url': attachedDiagnosis.videoUrl,
               'sources': const ['local-tflite'],
               'recommended_actions':
                   showTreatmentCard ? actions : const <String>[],
               'warnings': const [
-                'This is a preliminary offline result. Go online for a more accurate AI review.'
+                'This diagnosis was generated offline. You can go online to confirm it with conversational AI.'
               ],
-              'disease_name': diseaseName,
+              'disease_name': attachedDiagnosis.diseaseName,
               'crop_type': cropType,
-              'label_key':
-                  localResult.status == 'ok' ? (detection?.labelKey ?? '') : '',
-              'severity': Severity.moderate.value,
+              'label_key': attachedDiagnosis.labelKey ?? '',
+              'severity': attachedDiagnosis.severity.value,
               'diagnosis_mode': DiagnosisMode.offline.value,
               'in_app_crop_scope':
                   _supportedTreatmentCardCrops.contains(cropType),
               'show_treatment_card': showTreatmentCard,
               if (showTreatmentCard)
-                'plan_title': _planTitleForDiagnosis(diseaseName),
+                'plan_title':
+                    _planTitleForDiagnosis(attachedDiagnosis.diseaseName),
             };
-          } catch (classifierError) {
+          } else if (!online && hasAttachedImage) {
+            try {
+              final rawLocalResult = await _localClassifier.classifyImage(
+                imageBytes: imageAttachments.first,
+                filename: 'chat-photo.jpg',
+                cropType: offlineImageCropConstraint,
+              );
+              final localResult = _rejectOfflineFamilyMismatch(
+                rawLocalResult,
+                expectedCropType: offlineImageCropConstraint,
+              );
+              aiContent = _buildOfflineImageResponse(localResult);
+              final detection = localResult.primaryDetection;
+              final cropType = (localResult.cropType ?? '').trim();
+              final diseaseName = localResult.status == 'ok'
+                  ? (detection?.label ?? '').trim()
+                  : '';
+              final actions = localResult.status == 'ok'
+                  ? _fallbackRecommendedActions(
+                      inferredDiseaseName: diseaseName,
+                      inferredCropType: cropType,
+                    )
+                  : const <String>[];
+              final showTreatmentCard = !hasShownAddCropSuggestion &&
+                  localResult.status == 'ok' &&
+                  _shouldShowTreatmentCard(
+                    attachedDiagnosis: null,
+                    recommendedActions: actions,
+                    inferredDiseaseName: diseaseName,
+                    inferredCropType: cropType,
+                    aiContent: aiContent,
+                  );
+              aiMetadata = {
+                'model': localResult.model.name,
+                'model_version': localResult.model.version,
+                'confidence_score': detection?.confidence,
+                'result_label': detection?.label,
+                'detected_regions_json': localResult.toDetectedRegionsJson(),
+                'sources': const ['local-tflite'],
+                'recommended_actions':
+                    showTreatmentCard ? actions : const <String>[],
+                'warnings': const [
+                  'This is a preliminary offline result. Go online for a more accurate AI review.'
+                ],
+                'disease_name': diseaseName,
+                'crop_type': cropType,
+                'label_key': localResult.status == 'ok'
+                    ? (detection?.labelKey ?? '')
+                    : '',
+                'severity': Severity.moderate.value,
+                'diagnosis_mode': DiagnosisMode.offline.value,
+                'in_app_crop_scope':
+                    _supportedTreatmentCardCrops.contains(cropType),
+                'show_treatment_card': showTreatmentCard,
+                if (showTreatmentCard)
+                  'plan_title': _planTitleForDiagnosis(diseaseName),
+              };
+            } catch (classifierError) {
+              aiContent = _buildBackendUnavailableResponse(
+                hasAttachedImage: true,
+                error: classifierError,
+              );
+            }
+          } else if (!online) {
+            aiContent = _buildAIResponse(
+              content,
+              attachedDiagnosis: attachedDiagnosis,
+              hintCropType: resolvedHintCropType,
+            );
+          } else {
             aiContent = _buildBackendUnavailableResponse(
-              hasAttachedImage: true,
-              error: classifierError,
+              hasAttachedImage: hasAttachedImage,
+              error: error,
             );
           }
-        } else if (!online) {
-          aiContent = _buildAIResponse(
-            content,
-            attachedDiagnosis: attachedDiagnosis,
-            hintCropType: resolvedHintCropType,
-          );
-        } else {
-          aiContent = _buildBackendUnavailableResponse(
-            hasAttachedImage: hasAttachedImage,
-            error: error,
-          );
+          aiMetadata ??= {
+            'model': !online ? 'local-fallback' : 'backend-unavailable',
+            'sources': const <String>[],
+            'recommended_actions': const <String>[],
+            'warnings': const <String>[],
+            'disease_name': '',
+            'crop_type': '',
+            'label_key': '',
+            'in_app_crop_scope': false,
+            'show_treatment_card': false,
+          };
         }
-        aiMetadata ??= {
-          'model': !online ? 'local-fallback' : 'backend-unavailable',
-          'sources': const <String>[],
-          'recommended_actions': const <String>[],
-          'warnings': const <String>[],
-          'disease_name': '',
-          'crop_type': '',
-          'label_key': '',
-          'in_app_crop_scope': false,
-          'show_treatment_card': false,
-        };
       }
-    }
 
-    final aiMsg = ChatMessageModel(
-      id: const Uuid().v4(),
-      sessionId: _currentSession!.id,
-      userId: userId,
-      role: MessageRole.assistant,
-      content: aiContent,
-      metadata: aiMetadata,
-      createdAt: DateTime.now(),
-    );
-
-    _currentMessages.add(aiMsg);
-    _isTyping = false;
-
-    await _saveMessage(aiMsg);
-
-    // Add an "Add to My Crops" suggestion card when:
-    //   - a local diagnosis was attached (scan result), OR
-    //   - an image was sent and the AI returned treatment steps (GPT vision)
-    // A verified online vision diagnosis can replace the provisional offline
-    // suggestion so the crop card reflects the photo review.
-    final showTreatmentCard = aiMetadata['show_treatment_card'] == true;
-    if (showTreatmentCard) {
-      final inAppCropScope = aiMetadata['in_app_crop_scope'] == true;
-      if (!inAppCropScope) {
-        notifyListeners();
-        return;
-      }
-      final assistantDiseaseName =
-          (aiMetadata['disease_name'] as String? ?? '').trim();
-      final preferAssistantDiagnosis = assistantDiseaseName.isNotEmpty &&
-          (aiMetadata['model'] as String? ?? '').trim() != 'local-fallback';
-      final inferredDiseaseName = preferAssistantDiagnosis
-          ? assistantDiseaseName
-          : (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
-              ? attachedDiagnosis!.diseaseName.trim()
-              : assistantDiseaseName;
-      final assistantCropType =
-          (aiMetadata['crop_type'] as String? ?? '').trim().toLowerCase();
-      final inferredCropType = _supportedTreatmentCardCrops
-              .contains(assistantCropType)
-          ? assistantCropType
-          : _inferCropType(
-              labelKey:
-                  preferAssistantDiagnosis ? null : attachedDiagnosis?.labelKey,
-              diseaseName: inferredDiseaseName,
-              aiContent:
-                  assistantCropType.isNotEmpty ? assistantCropType : aiContent,
-            );
-      final isSupportedCrop =
-          _supportedTreatmentCardCrops.contains(inferredCropType);
-      final metadataLabelKey =
-          (aiMetadata['label_key'] as String? ?? '').trim();
-      final inferredLabelKey = preferAssistantDiagnosis
-          ? (metadataLabelKey.isNotEmpty
-              ? metadataLabelKey
-              : _inferLabelKey(
-                  diseaseName: inferredDiseaseName,
-                  cropType: inferredCropType,
-                ))
-          : (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
-              ? attachedDiagnosis!.labelKey!.trim()
-              : (metadataLabelKey.isNotEmpty
-                  ? metadataLabelKey
-                  : _inferLabelKey(
-                      diseaseName: inferredDiseaseName,
-                      cropType: inferredCropType,
-                    ));
-      if (!isSupportedCrop || inferredDiseaseName.isEmpty) {
-        notifyListeners();
-        return;
-      }
-      final replacedSuggestion = online && hasProvisionalOfflineSuggestion
-          ? _currentMessages[provisionalSuggestionIndex]
-          : null;
-      final cardMsg = ChatMessageModel(
-        id: replacedSuggestion?.id ?? const Uuid().v4(),
+      final aiMsg = ChatMessageModel(
+        id: const Uuid().v4(),
         sessionId: _currentSession!.id,
         userId: userId,
-        role: MessageRole.system,
-        content: '',
-        metadata: {
-          'type': 'add_crop_suggestion',
-          'diagnosis_id': !online &&
-                  attachedDiagnosis != null &&
-                  inferredDiseaseName.toLowerCase() ==
-                      attachedDiagnosis.diseaseName.trim().toLowerCase()
-              ? attachedDiagnosis.id
-              : const Uuid().v4(),
-          'diagnosed_at': !online &&
-                  attachedDiagnosis != null &&
-                  inferredDiseaseName.toLowerCase() ==
-                      attachedDiagnosis.diseaseName.trim().toLowerCase()
-              ? attachedDiagnosis.diagnosedAt.toIso8601String()
-              : aiMsg.createdAt.toIso8601String(),
-          'disease_name': inferredDiseaseName,
-          'label_key': inferredLabelKey,
-          'severity': aiMetadata['severity'] ??
-              attachedDiagnosis?.severity.value ??
-              'moderate',
-          'diagnosis_mode': preferAssistantDiagnosis
-              ? (aiMetadata['diagnosis_mode'] as String? ??
-                  DiagnosisMode.online.value)
-              : attachedDiagnosis?.diagnosisMode.value ??
-                  ((aiMetadata['model'] as String?) == 'local-fallback'
-                      ? DiagnosisMode.offline.value
-                      : DiagnosisMode.online.value),
-          'crop_type': inferredCropType,
-          'summary': aiContent,
-          'model_name': aiMetadata['model'],
-          'model_version': preferAssistantDiagnosis
-              ? aiMetadata['model_version']
-              : attachedDiagnosis?.modelVersion ?? aiMetadata['model_version'],
-          'confidence_score': preferAssistantDiagnosis
-              ? aiMetadata['confidence_score']
-              : attachedDiagnosis?.confidenceScore ??
-                  aiMetadata['confidence_score'],
-          'result_label': preferAssistantDiagnosis
-              ? aiMetadata['result_label']
-              : attachedDiagnosis?.resultLabel ?? aiMetadata['result_label'],
-          'detected_regions_json': preferAssistantDiagnosis
-              ? aiMetadata['detected_regions_json']
-              : attachedDiagnosis?.detectedRegionsJson ??
-                  aiMetadata['detected_regions_json'],
-          'video_url': preferAssistantDiagnosis
-              ? aiMetadata['video_url']
-              : attachedDiagnosis?.videoUrl ?? aiMetadata['video_url'],
-          'image_url': persistedImageReference ?? previousImageReference,
-          if (persistedImageReferences.isEmpty &&
-              previousImageReference != null)
-            'image_urls': [previousImageReference],
-          'recommended_actions':
-              (aiMetadata['recommended_actions'] as List<dynamic>? ?? []),
-        },
+        role: MessageRole.assistant,
+        content: aiContent,
+        metadata: aiMetadata,
         createdAt: DateTime.now(),
       );
-      if (replacedSuggestion == null) {
-        _currentMessages.add(cardMsg);
-      } else {
-        _currentMessages[provisionalSuggestionIndex] = cardMsg;
+
+      _currentMessages.add(aiMsg);
+      debugPrint(
+          'Chat response ready in ${deliveryTimer.elapsedMilliseconds}ms (model=${aiMetadata['model']}).');
+      notifyListeners();
+
+      await _saveMessage(aiMsg);
+
+      // Add an "Add to My Crops" suggestion card when:
+      //   - a local diagnosis was attached (scan result), OR
+      //   - an image was sent and the AI returned treatment steps (GPT vision)
+      // A verified online vision diagnosis can replace the provisional offline
+      // suggestion so the crop card reflects the photo review.
+      final showTreatmentCard = aiMetadata['show_treatment_card'] == true;
+      if (showTreatmentCard) {
+        final inAppCropScope = aiMetadata['in_app_crop_scope'] == true;
+        if (!inAppCropScope) {
+          notifyListeners();
+          return;
+        }
+        final assistantDiseaseName =
+            (aiMetadata['disease_name'] as String? ?? '').trim();
+        final preferAssistantDiagnosis = assistantDiseaseName.isNotEmpty &&
+            (aiMetadata['model'] as String? ?? '').trim() != 'local-fallback';
+        final inferredDiseaseName = preferAssistantDiagnosis
+            ? assistantDiseaseName
+            : (attachedDiagnosis?.diseaseName.trim().isNotEmpty ?? false)
+                ? attachedDiagnosis!.diseaseName.trim()
+                : assistantDiseaseName;
+        final assistantCropType =
+            (aiMetadata['crop_type'] as String? ?? '').trim().toLowerCase();
+        final inferredCropType =
+            _supportedTreatmentCardCrops.contains(assistantCropType)
+                ? assistantCropType
+                : _inferCropType(
+                    labelKey: preferAssistantDiagnosis
+                        ? null
+                        : attachedDiagnosis?.labelKey,
+                    diseaseName: inferredDiseaseName,
+                    aiContent: assistantCropType.isNotEmpty
+                        ? assistantCropType
+                        : aiContent,
+                  );
+        final isSupportedCrop =
+            _supportedTreatmentCardCrops.contains(inferredCropType);
+        final metadataLabelKey =
+            (aiMetadata['label_key'] as String? ?? '').trim();
+        final inferredLabelKey = preferAssistantDiagnosis
+            ? (metadataLabelKey.isNotEmpty
+                ? metadataLabelKey
+                : _inferLabelKey(
+                    diseaseName: inferredDiseaseName,
+                    cropType: inferredCropType,
+                  ))
+            : (attachedDiagnosis?.labelKey?.trim().isNotEmpty ?? false)
+                ? attachedDiagnosis!.labelKey!.trim()
+                : (metadataLabelKey.isNotEmpty
+                    ? metadataLabelKey
+                    : _inferLabelKey(
+                        diseaseName: inferredDiseaseName,
+                        cropType: inferredCropType,
+                      ));
+        if (!isSupportedCrop || inferredDiseaseName.isEmpty) {
+          notifyListeners();
+          return;
+        }
+        final replacedSuggestion = online && hasProvisionalOfflineSuggestion
+            ? _currentMessages[provisionalSuggestionIndex]
+            : null;
+        final cardMsg = ChatMessageModel(
+          id: replacedSuggestion?.id ?? const Uuid().v4(),
+          sessionId: _currentSession!.id,
+          userId: userId,
+          role: MessageRole.system,
+          content: '',
+          metadata: {
+            'type': 'add_crop_suggestion',
+            'diagnosis_id': !online &&
+                    attachedDiagnosis != null &&
+                    inferredDiseaseName.toLowerCase() ==
+                        attachedDiagnosis.diseaseName.trim().toLowerCase()
+                ? attachedDiagnosis.id
+                : const Uuid().v4(),
+            'diagnosed_at': !online &&
+                    attachedDiagnosis != null &&
+                    inferredDiseaseName.toLowerCase() ==
+                        attachedDiagnosis.diseaseName.trim().toLowerCase()
+                ? attachedDiagnosis.diagnosedAt.toIso8601String()
+                : aiMsg.createdAt.toIso8601String(),
+            'disease_name': inferredDiseaseName,
+            'label_key': inferredLabelKey,
+            'severity': aiMetadata['severity'] ??
+                attachedDiagnosis?.severity.value ??
+                'moderate',
+            'diagnosis_mode': preferAssistantDiagnosis
+                ? (aiMetadata['diagnosis_mode'] as String? ??
+                    DiagnosisMode.online.value)
+                : attachedDiagnosis?.diagnosisMode.value ??
+                    ((aiMetadata['model'] as String?) == 'local-fallback'
+                        ? DiagnosisMode.offline.value
+                        : DiagnosisMode.online.value),
+            'crop_type': inferredCropType,
+            'summary': aiContent,
+            'model_name': aiMetadata['model'],
+            'model_version': preferAssistantDiagnosis
+                ? aiMetadata['model_version']
+                : attachedDiagnosis?.modelVersion ??
+                    aiMetadata['model_version'],
+            'confidence_score': preferAssistantDiagnosis
+                ? aiMetadata['confidence_score']
+                : attachedDiagnosis?.confidenceScore ??
+                    aiMetadata['confidence_score'],
+            'result_label': preferAssistantDiagnosis
+                ? aiMetadata['result_label']
+                : attachedDiagnosis?.resultLabel ?? aiMetadata['result_label'],
+            'detected_regions_json': preferAssistantDiagnosis
+                ? aiMetadata['detected_regions_json']
+                : attachedDiagnosis?.detectedRegionsJson ??
+                    aiMetadata['detected_regions_json'],
+            'video_url': preferAssistantDiagnosis
+                ? aiMetadata['video_url']
+                : attachedDiagnosis?.videoUrl ?? aiMetadata['video_url'],
+            'image_url': persistedImageReference ?? previousImageReference,
+            if (persistedImageReferences.isEmpty &&
+                previousImageReference != null)
+              'image_urls': [previousImageReference],
+            'recommended_actions':
+                (aiMetadata['recommended_actions'] as List<dynamic>? ?? []),
+          },
+          createdAt: DateTime.now(),
+        );
+        if (replacedSuggestion == null) {
+          _currentMessages.add(cardMsg);
+        } else {
+          _currentMessages[provisionalSuggestionIndex] = cardMsg;
+        }
+        await _saveMessage(cardMsg);
       }
-      await _saveMessage(cardMsg);
+
+      await _touchCurrentSession(
+        activityAt: aiMsg.createdAt,
+        preferredTitle: _buildConversationTitle(
+          userContent: content,
+          hideMessageTextInUi: hideMessageTextInUi,
+          attachedDiagnosis: attachedDiagnosis,
+          aiMetadata: aiMetadata,
+          hintCropType: resolvedHintCropType,
+        ),
+      );
+
+      notifyListeners();
+    } finally {
+      _isTyping = false;
+      notifyListeners();
     }
-
-    await _touchCurrentSession(
-      activityAt: aiMsg.createdAt,
-      preferredTitle: _buildConversationTitle(
-        userContent: content,
-        hideMessageTextInUi: hideMessageTextInUi,
-        attachedDiagnosis: attachedDiagnosis,
-        aiMetadata: aiMetadata,
-        hintCropType: resolvedHintCropType,
-      ),
-    );
-
-    notifyListeners();
   }
 
   List<Map<String, String>> _recentConversationHistory() {
@@ -1227,18 +1308,12 @@ class ChatProvider extends ChangeNotifier {
         ? '\n\nDebug: ${_aiBackend.baseUrl} failed with $error'
         : '';
     final intro = requiresSignIn
-        ? 'You are using the offline model because online AI could not verify your account.'
-        : 'You are using the offline model because CropCare AI cannot reach the online service right now.';
+        ? 'Online AI could not verify your account. Please sign in again and retry.'
+        : 'Online AI could not complete this request. Please retry in a moment.';
     final imageNote = hasAttachedImage
-        ? '\n\nI saved your photo locally, but I cannot safely identify a crop or disease from it while online analysis is unavailable.'
-        : '';
-    return '$intro$imageNote\n\n'
-        '**General crop-care tips:**\n'
-        '1. Check soil moisture before watering and avoid waterlogged roots.\n'
-        '2. Inspect both sides of leaves for spots, pests, wilting, or spreading damage.\n'
-        '3. Keep foliage dry, improve airflow, and isolate severely affected plants when practical.\n'
-        '4. Avoid applying pesticides or fungicides until the crop and problem are confirmed.\n\n'
-        'Please go online and try again for a crop-specific diagnosis and safer treatment guidance.$detail';
+        ? '\n\nAll submitted photos are saved on this device. They have not been analyzed by online AI.'
+        : '\n\nYour message is saved on this device.';
+    return '$intro$imageNote$detail';
   }
 
   bool _looksLikeGreeting(String text) {
@@ -1418,7 +1493,7 @@ class ChatProvider extends ChangeNotifier {
     final label = result.primaryDetection?.label;
     final mismatch =
         'Possible crop-family mismatch: the offline model returned '
-        '${label == null ? 'a result' : label} from the $predicted family '
+        '${label ?? 'a result'} from the $predicted family '
         'while $expected was selected. This is not a confirmed diagnosis.';
     return AiBackendDetectResponse(
       status: 'no_match',
@@ -1642,7 +1717,7 @@ class ChatProvider extends ChangeNotifier {
         remoteData: msg.toMap(),
       ),
     ]);
-    await _pushQueuedChatChanges();
+    unawaited(_pushQueuedChatChanges());
   }
 
   Future<void> _touchCurrentSession({
@@ -1685,7 +1760,7 @@ class ChatProvider extends ChangeNotifier {
         remoteData: _sessionRemoteMap(session),
       ),
     ]);
-    await _pushQueuedChatChanges();
+    unawaited(_pushQueuedChatChanges());
   }
 
   Future<void> _pushQueuedChatChanges() async {

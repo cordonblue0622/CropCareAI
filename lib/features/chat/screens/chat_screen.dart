@@ -13,7 +13,6 @@ import 'package:record/record.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/constants/app_enums.dart';
 import '../../../core/utils/label_formatter.dart';
-import '../../../data/remote/ai_backend_service.dart';
 import '../../../data/models/chat_message_model.dart';
 import '../../../data/models/chat_session_model.dart';
 import '../../../data/models/diagnosis_model.dart';
@@ -64,6 +63,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _initializationStarted = false;
   bool _initializationComplete = false;
   bool _sending = false;
+  bool _queueing = false;
   String? _sendErrorMessage;
   Future<void> Function()? _retryFailedSend;
 
@@ -257,6 +257,11 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_sending) return false;
 
     final trimmed = text.trim();
+    if (attachedImageBytesList.any((bytes) => bytes.isEmpty)) {
+      setState(() => _sendErrorMessage =
+          'A selected photo could not be read. Please select it again.');
+      return false;
+    }
     final imageAttachments =
         attachedImageBytesList.where((bytes) => bytes.isNotEmpty).toList();
     if (imageAttachments.isEmpty &&
@@ -276,17 +281,28 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final content = trimmed.isNotEmpty
         ? trimmed
-        : 'I\'ve attached a crop photo. Please analyze it and tell me what you observe — any diseases, pests, or conditions — and what I should do.';
+        : hasAudio
+            ? 'Transcribing voice message...'
+            : 'I\'ve attached a crop photo. Please analyze it and tell me what you observe — any diseases, pests, or conditions — and what I should do.';
 
     setState(() {
       _sending = true;
+      _queueing = true;
       _sendErrorMessage = null;
       _retryFailedSend = null;
     });
 
+    var accepted = false;
     try {
       await context.read<ChatProvider>().sendMessage(
             userId: user.id,
+            onQueued: () {
+              accepted = true;
+              if (mounted) {
+                setState(() => _queueing = false);
+                _scrollToBottom();
+              }
+            },
             content: content,
             hideMessageTextInUi: shouldHideMessageText,
             attachedDiagnosis: attachedDiagnosis,
@@ -294,6 +310,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 imageAttachments.isEmpty ? null : imageAttachments.first,
             attachedImageBytesList: imageAttachments,
             attachedAudioPath: attachedAudioPath,
+            transcribeAudio: hasAudio && trimmed.isEmpty,
             attachedVideoPath: attachedVideoPath,
             isVideoFrame: isVideoFrame,
             hintCropType: _effectiveHintCropType(latestUserMessage: content),
@@ -305,25 +322,32 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (_) {
       if (mounted) {
         setState(() {
-          _sendErrorMessage =
-              'Message could not be sent. Check your connection and retry.';
-          _retryFailedSend = () => _sendMessage(
-                content,
-                hideMessageTextInUi: shouldHideMessageText,
-                attachedDiagnosis: attachedDiagnosis,
-                attachedImageBytes:
-                    imageAttachments.isEmpty ? null : imageAttachments.first,
-                attachedImageBytesList: imageAttachments,
-                attachedAudioPath: attachedAudioPath,
-                attachedVideoPath: attachedVideoPath,
-                isVideoFrame: isVideoFrame,
-              );
+          _sendErrorMessage = accepted
+              ? 'Your message is saved on this device, but processing could not finish. Please try again.'
+              : 'Message could not be saved. Please retry.';
+          _retryFailedSend = accepted
+              ? null
+              : () => _sendMessage(
+                    content,
+                    hideMessageTextInUi: shouldHideMessageText,
+                    attachedDiagnosis: attachedDiagnosis,
+                    attachedImageBytes: imageAttachments.isEmpty
+                        ? null
+                        : imageAttachments.first,
+                    attachedImageBytesList: imageAttachments,
+                    attachedAudioPath: attachedAudioPath,
+                    attachedVideoPath: attachedVideoPath,
+                    isVideoFrame: isVideoFrame,
+                  );
         });
       }
-      return false;
+      return accepted;
     } finally {
       if (mounted) {
-        setState(() => _sending = false);
+        setState(() {
+          _sending = false;
+          _queueing = false;
+        });
       }
     }
   }
@@ -498,6 +522,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _InputBar(
           controller: _textCtrl,
           sending: _sending,
+          queueing: _queueing,
           onSend: (text, imageBytesList) =>
               _sendMessage(text, attachedImageBytesList: imageBytesList),
           onSendWithVoice: (text, audioPath) => _sendMessage(
@@ -755,57 +780,65 @@ class _WelcomeView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 80,
-            height: 80,
-            decoration: const BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: LinearGradient(
-                colors: [AppColors.primaryDark, AppColors.primary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 80,
+                  height: 80,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      colors: [AppColors.primaryDark, AppColors.primary],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                  ),
+                  child: const Icon(Icons.eco, color: Colors.white, size: 38),
+                ),
+                const SizedBox(height: 16),
+                const Text('Vegetable Doctor',
+                    style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textDark)),
+                const SizedBox(height: 8),
+                const Text(
+                  'Ask about crop diseases, treatments, and care tips. I use real data from our disease knowledge base.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: AppColors.textGray, fontSize: 14, height: 1.5),
+                ),
+                const SizedBox(height: 28),
+                const Text('Try asking:',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: _suggestions
+                      .map((s) => ActionChip(
+                            label: Text(s,
+                                style: const TextStyle(
+                                    fontSize: 13, color: AppColors.primary)),
+                            backgroundColor: AppColors.backgroundGreenLight,
+                            side: BorderSide.none,
+                            onPressed: () => onSuggest(s),
+                          ))
+                      .toList(),
+                ),
+              ],
             ),
-            child: const Icon(Icons.eco, color: Colors.white, size: 38),
           ),
-          const SizedBox(height: 16),
-          const Text('Vegetable Doctor',
-              style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.textDark)),
-          const SizedBox(height: 8),
-          const Text(
-            'Ask about crop diseases, treatments, and care tips. I use real data from our disease knowledge base.',
-            textAlign: TextAlign.center,
-            style:
-                TextStyle(color: AppColors.textGray, fontSize: 14, height: 1.5),
-          ),
-          const SizedBox(height: 28),
-          const Text('Try asking:',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.center,
-            children: _suggestions
-                .map((s) => ActionChip(
-                      label: Text(s,
-                          style: const TextStyle(
-                              fontSize: 13, color: AppColors.primary)),
-                      backgroundColor: AppColors.backgroundGreenLight,
-                      side: BorderSide.none,
-                      onPressed: () => onSuggest(s),
-                    ))
-                .toList(),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1013,6 +1046,14 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   const SizedBox(height: 6),
                 ],
                 // ── Text bubble ──
+                if (isUser &&
+                    context.read<ChatProvider>().submissionState(message.id) !=
+                        null)
+                  Text(
+                    context.read<ChatProvider>().submissionState(message.id)!,
+                    style: const TextStyle(
+                        fontSize: 11, color: AppColors.textGray),
+                  ),
                 if (!hideText && message.content.isNotEmpty)
                   Container(
                     constraints: BoxConstraints(
@@ -1866,6 +1907,7 @@ class _ConversationHistorySheet extends StatelessWidget {
 class _InputBar extends StatefulWidget {
   final TextEditingController controller;
   final bool sending;
+  final bool queueing;
   final Future<bool> Function(String text, List<Uint8List> imageBytesList)
       onSend;
   final Future<bool> Function(String text, String audioPath) onSendWithVoice;
@@ -1873,6 +1915,7 @@ class _InputBar extends StatefulWidget {
   const _InputBar({
     required this.controller,
     required this.sending,
+    this.queueing = false,
     required this.onSend,
     required this.onSendWithVoice,
   });
@@ -2076,24 +2119,8 @@ class _InputBarState extends State<_InputBar> with WidgetsBindingObserver {
     }
 
     try {
-      final audioBytes = await File(recordingPath).readAsBytes();
-      final transcriptResponse =
-          await context.read<AiBackendService>().transcribeAudio(
-                audioBytes: audioBytes,
-                filename: path.basename(recordingPath),
-              );
-      final transcript = transcriptResponse.transcript.trim();
-
-      if (!mounted) return;
       setState(() => _transcribing = false);
-
-      if (transcript.isNotEmpty) {
-        await widget.onSendWithVoice(transcript, recordingPath);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No speech was detected. Try again.')),
-        );
-      }
+      await widget.onSendWithVoice('', recordingPath);
     } catch (_) {
       if (!mounted) return;
       setState(() => _transcribing = false);
@@ -2181,12 +2208,24 @@ class _InputBarState extends State<_InputBar> with WidgetsBindingObserver {
       final picker = ImagePicker();
       final picked = await picker.pickMultiImage(imageQuality: 85);
       if (picked.isEmpty) return;
-      final bytesList =
-          await Future.wait(picked.map((image) => image.readAsBytes()));
+      final bytesList = await Future.wait(picked.map((image) async {
+        try {
+          final bytes = await image.readAsBytes();
+          return bytes.isEmpty ? null : bytes;
+        } catch (_) {
+          return null;
+        }
+      }));
       if (mounted) {
-        setState(() {
-          _pendingImageBytesList.addAll(bytesList.map(Uint8List.fromList));
-        });
+        final validImages = bytesList.whereType<Uint8List>().toList();
+        setState(() => _pendingImageBytesList.addAll(validImages));
+        final failed = picked.length - validImages.length;
+        if (failed > 0) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                '$failed selected photo(s) could not be read. Please select them again. The remaining photos are ready.'),
+          ));
+        }
       }
     }
   }
@@ -2334,7 +2373,7 @@ class _InputBarState extends State<_InputBar> with WidgetsBindingObserver {
                 onTap: _toggleMic,
               ),
               const SizedBox(width: 6),
-              widget.sending
+              widget.queueing
                   ? const SizedBox.square(
                       dimension: 40,
                       child: Center(
@@ -2348,7 +2387,7 @@ class _InputBarState extends State<_InputBar> with WidgetsBindingObserver {
                       ),
                     )
                   : GestureDetector(
-                      onTap: _submit,
+                      onTap: widget.sending ? null : _submit,
                       child: Container(
                         width: 44,
                         height: 44,
@@ -2356,8 +2395,8 @@ class _InputBarState extends State<_InputBar> with WidgetsBindingObserver {
                           shape: BoxShape.circle,
                           color: AppColors.primary,
                         ),
-                        child: const Icon(
-                          Icons.send,
+                        child: Icon(
+                          widget.sending ? Icons.hourglass_top : Icons.send,
                           color: Colors.white,
                           size: 20,
                         ),

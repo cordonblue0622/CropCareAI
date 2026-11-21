@@ -121,6 +121,10 @@ class AiBackendService {
     String? hintCropType,
     bool imagesFromPreviousTurns = false,
   }) async {
+    if (imageBytesList.any((bytes) => bytes.isEmpty)) {
+      throw ArgumentError(
+          'An attached photo is empty. Please select it again.');
+    }
     final imageDataUrls = imageBytesList
         .where((bytes) => bytes.isNotEmpty)
         .map((bytes) => _buildImageDataUrl(bytes, mimeType: imageMimeType))
@@ -153,7 +157,7 @@ class AiBackendService {
     final response = await _postJsonWithWarmup(
       path: '/v1/chat',
       payload: payload,
-      timeout: const Duration(seconds: 20),
+      timeout: const Duration(seconds: 120),
     );
 
     _throwIfError(response);
@@ -339,22 +343,23 @@ class AiBackendService {
     required Object payload,
     required Duration timeout,
   }) async {
-    await warmUpIfNeeded();
+    if (path != '/v1/chat') await warmUpIfNeeded();
+    final encodedPayload = jsonEncode(payload);
     var response = await _client
         .post(
           Uri.parse('$baseUrl$path'),
           headers: _headers(json: true),
-          body: jsonEncode(payload),
+          body: encodedPayload,
         )
         .timeout(timeout);
 
-    if (_isRetryableStatusCode(response.statusCode)) {
+    if (path != '/v1/chat' && _isRetryableStatusCode(response.statusCode)) {
       await warmUpIfNeeded(force: true);
       response = await _client
           .post(
             Uri.parse('$baseUrl$path'),
             headers: _headers(json: true),
-            body: jsonEncode(payload),
+            body: encodedPayload,
           )
           .timeout(timeout);
     }
@@ -367,17 +372,18 @@ class AiBackendService {
     required Duration timeout,
     required http.MultipartRequest Function() buildRequest,
   }) async {
-    await warmUpIfNeeded();
+    if (path != '/v1/transcribe') await warmUpIfNeeded();
 
     var request = buildRequest();
     var streamed = await request.send().timeout(timeout);
-    var response = await http.Response.fromStream(streamed);
+    var response = await http.Response.fromStream(streamed).timeout(timeout);
 
-    if (_isRetryableStatusCode(response.statusCode)) {
+    if (path != '/v1/transcribe' &&
+        _isRetryableStatusCode(response.statusCode)) {
       await warmUpIfNeeded(force: true);
       request = buildRequest();
       streamed = await request.send().timeout(timeout);
-      response = await http.Response.fromStream(streamed);
+      response = await http.Response.fromStream(streamed).timeout(timeout);
     }
 
     return response;
@@ -471,17 +477,19 @@ class AiBackendService {
       return;
     }
 
+    String? detail;
     try {
       final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-      final detail = decoded['detail'];
-      if (detail is String && detail.trim().isNotEmpty) {
-        throw AiBackendHttpException(
-          statusCode: response.statusCode,
-          message: detail.trim(),
-        );
+      final rawDetail = decoded['detail'];
+      if (rawDetail is String && rawDetail.trim().isNotEmpty) {
+        detail = rawDetail.trim();
       }
     } catch (_) {
-      // Fall back to the raw body below.
+      // Non-JSON errors use the response body below.
+    }
+    if (detail != null) {
+      throw AiBackendHttpException(
+          statusCode: response.statusCode, message: detail);
     }
 
     final body = response.body.trim();

@@ -1,3 +1,5 @@
+import asyncio
+from fastapi import HTTPException
 import json
 import logging
 import re
@@ -51,18 +53,14 @@ TOMATO: Bacterial Spot · Early Blight · Late Blight · Leaf Mold · Septoria L
 Rules for the farmer-visible answer:
 1. Treat scanner output as a hint. If the image contradicts it, say so and correct.
 2. If knowledge excerpts match the verified problem, use their treatment wording (including any day-by-day steps given in the excerpt).
-3. If you clearly verified a disease, pest, or a healthy crop and no more input is needed, structure the first diagnosis reply as plain text sections in this order, with labels exactly like this (no markdown, no bullets):
-What it is:
-Key symptoms:
-Immediate action:
-Treatment:
-Prevention tip:
-4. If the photo is unclear, unrelated, only shows another screen/image, or you need another angle before diagnosing, do NOT use the diagnosis template. Reply briefly in plain text asking for a clearer actual crop photo and stop there. CRITICAL: Once you have committed to a diagnosis using the template format (i.e., you have written the "What it is:" section), you MUST NOT ask for another photo in that same response. A template diagnosis and a photo request must never appear together in one reply.
-4a. For pechay (bok choy): there is no on-device scanner model for pechay, so rely entirely on your GPT vision. If you can see pechay or bok choy leaves in the image, you MUST commit to a diagnosis based on the visible symptoms — even if image quality is imperfect. Do NOT ask for another photo when pechay/bok choy leaves are clearly visible.
-5. For a clearly healthy crop, keep the answer practical and brief. In treatment_actions, give 3 to 5 concrete daily care actions rooted in the knowledge excerpts. Do NOT include "upload another photo" as a treatment action.
-6. Prefer organic/IPM first; if you mention chemicals, add brief safety cautions in the answer body.
-7. Keep under 220 words unless the farmer explicitly asks for more detail.
-8. If scanner confidence is below 70%, say the result is uncertain and suggest a clearer photo.
+3. Carefully inspect every attached image before deciding whether more information is needed. Use the selected crop as a strong hint, but do not claim a crop or condition the image does not support. A scanner confidence score is only a hint; do not request another photo just because the score is low.
+4. If the crop and symptoms are visible, give the most likely diagnosis on this first reply. Briefly name the visible signs and explain the condition in everyday words. If evidence is limited, state the likely answer with a short uncertainty note rather than withholding a reasonable diagnosis.
+5. If the image is too blurry or does not show a plant, ask for one clear close-up photo. If it shows a plant but you cannot tell which crop it is, ask what crop it is. Do not ask for a crop type already supplied in the chat or selected by the farmer. Ask only one question, and only when its answer is needed.
+6. For pechay (bok choy), rely on the image and knowledge excerpts because there is no on-device scanner model. Diagnose visible symptoms when the image supports it; do not force a diagnosis when it does not.
+7. For a clearly healthy crop, say it looks healthy without asking unnecessary questions. In treatment_actions, give 3 to 5 concrete daily care actions rooted in the knowledge excerpts. Do NOT include "upload another photo" as a treatment action.
+8. Prefer organic/IPM first; if you mention chemicals, add a brief safety caution only when relevant.
+9. Speak like a helpful person, not a report. Use simple everyday words and 2 to 5 short sentences (under 100 words). Answer the farmer's question directly. Do not add an introduction, unrelated tips, or repeat the diagnosis unnecessarily.
+10. Never tell the farmer to go online, connect to the internet, or continue online, and do not mention connectivity as a reason to request information or another photo. The submitted image is already available for your analysis.
 
 After your answer, output exactly one extra final line and nothing after it. That line must start with CCAI_JSON: followed by compact JSON (no line breaks inside the JSON) with these keys:
 in_app_crop_scope (boolean), show_treatment_ui (boolean), verified_crop (string: tomato, pepper, squash, eggplant, pechay, or empty), verified_disease (string or empty), treatment_actions (array of 3-7 short imperative steps, or empty array).
@@ -75,18 +73,20 @@ JSON rules:
 
 _CONVERSATIONAL_PROMPT = """You are CropCare AI helping a smallholder vegetable farmer.
 
-The farmer is continuing an earlier chat (they may have already received a diagnosis). Answer their latest question directly in plain, simple English and keep the reply anchored to the active crop and problem already established in the chat unless the farmer clearly switches crops.
+The farmer is continuing an earlier chat (they may have already received a diagnosis). Answer the latest question directly in simple, everyday English. Keep the reply anchored to the active crop and problem unless the farmer clearly switches crops. Be friendly and brief: use 2 to 5 short sentences (under 100 words), with no introduction, unrelated tips, or repeated diagnosis.
 
 Rules:
 - The active crop supplied in the chat context is authoritative. Answer only for that crop, even if prior messages or general examples mention tomato. Do not change crops or default to tomato unless the farmer explicitly names a different crop.
-- Inspect every photo attached to this request, including photos repeated from earlier in the conversation. Use those images to review or correct an earlier offline scan, and do not ask the farmer to upload a photo again when a usable image is attached.
+- Inspect every photo attached to this request, including photos repeated from earlier in the conversation. Use them to review or correct an earlier scan. Do not ask for another photo when an attached image is usable.
+- If an attached image is available, use it and the crop information already supplied before asking anything. Give the most likely diagnosis when visible signs support one, with a brief uncertainty note if needed. Ask only one specific question when the answer is necessary; never ask the farmer to repeat the selected crop.
 - If the farmer asks about a product, brand, spray, or active ingredient, explain whether it fits the active crop and likely problem, what it is mainly used for, and when it would not be a good fit.
 - If the farmer asks about fertilizer, feeding, or nutrients, answer directly for the named crop and growth stage. If web search results are available, use them to strengthen product-specific guidance.
 - If web search results are available, use them to verify what a named product is for or what active ingredient it contains. If reliable web results are not available, use your own crop-protection knowledge and clearly tell the farmer to verify the label, crop registration, dosage, and pre-harvest interval locally.
 - For CropCare AI app-support questions, explain the app's real workflows in plain language: scans and chats can cover tomato, bell pepper, squash, eggplant, and pechay; daily plans use one crop check-in after that day's actions; and offline information syncs when connectivity returns. Do not claim unavailable features or ask for a crop photo when the question is about using the app.
 - Do NOT repeat the full diagnosis template (no required "What it is / Treatment" sections) unless they explicitly ask you to restate the plan.
 - Do NOT add generic warning footers or tip lists unless the question is about safety or compliance.
-- Stay focused on the question. Under 200 words unless they ask for detail.
+- Stay focused on the question and use simple words. Explain a technical term briefly only when needed.
+- Never tell the farmer to go online, connect to the internet, or continue online. Do not mention connectivity as a reason to request information or another photo.
 - If the question is unrelated to crops, answer briefly and politely.
 - Plain text only — no markdown."""
 
@@ -185,7 +185,7 @@ class LlmService:
     ) -> ChatResponse:
         _ = current_user
         if not self._settings.openai_api_key:
-            return self._fallback_response(payload, knowledge_records)
+            raise HTTPException(status_code=503, detail="Online AI is not configured. Please try again later.")
 
         # Early-exit for simple greetings with no image and no diagnosis context —
         # skip GPT entirely and return a short intro without structured output.
@@ -209,7 +209,7 @@ class LlmService:
 
         from openai import OpenAI
 
-        client = OpenAI(api_key=self._settings.openai_api_key)
+        client = OpenAI(api_key=self._settings.openai_api_key, timeout=100.0, max_retries=0)
 
         active_crop = self._resolve_active_crop(payload, knowledge_records)
         is_follow_up = len(payload.conversation_history) >= 2 or not self._should_use_diagnosis_template(payload)
@@ -299,13 +299,21 @@ class LlmService:
         ]
         if not image_data_urls and payload.image_data_url:
             image_data_urls = [payload.image_data_url]
-        for image_data_url in image_data_urls:
+        if len(image_data_urls) > 1:
+            user_content.append({"type": "input_text", "text": (
+                f"Review all {len(image_data_urls)} images in order. Refer to Image 1, Image 2, etc. "
+                "Distinguish different symptoms or plants; combine views of the same plant as supporting evidence. "
+                "Explicitly identify any image that cannot be assessed."
+            )})
+        for image_index, image_data_url in enumerate(image_data_urls, start=1):
+            user_content.append({"type": "input_text", "text": f"Image {image_index}"})
             user_content.append(
                 {"type": "input_image", "image_url": image_data_url}
             )
 
         try:
-            response, used_web_search = self._create_response(
+            response, used_web_search = await asyncio.to_thread(
+                self._create_response,
                 client,
                 system_prompt=system_prompt,
                 user_content=user_content,
@@ -373,9 +381,12 @@ class LlmService:
                 ),
                 verified_disease=str(meta.get("verified_disease") or "").strip(),
             )
-        except Exception:
-            logger.exception("OpenAI chat response failed. Falling back to diagnosis-grounded guidance.")
-            return self._fallback_response(payload, knowledge_records)
+        except Exception as error:
+            logger.exception("Online chat failed (images=%d).", len(image_data_urls))
+            raise HTTPException(
+                status_code=502,
+                detail="Online AI could not complete this request. Please retry.",
+            ) from error
 
     def _build_system_prompt(
         self,
@@ -799,9 +810,9 @@ class LlmService:
             crop_label = active_crop or "selected crop"
             return ChatResponse(
                 answer=(
-                    "I cannot verify this photo while online image analysis is unavailable. "
-                    f"The on-device scan is only a preliminary match, so I will not diagnose or recommend treatment for the {crop_label} from it alone. "
-                    "Please try again when connected, or send a clear close-up of the affected leaf from the front and back."
+                    "I cannot verify this photo right now. "
+                    f"The scanner result is only a first guess, so I cannot safely diagnose the {crop_label} or recommend treatment from it alone. "
+                    "Please try again shortly."
                 ),
                 recommended_actions=[],
                 warnings=[],

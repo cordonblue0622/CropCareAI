@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'dart:async';
 import 'package:cropcare_ai/core/constants/app_constants.dart';
 import 'package:cropcare_ai/core/constants/app_enums.dart';
 import 'package:cropcare_ai/data/local/database_helper.dart';
@@ -120,6 +122,16 @@ class _TrackingAiBackendService extends AiBackendService {
   _TrackingAiBackendService({required super.supabase});
 
   int sendCallCount = 0;
+  List<List<int>> lastImages = [];
+  Completer<AiBackendChatResponse>? pendingResponse;
+  Object? failure;
+  Completer<AiBackendTranscribeResponse>? transcription;
+  String? lastUserMessage;
+
+  @override
+  Future<AiBackendTranscribeResponse> transcribeAudio(
+          {required List<int> audioBytes, required String filename}) =>
+      transcription!.future;
   String? lastCropId;
   String? lastHintCropType;
   AiBackendChatResponse response = const AiBackendChatResponse(
@@ -148,6 +160,10 @@ class _TrackingAiBackendService extends AiBackendService {
     bool imagesFromPreviousTurns = false,
   }) async {
     sendCallCount++;
+    lastImages = imageBytesList;
+    lastUserMessage = userMessage;
+    if (failure != null) throw failure!;
+    if (pendingResponse != null) return pendingResponse!.future;
     lastCropId = cropId;
     lastHintCropType = hintCropType;
     return response;
@@ -175,6 +191,148 @@ void main() {
   });
 
   tearDown(() => database.deleteDatabaseFile());
+
+  test('voice is visible and queued before transcription and keeps one message',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final backend = _TrackingAiBackendService(supabase: supabase)
+      ..transcription = Completer<AiBackendTranscribeResponse>();
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: backend,
+      connectivity: _OnlineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+    );
+    addTearDown(provider.dispose);
+    final directory = await Directory.systemTemp.createTemp('chat-voice-test');
+    addTearDown(() => directory.delete(recursive: true));
+    final file = File('${directory.path}/voice.wav');
+    await file.writeAsBytes([1, 2, 3]);
+    final queued = Completer<void>();
+    final sending = provider.sendMessage(
+        userId: 'test-user',
+        content: 'Transcribing voice message...',
+        attachedAudioPath: file.path,
+        transcribeAudio: true,
+        hideMessageTextInUi: true,
+        onQueued: queued.complete);
+    expect(provider.currentMessages.single.metadata?['audio_path'], file.path);
+    await queued.future;
+    expect(backend.sendCallCount, 0);
+    backend.transcription!.complete(const AiBackendTranscribeResponse(
+        transcript: 'How often should I water?',
+        language: 'en',
+        source: 'test',
+        notes: []));
+    await sending;
+    expect(backend.lastUserMessage, 'How often should I water?');
+    expect(provider.currentMessages.first.content, 'How often should I water?');
+    expect(provider.currentMessages.first.metadata?['hide_text'], false);
+    expect(provider.currentMessages.where((m) => m.role == MessageRole.user),
+        hasLength(1));
+    await provider.loadSession(provider.currentSession!);
+    expect(provider.currentMessages.first.content, 'How often should I water?');
+  });
+
+  test('offline multiple images do not claim a single-photo diagnosis for all',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final backend = _TrackingAiBackendService(supabase: supabase);
+    final classifier = _FakeLocalClassifierService();
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: backend,
+      connectivity: _OfflineConnectivityService(),
+      localClassifier: classifier,
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+    );
+    addTearDown(provider.dispose);
+    await provider.sendMessage(
+        userId: 'test-user',
+        content: 'Compare leaves',
+        attachedImageBytesList: [
+          [1],
+          [2],
+          [3]
+        ],
+        hintCropType: 'eggplant');
+    expect(backend.sendCallCount, 0);
+    expect(classifier.lastCropType, isNull);
+    expect(
+        provider.currentMessages.last.content, contains('one photo at a time'));
+    expect(provider.currentMessages.first.imageUrls, hasLength(3));
+  });
+
+  for (final count in [1, 3, 4, 6]) {
+    test('$count images appear before AI and survive local reopen', () async {
+      final supabase = _FakeSupabaseService();
+      final backend = _TrackingAiBackendService(supabase: supabase)
+        ..pendingResponse = Completer<AiBackendChatResponse>();
+      final provider = ChatProvider(
+        supabase: supabase,
+        db: database,
+        aiBackend: backend,
+        connectivity: _OnlineConnectivityService(),
+        sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+      );
+      addTearDown(provider.dispose);
+      final images = List.generate(count, (index) => [index + 1, 2, 3]);
+      final queued = Completer<void>();
+      final sending = provider.sendMessage(
+          userId: 'test-user',
+          content: 'Compare these leaves',
+          attachedImageBytesList: images,
+          onQueued: queued.complete);
+      expect(provider.currentMessages.single.imageBytesList, images);
+      expect(provider.isTyping, isTrue);
+      await queued.future;
+      expect(provider.submissionState(provider.currentMessages.single.id),
+          'Saved on device');
+      while (backend.sendCallCount == 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      expect(backend.lastImages, images);
+      expect(provider.currentMessages, hasLength(1));
+      backend.pendingResponse!.complete(backend.response);
+      await sending;
+      expect(backend.sendCallCount, 1);
+      expect(provider.isTyping, isFalse);
+      await provider.loadSession(provider.currentSession!);
+      expect(provider.currentMessages.first.imageBytesList, images);
+      expect(provider.currentMessages.where((m) => m.role == MessageRole.user),
+          hasLength(1));
+    });
+  }
+
+  test('online API failure never claims offline analysis', () async {
+    final supabase = _FakeSupabaseService();
+    final backend = _TrackingAiBackendService(supabase: supabase)
+      ..failure = const AiBackendHttpException(
+          statusCode: 502, message: 'service failed');
+    final provider = ChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: backend,
+      connectivity: _OnlineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+    );
+    addTearDown(provider.dispose);
+    await provider.sendMessage(
+        userId: 'test-user',
+        content: 'Compare these leaves',
+        attachedImageBytesList: [
+          [1],
+          [2],
+          [3]
+        ]);
+    final response = provider.currentMessages.last;
+    expect(response.metadata?['model'], 'backend-unavailable');
+    expect(response.content, contains('Please retry'));
+    expect(response.content, isNot(contains('offline model')));
+    expect(provider.isTyping, isFalse);
+  });
 
   test('offline fallback is deterministic and bypasses the backend', () async {
     final supabase = _FakeSupabaseService();

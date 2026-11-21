@@ -439,14 +439,6 @@ class SyncService {
 
   Future<void> _reassessPendingPhotoCheckIns(String userId) async {
     await dbHelper.resetStaleProgressAnalysisClaims();
-    final queuedProgressIds = (await dbHelper.getPendingSyncItems())
-        .where((item) =>
-            item['table_name'] == AppConstants.progressUpdatesTable &&
-            (item['operation'] == 'UPSERT' ||
-                item['operation'] == 'SOFT_DELETE'))
-        .map((item) => item['record_id'] as String?)
-        .whereType<String>()
-        .toSet();
     final updates = await dbHelper.queryByUserId(
       AppConstants.progressUpdatesTable,
       userId,
@@ -458,8 +450,7 @@ class SyncService {
                   imageUrl != null
               ? 'pending'
               : 'not_required');
-      return !queuedProgressIds.contains(update['id']) &&
-          (status == 'pending' || status == 'failed') &&
+      return (status == 'pending' || status == 'failed') &&
           decodeInlineImageDataUrl(imageUrl) != null;
     }).toList();
 
@@ -516,6 +507,13 @@ class SyncService {
       ..sort((a, b) =>
           (b['update_date'] as String).compareTo(a['update_date'] as String));
     final lastUpdate = previous.isEmpty ? null : previous.first;
+    final latestUpdate = previousUpdates.reduce(
+      (left, right) => DateTime.parse(left['update_date'] as String)
+              .isBefore(DateTime.parse(right['update_date'] as String))
+          ? right
+          : left,
+    );
+    final isMostRecent = latestUpdate['id'] == currentId;
 
     final response = await _aiBackend.assessCropHealth(
       cropType: crop['crop_type'] as String? ?? 'unknown',
@@ -569,20 +567,25 @@ class SyncService {
     final remoteCrop = Map<String, dynamic>.from(assessedCrop)
       ..['is_deleted'] =
           assessedCrop['is_deleted'] == true || assessedCrop['is_deleted'] == 1;
-    await persistQueuedUpserts([
+    final writes = <LocalSyncUpsert>[
       LocalSyncUpsert(
         tableName: AppConstants.progressUpdatesTable,
         recordId: progressId,
         localData: assessedUpdate,
         remoteData: remoteProgress,
       ),
-      LocalSyncUpsert(
-        tableName: AppConstants.cropsTable,
-        recordId: cropId,
-        localData: assessedCrop,
-        remoteData: remoteCrop,
-      ),
-    ]);
+    ];
+    if (isMostRecent) {
+      writes.add(
+        LocalSyncUpsert(
+          tableName: AppConstants.cropsTable,
+          recordId: cropId,
+          localData: assessedCrop,
+          remoteData: remoteCrop,
+        ),
+      );
+    }
+    await persistQueuedUpserts(writes);
   }
 
   String _progressStatusValue(String value) {
@@ -804,6 +807,11 @@ class SyncService {
       if (isInlineImageDataUrl(localImage) &&
           !isInlineImageDataUrl(remoteImage)) {
         merged['image_url'] = localImage;
+      }
+      final localVideo = normalizeImageReference(local['video_url']);
+      final remoteVideo = normalizeImageReference(remoteRow['video_url']);
+      if (localVideo != null && remoteVideo == null) {
+        merged['video_url'] = localVideo;
       }
       for (final key in const [
         'ai_analysis_status',

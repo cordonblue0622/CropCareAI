@@ -7,7 +7,9 @@ import '../../home/home_screen.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  final WidgetBuilder? homeScreenBuilder;
+
+  const LoginScreen({super.key, this.homeScreenBuilder});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -18,6 +20,8 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
   bool _navigatingHome = false;
+  bool _signInInProgress = false;
+  bool _signInAttemptFailed = false;
   bool _obscurePassword = true;
 
   @override
@@ -28,19 +32,24 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _signIn() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (_signInInProgress ||
+        _navigatingHome ||
+        !_formKey.currentState!.validate()) {
+      return;
+    }
     final auth = context.read<AuthProvider>();
+    _signInInProgress = true;
+    _signInAttemptFailed = false;
     final ok = await auth.signIn(
       email: _emailCtrl.text.trim(),
       password: _passwordCtrl.text,
     );
     if (!mounted) return;
+    _signInInProgress = false;
     if (ok) {
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-        (_) => false,
-      );
+      _routeHomeIfAuthenticated(auth);
     } else {
+      _signInAttemptFailed = true;
       _showError(auth.errorMessage ?? 'Sign-in failed.');
     }
   }
@@ -70,7 +79,10 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _routeHomeIfAuthenticated(AuthProvider auth) {
-    if (_navigatingHome || !auth.isAuthenticated) {
+    if (_navigatingHome ||
+        _signInInProgress ||
+        _signInAttemptFailed ||
+        !auth.isAuthenticated) {
       return;
     }
 
@@ -78,7 +90,9 @@ class _LoginScreenState extends State<LoginScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
+        MaterialPageRoute(
+          builder: widget.homeScreenBuilder ?? (_) => const HomeScreen(),
+        ),
         (_) => false,
       );
     });

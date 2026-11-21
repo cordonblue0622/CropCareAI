@@ -36,6 +36,17 @@ class _FakeSupabaseService extends SupabaseService {
   @override
   bool get isSignedIn => signedIn;
 
+  @override
+  User? get currentUser => signedIn
+      ? const User(
+          id: 'offline-user',
+          appMetadata: {},
+          userMetadata: {},
+          aud: 'authenticated',
+          createdAt: '2026-10-31T00:00:00.000Z',
+        )
+      : null;
+
   List<Map<String, dynamic>> _rows(String table) =>
       remoteRows[table] ?? const [];
 
@@ -123,6 +134,7 @@ class _FakeSupabaseService extends SupabaseService {
 
 class _FakeAiBackendService extends AiBackendService {
   int assessmentCalls = 0;
+  int failuresRemaining = 0;
 
   _FakeAiBackendService({required super.supabase});
 
@@ -143,10 +155,14 @@ class _FakeAiBackendService extends AiBackendService {
     double? currentHealthScore,
   }) async {
     assessmentCalls++;
-    return const AiBackendProgressResponse(
+    if (failuresRemaining > 0) {
+      failuresRemaining--;
+      throw StateError('simulated AI assessment failure');
+    }
+    return AiBackendProgressResponse(
       accepted: true,
       rejectionReason: null,
-      healthScore: 82,
+      healthScore: note?.contains('Newest submission') == true ? 91 : 62,
       progressStatus: 'improving',
       assessment: 'New leaves show improvement.',
       nextSteps: ['Continue daily inspection.'],
@@ -365,14 +381,17 @@ void main() {
     expect(await database.queryChatMessages('session-offline'), hasLength(1));
   });
 
-  test('progress images stay local and analysis queues after submission sync',
+  test('reconnect analyzes queued photo and video check-ins exactly once',
       () async {
     final supabase = _FakeSupabaseService();
     final aiBackend = _FakeAiBackendService(supabase: supabase);
+    final connectivity = StreamController<bool>.broadcast();
+    addTearDown(connectivity.close);
     final sync = SyncService(
       supabaseService: supabase,
       dbHelper: database,
       aiBackend: aiBackend,
+      connectivityChanges: connectivity.stream,
     );
     final now = DateTime.utc(2026, 10, 31, 11);
     final crop = CropModel(
@@ -384,12 +403,144 @@ void main() {
       updatedAt: now,
     );
     final photo = buildInlineImageDataUrl([1, 2, 3, 4]);
+    ProgressUpdateModel pendingUpdate({
+      required String id,
+      required DateTime submittedAt,
+      String? videoUrl,
+    }) =>
+        ProgressUpdateModel(
+          id: id,
+          cropId: crop.id,
+          userId: crop.userId,
+          note: submittedAt.isAfter(now)
+              ? 'Newest submission pending AI analysis.'
+              : 'Offline check-in; AI analysis pending.',
+          imageUrl: photo,
+          videoUrl: videoUrl,
+          progressStatus: ProgressStatus.insufficientData,
+          updateDate: submittedAt,
+          aiAnalysisStatus: AiAnalysisStatus.pending,
+          createdAt: submittedAt,
+          updatedAt: submittedAt,
+        );
+    final photoProgress = pendingUpdate(
+      id: 'progress-offline-photo',
+      submittedAt: now,
+    );
+    const videoPath = r'C:\app\documents\videos\offline-proof.mp4';
+    final videoProgress = pendingUpdate(
+      id: 'progress-offline-video',
+      submittedAt: now.add(const Duration(minutes: 1)),
+      videoUrl: videoPath,
+    );
+    await sync.persistQueuedUpserts([
+      LocalSyncUpsert(
+        tableName: AppConstants.cropsTable,
+        recordId: crop.id,
+        localData: crop.toMap(),
+        remoteData: _remoteRow(AppConstants.cropsTable, crop.toMap()),
+      ),
+      for (final progress in [photoProgress, videoProgress])
+        LocalSyncUpsert(
+          tableName: AppConstants.progressUpdatesTable,
+          recordId: progress.id,
+          localData: progress.toMap(),
+          remoteData: progress.toRemoteMap(),
+        ),
+    ]);
+
+    supabase.signedIn = true;
+    supabase.failUpsertsOnce.add(AppConstants.progressUpdatesTable);
+    connectivity.add(true);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+
+    expect(aiBackend.assessmentCalls, 2,
+        reason: 'A failed cloud upload must not block local AI analysis');
+    for (final progress in [photoProgress, videoProgress]) {
+      final local = ProgressUpdateModel.fromMap(
+        (await database.queryById(
+            AppConstants.progressUpdatesTable, progress.id))!,
+      );
+      expect(local.aiAnalysisStatus, AiAnalysisStatus.completed);
+      expect(local.note, 'New leaves show improvement.');
+      expect(local.imageUrl, photo);
+    }
+
+    connectivity.add(true);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+
+    expect(aiBackend.assessmentCalls, 2,
+        reason: 'Completed submissions must not be analyzed again');
+    expect(
+      ProgressUpdateModel.fromMap(
+        (await database.queryById(
+            AppConstants.progressUpdatesTable, videoProgress.id))!,
+      ).videoUrl,
+      videoPath,
+      reason: 'The original video path remains available locally',
+    );
+    expect(
+      (await database.queryById(
+          AppConstants.cropsTable, crop.id))?['latest_health_score'],
+      91,
+      reason: 'The latest submission updates the crop health score',
+    );
+    expect(
+      supabase.remoteRows[AppConstants.progressUpdatesTable],
+      hasLength(2),
+    );
+    final syncedVideo = ProgressUpdateModel.fromMap(
+      (await database.queryById(
+          AppConstants.progressUpdatesTable, videoProgress.id))!,
+    );
+    expect(syncedVideo.videoUrl, videoPath,
+        reason: 'Remote refresh must preserve the local video reference');
+    expect(await database.getPendingSyncItems(), isEmpty);
+    final remoteProgress =
+        supabase.remoteRows[AppConstants.progressUpdatesTable]!;
+    expect(
+      remoteProgress.every(
+        (row) =>
+            row['note'] == 'New leaves show improvement.' &&
+            row['progress_status'] == ProgressStatus.improving.value &&
+            !row.containsKey('ai_analysis_status') &&
+            (row['image_url'] as String).startsWith('https://storage.example/'),
+      ),
+      isTrue,
+    );
+    expect(
+      (await database.queryById(
+          AppConstants.progressUpdatesTable, photoProgress.id))?['image_url'],
+      photo,
+      reason: 'Pulling the uploaded URL back must not erase local photo bytes',
+    );
+  });
+
+  test('failed AI analysis retries and completed analysis is not repeated',
+      () async {
+    final supabase = _FakeSupabaseService();
+    final aiBackend = _FakeAiBackendService(supabase: supabase)
+      ..failuresRemaining = 1;
+    final sync = SyncService(
+      supabaseService: supabase,
+      dbHelper: database,
+      aiBackend: aiBackend,
+    );
+    final now = DateTime.utc(2026, 10, 31, 12);
+    final crop = CropModel(
+      id: 'crop-ai-retry',
+      userId: 'offline-user',
+      cropType: CropType.tomato,
+      cropName: 'Tomato',
+      createdAt: now,
+      updatedAt: now,
+    );
     final progress = ProgressUpdateModel(
-      id: 'progress-offline',
+      id: 'progress-ai-retry',
       cropId: crop.id,
       userId: crop.userId,
       note: 'Offline check-in; AI analysis pending.',
-      imageUrl: photo,
+      imageUrl: buildInlineImageDataUrl([5, 6, 7]),
       progressStatus: ProgressStatus.insufficientData,
       updateDate: now,
       aiAnalysisStatus: AiAnalysisStatus.pending,
@@ -412,62 +563,26 @@ void main() {
     ]);
 
     await sync.reassessPendingPhotoCheckInsForTest(crop.userId);
-    expect(aiBackend.assessmentCalls, 0,
-        reason: 'AI analysis must wait for the submitted progress row to sync');
-    await sync.pushPendingChanges();
+    expect(aiBackend.assessmentCalls, 1);
     expect(
-      supabase
-          .remoteRows[AppConstants.progressUpdatesTable]!.single['image_url'],
-      startsWith('https://storage.example/'),
-    );
-    expect(
-      (await database.queryById(
-          AppConstants.progressUpdatesTable, progress.id))?['image_url'],
-      photo,
-      reason: 'Sync must preserve the local photo for offline viewing',
+      ProgressUpdateModel.fromMap(
+        (await database.queryById(
+            AppConstants.progressUpdatesTable, progress.id))!,
+      ).aiAnalysisStatus,
+      AiAnalysisStatus.failed,
     );
 
     await sync.reassessPendingPhotoCheckInsForTest(crop.userId);
-    expect(aiBackend.assessmentCalls, 1);
-    final locallyAssessed = ProgressUpdateModel.fromMap(
-      (await database.queryById(
-          AppConstants.progressUpdatesTable, progress.id))!,
-    );
-    expect(locallyAssessed.aiAnalysisStatus, AiAnalysisStatus.completed);
-    expect(locallyAssessed.note, 'New leaves show improvement.');
-    expect(locallyAssessed.imageUrl, photo);
-
-    supabase.failUpsertsOnce.add(AppConstants.progressUpdatesTable);
-    await sync.pushPendingChanges();
-    expect(
-      (await database.getPendingSyncItems()).any(
-          (item) => item['table_name'] == AppConstants.progressUpdatesTable),
-      isTrue,
-    );
+    expect(aiBackend.assessmentCalls, 2);
     expect(
       ProgressUpdateModel.fromMap(
         (await database.queryById(
             AppConstants.progressUpdatesTable, progress.id))!,
       ).aiAnalysisStatus,
       AiAnalysisStatus.completed,
-      reason: 'A cloud failure must not discard local AI results',
     );
-
-    await sync.pushPendingChanges();
-    final remoteProgress =
-        supabase.remoteRows[AppConstants.progressUpdatesTable]!.single;
-    expect(remoteProgress['note'], 'New leaves show improvement.');
-    expect(remoteProgress['progress_status'], ProgressStatus.improving.value);
-    expect(remoteProgress.containsKey('ai_analysis_status'), isFalse,
-        reason: 'Local AI bookkeeping must not require a cloud schema change');
-    await sync.pullFromRemote(userId: crop.userId);
-    expect(
-      (await database.queryById(
-          AppConstants.progressUpdatesTable, progress.id))?['image_url'],
-      photo,
-      reason: 'Pulling the uploaded URL back must not erase local photo bytes',
-    );
-    expect(await database.getPendingSyncItems(), isEmpty);
+    await sync.reassessPendingPhotoCheckInsForTest(crop.userId);
+    expect(aiBackend.assessmentCalls, 2);
   });
 
   test('queued writes wait for the authenticated owner', () async {

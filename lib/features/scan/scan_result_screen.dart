@@ -862,14 +862,14 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     if (topGuess != null) {
       return 'The offline scan could not confidently confirm $cropLabel from the attached photo. '
           'Top offline guess: ${humanizeDiseaseLabel(topGuess.label)} at '
-          '${(topGuess.confidence * 100).toStringAsFixed(0)}% confidence. '
-          'Please analyze the image carefully, explain whether the top guess looks correct, '
-          'and tell the farmer whether to retry with a clearer photo or continue online for better help.';
+          '${(topGuess.confidence * 100).toStringAsFixed(0)}% confidence. Treat this only as a hint. '
+          'Carefully analyze the attached photo and selected crop. If symptoms are visible, give the most likely condition and briefly explain the signs. '
+          'Ask for one clearer close-up only if the image is too unclear to assess.';
     }
 
     return 'The offline scan could not confidently confirm the attached crop image. '
-        'Please analyze the image carefully, explain what you observe, and tell '
-        'the farmer whether to retry with a clearer photo or continue online for better help.';
+        'Carefully analyze the attached photo and selected crop. If symptoms are visible, give the most likely condition and briefly explain the signs. '
+        'Ask for one clearer close-up only if the image is too unclear to assess.';
   }
 
   DiseaseKnowledgeModel? _resolveDiseaseMatch({

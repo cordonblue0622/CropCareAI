@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cropcare_ai/core/constants/app_constants.dart';
@@ -39,6 +40,34 @@ class _OfflineSupabaseService extends SupabaseService {
   Future<List<Map<String, dynamic>>> getDiseaseTreatmentDaySteps(
     String diseaseKnowledgeBaseId,
   ) async =>
+      const [];
+
+  @override
+  Future<List<Map<String, dynamic>>> getDiagnosesByCrop(String cropId) async =>
+      const [];
+
+  @override
+  Future<List<Map<String, dynamic>>> getTreatmentsByCrop(String cropId) async =>
+      const [];
+
+  @override
+  Future<List<Map<String, dynamic>>> getTreatmentTasksByCrop(
+    String cropId,
+  ) async =>
+      const [];
+
+  @override
+  Future<List<Map<String, dynamic>>> getProgressUpdates(String cropId) async =>
+      const [];
+
+  @override
+  Future<List<Map<String, dynamic>>> getChatSessionsByCrop(
+    String cropId,
+  ) async =>
+      const [];
+
+  @override
+  Future<List<Map<String, dynamic>>> getChatMessages(String sessionId) async =>
       const [];
 }
 
@@ -687,6 +716,154 @@ void main() {
     expect(treatments, hasLength(1));
     expect(tasks, isNotEmpty);
   });
+
+  test(
+    'crop details load all local records after reopening SQLite',
+    () async {
+      final now = DateTime.now();
+      const cropId = 'offline-detail-crop';
+      const diagnosisId = 'offline-detail-diagnosis';
+      const treatmentId = 'offline-detail-treatment';
+      const sessionId = 'offline-detail-session';
+      final crop = CropModel(
+        id: cropId,
+        userId: 'offline-user',
+        cropType: CropType.tomato,
+        cropName: 'Offline detail test',
+        createdAt: now,
+        updatedAt: now,
+      );
+      final diagnosis = DiagnosisModel(
+        id: diagnosisId,
+        cropId: cropId,
+        userId: crop.userId,
+        chatSessionId: sessionId,
+        diagnosisMode: DiagnosisMode.offline,
+        diseaseName: 'Tomato Early Blight',
+        severity: Severity.moderate,
+        summary: 'Saved offline diagnosis summary.',
+        imageUrl: 'data:image/jpeg;base64,AQID',
+        diagnosedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      );
+      final treatment = TreatmentModel(
+        id: treatmentId,
+        cropId: cropId,
+        diagnosisId: diagnosisId,
+        userId: crop.userId,
+        diseaseName: diagnosis.diseaseName,
+        treatmentTitle: 'Offline treatment plan',
+        treatmentSteps: const ['Inspect leaves each morning.'],
+        status: TreatmentStatus.ongoing,
+        startedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      );
+      final task = TreatmentTaskModel(
+        id: 'offline-detail-task',
+        treatmentId: treatmentId,
+        cropId: cropId,
+        userId: 'offline-user',
+        title: 'Inspect the newest leaves',
+        description: 'Look for new spots.',
+        dueAt: now,
+        createdAt: now,
+        updatedAt: now,
+      );
+      final progress = ProgressUpdateModel(
+        id: 'offline-detail-progress',
+        cropId: cropId,
+        userId: crop.userId,
+        note: 'Offline visual check-in',
+        imageUrl: 'data:image/jpeg;base64,AQID',
+        progressStatus: ProgressStatus.improving,
+        updateDate: now,
+        createdAt: now,
+        updatedAt: now,
+      );
+      final session = ChatSessionModel(
+        id: sessionId,
+        userId: crop.userId,
+        cropId: cropId,
+        isOfflineSession: true,
+        createdAt: now,
+        updatedAt: now,
+      );
+      final message = ChatMessageModel(
+        id: 'offline-detail-message',
+        sessionId: sessionId,
+        userId: crop.userId,
+        role: MessageRole.assistant,
+        content: 'Saved offline conversation.',
+        createdAt: now,
+      );
+      Map<String, Object?> sqliteRow(Map<String, dynamic> row) => row.map(
+            (key, value) => MapEntry(
+              key,
+              switch (value) {
+                bool value => value ? 1 : 0,
+                DateTime value => value.toIso8601String(),
+                List<dynamic> value => jsonEncode(value),
+                Map<dynamic, dynamic> value => jsonEncode(value),
+                _ => value,
+              },
+            ),
+          );
+      final db = await database.database;
+      final batch = db.batch();
+      batch.insert(AppConstants.cropsTable, sqliteRow(crop.toMap()));
+      batch.insert(AppConstants.diagnosesTable, sqliteRow(diagnosis.toMap()));
+      batch.insert(AppConstants.treatmentsTable, sqliteRow(treatment.toMap()));
+      batch.insert(
+        AppConstants.treatmentTasksTable,
+        sqliteRow(task.toMap()),
+      );
+      batch.insert(
+        AppConstants.progressUpdatesTable,
+        sqliteRow(progress.toMap()),
+      );
+      batch.insert(
+        AppConstants.chatSessionsTable,
+        sqliteRow(session.toMap()),
+      );
+      batch.insert(
+        AppConstants.chatMessagesTable,
+        sqliteRow(message.toMap()),
+      );
+      await batch.commit(noResult: true);
+
+      await database.closeDatabase();
+      final localDiagnosis = DiagnosisModel.fromMap(
+        (await database.queryDiagnosesForCrop(cropId)).single,
+      );
+      final localTreatment = TreatmentModel.fromMap(
+        (await database.queryTreatmentsForCrop(cropId)).single,
+      );
+      final localTasks = (await database.queryAllTasksForCrop(cropId))
+          .map(TreatmentTaskModel.fromMap)
+          .toList();
+      final localProgress = ProgressUpdateModel.fromMap(
+        (await database.queryProgressUpdatesForCrop(cropId)).single,
+      );
+      final localSessions = (await database.queryChatSessionsByCrop(cropId))
+          .map(ChatSessionModel.fromMap)
+          .toList();
+      final localMessages = (await database.queryChatMessages(sessionId))
+          .map(ChatMessageModel.fromMap)
+          .toList();
+
+      expect(localDiagnosis.summary, 'Saved offline diagnosis summary.');
+      expect(localDiagnosis.diagnosisMode, DiagnosisMode.offline);
+      expect(localTreatment.treatmentSteps,
+          contains('Inspect leaves each morning.'));
+      expect(localTasks.single.title, 'Inspect the newest leaves');
+      expect(localProgress.note, 'Offline visual check-in');
+      expect(localProgress.imageUrl, 'data:image/jpeg;base64,AQID');
+      expect(localSessions.single.isOfflineSession, isTrue);
+      expect(localMessages.single.content, 'Saved offline conversation.');
+    },
+  );
 
   test('crop detail can restore related records from its saved offline card',
       () async {

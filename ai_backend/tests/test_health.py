@@ -18,3 +18,9 @@ def test_health() -> None:
         "whisperConfigured",
     ]
     assert payload["models"]["openaiModel"]
+
+
+def test_health_reports_deployed_revision(monkeypatch) -> None:
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "release-commit")
+    response = TestClient(app).get("/health")
+    assert response.json()["revision"] == "release-commit"

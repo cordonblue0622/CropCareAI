@@ -140,10 +140,12 @@ class _RecordingChatProvider extends ChatProvider {
     List<int>? attachedImageBytes,
     List<List<int>> attachedImageBytesList = const [],
     String? attachedAudioPath,
+    bool transcribeAudio = false,
     String? attachedVideoPath,
     String? attachedImageMimeType,
     bool isVideoFrame = false,
     String? hintCropType,
+    VoidCallback? onQueued,
   }) async {
     sendCallCount++;
     final now = DateTime.now();
@@ -420,5 +422,75 @@ void main() {
       find.text('This diagnosis conversation is unavailable on this device.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets(
+      'welcome content scrolls on small screens and keeps input visible',
+      (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 568);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final supabase = _FakeSupabaseService();
+    final authRepository = _DelayedAuthRepository(
+      supabaseService: supabase,
+      dbHelper: database,
+    );
+    final authProvider = AuthProvider(authRepository: authRepository);
+    final chatProvider = _RecordingChatProvider(
+      supabase: supabase,
+      db: database,
+      aiBackend: AiBackendService(supabase: supabase),
+      connectivity: _OfflineConnectivityService(),
+      sync: _NoopSyncService(supabaseService: supabase, dbHelper: database),
+    );
+    addTearDown(authProvider.dispose);
+    addTearDown(chatProvider.dispose);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<AuthProvider>.value(value: authProvider),
+          ChangeNotifierProvider<ChatProvider>.value(value: chatProvider),
+        ],
+        child: const MaterialApp(
+          home: ChatScreen(startFreshSession: true),
+        ),
+      ),
+    );
+    authRepository.completeRestoration(
+      const UserModel(id: 'welcome-user', email: 'welcome@example.com'),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollableFinder = find.descendant(
+      of: find.byType(SingleChildScrollView),
+      matching: find.byType(Scrollable),
+    );
+    expect(scrollableFinder, findsOneWidget);
+    final scrollable = tester.state<ScrollableState>(scrollableFinder);
+    expect(scrollable.position.maxScrollExtent, greaterThan(0));
+    expect(find.text('Try asking:'), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+    expect(
+        tester.getRect(find.byType(TextField)).bottom, lessThanOrEqualTo(568));
+
+    await tester.drag(
+      find.byType(SingleChildScrollView),
+      const Offset(0, -1000),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.getRect(find.text('Best fungicide for eggplant')).bottom,
+      lessThanOrEqualTo(tester.getRect(find.byType(TextField)).top),
+    );
+
+    tester.view.physicalSize = const Size(360, 800);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(
+        tester.getRect(find.byType(TextField)).bottom, lessThanOrEqualTo(800));
   });
 }

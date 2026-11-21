@@ -50,17 +50,20 @@ class _HomeScreenState extends State<HomeScreen> {
     _selectTab(index);
   }
 
-  late final StreamSubscription<bool> _connectivitySub;
+  StreamSubscription<bool>? _connectivitySub;
 
   @override
   void initState() {
     super.initState();
     HomeScreen.tabSelection.addListener(_handleExternalTabSelection);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
       _loadData();
-      _connectivitySub = context.read<ConnectivityService>().onConnectivityChanged.listen((results) {
-        final online = results;
-        if (online) {
+      _connectivitySub = context
+          .read<ConnectivityService>()
+          .onConnectivityChanged
+          .listen((results) {
+        if (results && mounted) {
           unawaited(_loadData());
         }
       });
@@ -69,7 +72,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    _connectivitySub.cancel();
+    _connectivitySub?.cancel();
     _dashboardScrollController.dispose();
     HomeScreen.tabSelection.removeListener(_handleExternalTabSelection);
     super.dispose();

@@ -74,6 +74,40 @@ def test_photo_diagnosis_does_not_treat_scanner_crop_as_authoritative() -> None:
     )
 
 
+def test_diagnosis_prompt_prioritizes_image_evidence_and_short_answers() -> None:
+    service = LlmService(Settings())
+
+    prompt = service._build_system_prompt(
+        is_follow_up=False,
+        active_crop="tomato",
+        is_product_query=False,
+        has_image=True,
+    )
+
+    assert "give the most likely diagnosis on this first reply" in prompt
+    assert "scanner confidence score is only a hint" in prompt
+    assert "Ask only one question" in prompt
+    assert "2 to 5 short sentences (under 100 words)" in prompt
+    assert "Never tell the farmer to go online" in prompt
+    assert "EXPECTED CROP FROM USER SELECTION: tomato" in prompt
+
+
+def test_follow_up_prompt_is_direct_and_does_not_repeat_diagnosis() -> None:
+    service = LlmService(Settings())
+
+    prompt = service._build_system_prompt(
+        is_follow_up=True,
+        active_crop="eggplant",
+        is_product_query=False,
+        has_image=True,
+    )
+
+    assert "Answer the latest question directly" in prompt
+    assert "Do NOT repeat the full diagnosis template" in prompt
+    assert "never ask the farmer to repeat the selected crop" in prompt
+    assert "Never tell the farmer to go online" in prompt
+
+
 def test_verified_photo_crop_can_override_hint_but_text_conflicts_still_reject() -> None:
     service = LlmService(Settings())
     photo_payload = ChatRequest(
@@ -147,6 +181,8 @@ def test_image_fallback_does_not_repeat_unverified_scanner_diagnosis() -> None:
     assert "Tomato Leaf Mold" not in response.answer
     assert "common fungal disease" not in response.answer
     assert "cannot verify this photo" in response.answer
+    assert "online" not in response.answer.lower()
+    assert "connect" not in response.answer.lower()
     assert response.recommended_actions == []
     assert response.show_treatment_ui is False
 
@@ -194,7 +230,8 @@ def test_knowledge_intent_selects_squash_over_stale_tomato_hint() -> None:
 
 
 def test_photo_diagnosis_does_not_let_scanner_prompt_override_knowledge_label() -> None:
-    service = KnowledgeService(Settings())
+    # This checks bundled knowledge selection, not external Supabase access.
+    service = KnowledgeService(Settings(SUPABASE_URL="", SUPABASE_SERVICE_ROLE_KEY=""))
     payload = ChatRequest(
         user_message=(
             "The TFLite scanner produced a preliminary tomato result. "

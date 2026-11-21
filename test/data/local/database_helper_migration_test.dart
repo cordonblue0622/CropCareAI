@@ -97,4 +97,15 @@ void main() {
     expect(progress.single['image_url'], 'data:image/jpeg;base64,AQID');
     expect((await upgraded.query('users')).single['role'], 'farmer');
   });
+
+  test('concurrent first access shares the same migrated database', () async {
+    final databases = await Future.wait(
+      List<Future<dynamic>>.generate(12, (_) => helper.database),
+    );
+
+    expect(databases.every((database) => identical(database, databases.first)),
+        isTrue);
+    expect(await helper.database.then((db) => db.getVersion()),
+        AppConstants.dbVersion);
+  });
 }

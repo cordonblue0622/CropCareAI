@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -14,6 +15,7 @@ async def health() -> dict[str, object]:
         "status": "ok",
         "environment": settings.app_env,
         "version": settings.api_version,
+        "revision": os.environ.get("RENDER_GIT_COMMIT"),
         "mockServices": settings.enable_mock_services,
         "models": {
             "tfliteConfigured": (

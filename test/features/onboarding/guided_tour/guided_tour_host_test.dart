@@ -77,6 +77,27 @@ void main() {
     expect(find.byKey(GuidedTourOverlay.cardKey), findsNothing);
   });
 
+  testWidgets('automatic tour retries after a navigation transition fails',
+      (tester) async {
+    var navigationAttempts = 0;
+    await _pumpTour(
+      tester,
+      onSelectTab: (_) {
+        navigationAttempts++;
+        if (navigationAttempts == 1) {
+          throw StateError('Simulated route transition race');
+        }
+      },
+    );
+
+    expect(find.byKey(GuidedTourOverlay.cardKey), findsNothing);
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Welcome to CropCare AI'), findsOneWidget);
+    expect(navigationAttempts, 2);
+  });
+
   testWidgets('cards stay on a small screen and clear every highlighted target',
       (tester) async {
     tester.view.physicalSize = const Size(320, 568);
@@ -125,6 +146,7 @@ Future<void> _pumpTour(
   WidgetTester tester, {
   GlobalKey<GuidedTourHostState>? hostKey,
   ValueChanged<int>? onSelectTab,
+  GuidedTourService service = const GuidedTourService(),
   double textScale = 1,
 }) async {
   await tester.pumpWidget(
@@ -135,6 +157,7 @@ Future<void> _pumpTour(
           key: hostKey,
           userId: 'test-user',
           onSelectTab: onSelectTab ?? (_) {},
+          service: service,
           child: Scaffold(body: _TourTargets()),
         ),
       ),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -7,6 +8,8 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
@@ -156,6 +159,20 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     return parsed;
   }
 
+  Future<List<Map<String, dynamic>>> _readLocalRows(
+    String source,
+    Future<List<Map<String, dynamic>>> Function() query,
+  ) async {
+    try {
+      return await query();
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[CropDetail] Could not load local $source: $error\n$stackTrace',
+      );
+      return const [];
+    }
+  }
+
   Future<void> _loadData() async {
     if (_isLoadingData) {
       _reloadDataAfterCurrent = true;
@@ -167,12 +184,40 @@ class _CropDetailScreenState extends State<CropDetailScreen>
     final cropsProvider = context.read<CropsProvider>();
 
     try {
-      var localDx = await db.queryDiagnosesForCrop(_crop.id);
-      var localTx = await db.queryTreatmentsForCrop(_crop.id);
-      final localProgress = await db.queryProgressUpdatesForCrop(_crop.id);
-      var localTasks = await db.queryAllTasksForCrop(_crop.id);
-      final localSessions = await db.queryChatSessionsByCrop(_crop.id);
-      var pendingRows = await db.getPendingSyncItems();
+      CropModel? localCrop;
+      try {
+        final row = await db.queryById(AppConstants.cropsTable, _crop.id);
+        if (row != null) localCrop = CropModel.fromMap(row);
+      } catch (error, stackTrace) {
+        debugPrint(
+          '[CropDetail] Could not refresh the local crop summary: '
+          '$error\n$stackTrace',
+        );
+      }
+      var localDx = await _readLocalRows(
+        'diagnoses',
+        () => db.queryDiagnosesForCrop(_crop.id),
+      );
+      var localTx = await _readLocalRows(
+        'treatments',
+        () => db.queryTreatmentsForCrop(_crop.id),
+      );
+      final localProgress = await _readLocalRows(
+        'progress updates',
+        () => db.queryProgressUpdatesForCrop(_crop.id),
+      );
+      var localTasks = await _readLocalRows(
+        'treatment tasks',
+        () => db.queryAllTasksForCrop(_crop.id),
+      );
+      final localSessions = await _readLocalRows(
+        'chat sessions',
+        () => db.queryChatSessionsByCrop(_crop.id),
+      );
+      var pendingRows = await _readLocalRows(
+        'sync queue',
+        db.getPendingSyncItems,
+      );
       Set<String> pendingIdsFor(String table) => pendingRows
           .where((item) =>
               item['table_name'] == table &&
@@ -189,7 +234,11 @@ class _CropDetailScreenState extends State<CropDetailScreen>
             ..removeWhere((session) => session.isDeleted);
       final cachedMessageRows = <String, Map<String, dynamic>>{};
       for (final session in cachedSessions) {
-        for (final row in await db.queryChatMessages(session.id)) {
+        final messages = await _readLocalRows(
+          'chat messages for ${session.id}',
+          () => db.queryChatMessages(session.id),
+        );
+        for (final row in messages) {
           final id = (row['id'] as String?)?.trim();
           if (id != null && id.isNotEmpty) {
             cachedMessageRows[id] = Map<String, dynamic>.from(row);
@@ -200,17 +249,37 @@ class _CropDetailScreenState extends State<CropDetailScreen>
         cachedMessageRows.values,
         ChatMessageModel.fromMap,
       );
-      final restoredFromConversation =
-          await cropsProvider.restoreCropDiagnosisFromLocalSuggestion(
-        crop: _crop,
-        sessions: cachedSessions,
-        messages: allCachedMessages,
-      );
+      var restoredFromConversation = false;
+      try {
+        restoredFromConversation =
+            await cropsProvider.restoreCropDiagnosisFromLocalSuggestion(
+          crop: _crop,
+          sessions: cachedSessions,
+          messages: allCachedMessages,
+        );
+      } catch (error, stackTrace) {
+        debugPrint(
+          '[CropDetail] Could not restore local diagnosis details: '
+          '$error\n$stackTrace',
+        );
+      }
       if (restoredFromConversation) {
-        localDx = await db.queryDiagnosesForCrop(_crop.id);
-        localTx = await db.queryTreatmentsForCrop(_crop.id);
-        localTasks = await db.queryAllTasksForCrop(_crop.id);
-        pendingRows = await db.getPendingSyncItems();
+        localDx = await _readLocalRows(
+          'restored diagnoses',
+          () => db.queryDiagnosesForCrop(_crop.id),
+        );
+        localTx = await _readLocalRows(
+          'restored treatments',
+          () => db.queryTreatmentsForCrop(_crop.id),
+        );
+        localTasks = await _readLocalRows(
+          'restored treatment tasks',
+          () => db.queryAllTasksForCrop(_crop.id),
+        );
+        pendingRows = await _readLocalRows(
+          'sync queue',
+          db.getPendingSyncItems,
+        );
         unawaited(cropsProvider.flushPendingSync());
       }
       // Parse only after recovery, so the first rendered local snapshot
@@ -237,7 +306,11 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           .map((diagnosis) => diagnosis.chatSessionId?.trim() ?? '')
           .firstWhere((id) => id.isNotEmpty, orElse: () => '');
       if (mounted) {
+        final refreshedCrop = localCrop;
         setState(() {
+          if (refreshedCrop != null && !refreshedCrop.isDeleted) {
+            _crop = refreshedCrop;
+          }
           _diagnoses = cachedDiagnoses;
           _treatments = cachedTreatments;
           _tasks = cachedTasks;
@@ -3195,10 +3268,31 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       }
       return;
     }
-    setState(() {
-      _photoBytes = frame;
-      _videoPath = file.path;
-    });
+    try {
+      final documents = await getApplicationDocumentsDirectory();
+      final videosDirectory = Directory(p.join(documents.path, 'videos'));
+      await videosDirectory.create(recursive: true);
+      final extension = p.extension(file.path);
+      final savedVideoPath = p.join(
+        videosDirectory.path,
+        '${const Uuid().v4()}${extension.isEmpty ? '.mp4' : extension}',
+      );
+      await File(file.path).copy(savedVideoPath);
+      if (!mounted) {
+        await File(savedVideoPath).delete();
+        return;
+      }
+      setState(() {
+        _photoBytes = frame;
+        _videoPath = savedVideoPath;
+      });
+    } catch (error, stackTrace) {
+      debugPrint('[CropDetail] Could not preserve check-in video: '
+          '$error\n$stackTrace');
+      if (mounted) {
+        _showFeedback('Could not save the video. Please try again.');
+      }
+    }
   }
 
   Future<void> _showEvidenceSourceSheet() async {

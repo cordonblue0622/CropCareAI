@@ -28,6 +28,7 @@ class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
   Database? _database;
+  Future<Database>? _databaseOpening;
 
   bool get _isDisabledOnPlatform => kIsWeb;
 
@@ -35,8 +36,18 @@ class DatabaseHelper {
     if (_isDisabledOnPlatform) {
       throw UnsupportedError('SQLite is disabled on web.');
     }
-    _database ??= await _initDatabase();
-    return _database!;
+    final openedDatabase = _database;
+    if (openedDatabase != null) return openedDatabase;
+
+    final opening = _databaseOpening ??= _initDatabase();
+    try {
+      final opened = await opening;
+      _database ??= opened;
+      return _database!;
+    } catch (_) {
+      if (identical(_databaseOpening, opening)) _databaseOpening = null;
+      rethrow;
+    }
   }
 
   Future<Database> _initDatabase() async {
@@ -723,6 +734,7 @@ class DatabaseHelper {
     if (db != null) {
       await db.close();
       _database = null;
+      _databaseOpening = null;
     }
   }
 
