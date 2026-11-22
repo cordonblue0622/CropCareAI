@@ -13,6 +13,63 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
+  testWidgets('automatic tour waits for the dashboard route transition',
+      (tester) async {
+    var selections = 0;
+    await tester.pumpWidget(MaterialApp(home: Builder(builder: (context) {
+      return Scaffold(
+          body: TextButton(
+        onPressed: () => Navigator.of(context).push(PageRouteBuilder<void>(
+          transitionDuration: const Duration(seconds: 2),
+          pageBuilder: (_, __, ___) => GuidedTourHost(
+            userId: 'test-user',
+            onSelectTab: (_) => selections++,
+            child: Scaffold(body: _TourTargets()),
+          ),
+        )),
+        child: const Text('Open dashboard'),
+      ));
+    })));
+    await tester.tap(find.text('Open dashboard'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(selections, 0);
+    expect(find.byType(GuidedTourOverlay), findsNothing);
+    await tester.pumpAndSettle();
+    expect(selections, 1);
+    expect(find.text('Welcome to CropCare AI'), findsOneWidget);
+  });
+
+  testWidgets(
+      'automatic tour waits for its first target without blocking input',
+      (tester) async {
+    final ready = ValueNotifier(false);
+    addTearDown(ready.dispose);
+    var taps = 0;
+    await tester.pumpWidget(MaterialApp(
+        home: ValueListenableBuilder<bool>(
+      valueListenable: ready,
+      builder: (_, hasTarget, __) => GuidedTourHost(
+        userId: 'test-user',
+        onSelectTab: (_) {},
+        child: Scaffold(
+            body: hasTarget
+                ? _TourTargets()
+                : TextButton(
+                    onPressed: () => taps++,
+                    child: const Text('Dashboard still usable'),
+                  )),
+      ),
+    )));
+    await tester.pumpAndSettle();
+    expect(find.byType(GuidedTourOverlay), findsNothing);
+    await tester.tap(find.text('Dashboard still usable'));
+    expect(taps, 1);
+    ready.value = true;
+    await tester.pumpAndSettle();
+    expect(find.text('Welcome to CropCare AI'), findsOneWidget);
+  });
+
   testWidgets('Next and Back change steps and tabs; Skip persists dismissal',
       (tester) async {
     final selectedTabs = <int>[];

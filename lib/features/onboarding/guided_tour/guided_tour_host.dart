@@ -42,12 +42,61 @@ class GuidedTourHostState extends State<GuidedTourHost>
   String? _autoStartUserId;
   Timer? _autoStartRetryTimer;
   int _autoStartRetries = 0;
+  ModalRoute<dynamic>? _route;
+  Animation<double>? _routeAnimation;
+  bool _autoStartScheduled = false;
+  bool _metricsScheduled = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeAutoStart());
+    _scheduleAutoStart();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+    final animation = _route?.animation;
+    if (!identical(animation, _routeAnimation)) {
+      _routeAnimation?.removeStatusListener(_handleRouteStatus);
+      _routeAnimation = animation;
+      _routeAnimation?.addStatusListener(_handleRouteStatus);
+    }
+    _scheduleAutoStart();
+  }
+
+  void _handleRouteStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed) _scheduleAutoStart();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _scheduleAutoStart();
+  }
+
+  bool get _routeReady =>
+      (_route?.isCurrent ?? true) &&
+      (_routeAnimation == null ||
+          _routeAnimation!.status == AnimationStatus.completed) &&
+      (WidgetsBinding.instance.lifecycleState == null ||
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed);
+
+  void _scheduleAutoStart() {
+    if (!mounted ||
+        _autoStartScheduled ||
+        _active ||
+        !widget.autoStart ||
+        _autoStartUserId == widget.userId) {
+      return;
+    }
+    _autoStartScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoStartScheduled = false;
+      if (mounted) unawaited(_maybeAutoStart());
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   @override
@@ -55,6 +104,8 @@ class GuidedTourHostState extends State<GuidedTourHost>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.userId == widget.userId &&
         oldWidget.autoStart == widget.autoStart) {
+      // A dashboard rebuild may have supplied a previously missing target.
+      _scheduleAutoStart();
       return;
     }
     _transitionToken++;
@@ -65,22 +116,25 @@ class GuidedTourHostState extends State<GuidedTourHost>
     _autoStartUserId = null;
     _autoStartRetries = 0;
     _autoStartRetryTimer?.cancel();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeAutoStart());
+    _scheduleAutoStart();
   }
 
   @override
   void dispose() {
     _transitionToken++;
     _autoStartRetryTimer?.cancel();
+    _routeAnimation?.removeStatusListener(_handleRouteStatus);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeMetrics() {
-    if (!_active) return;
+    if (!_active || _metricsScheduled) return;
+    _metricsScheduled = true;
     final token = _transitionToken;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _metricsScheduled = false;
       if (!mounted || token != _transitionToken || !_active) return;
       setState(() {
         _targetRect = _resolveTargetRect(GuidedTourSteps.values[_stepIndex]);
@@ -89,6 +143,11 @@ class GuidedTourHostState extends State<GuidedTourHost>
   }
 
   Future<void> _maybeAutoStart() async {
+    if (!mounted ||
+        !_routeReady ||
+        !_targetIsLaidOut(GuidedTourSteps.values.first)) {
+      return;
+    }
     final userId = widget.userId;
     if (!widget.autoStart ||
         userId.trim().isEmpty ||
@@ -97,13 +156,19 @@ class GuidedTourHostState extends State<GuidedTourHost>
       return;
     }
     _autoStartUserId = userId;
+    final token = _transitionToken;
     try {
       final complete = await widget.service.isComplete(userId);
       if (!mounted ||
+          token != _transitionToken ||
           complete ||
           _active ||
           widget.userId != userId ||
           !widget.autoStart) {
+        return;
+      }
+      if (!_routeReady || !_targetIsLaidOut(GuidedTourSteps.values.first)) {
+        _autoStartUserId = null;
         return;
       }
       await startTour();
@@ -134,7 +199,9 @@ class GuidedTourHostState extends State<GuidedTourHost>
 
   /// Starts from the welcome step even when the automatic tour was completed.
   Future<void> startTour() async {
-    if (_active || widget.userId.trim().isEmpty) return;
+    if (!mounted || !_routeReady || _active || widget.userId.trim().isEmpty) {
+      return;
+    }
     _autoStartUserId = widget.userId;
     setState(() => _active = true);
     try {
@@ -178,7 +245,7 @@ class GuidedTourHostState extends State<GuidedTourHost>
 
     if (step.scrollToTop) await _scrollDashboardToTop();
     if (!_isCurrent(token)) return;
-    await _revealTarget(step);
+    await _revealTarget(step, token);
     if (!_isCurrent(token)) return;
     await WidgetsBinding.instance.endOfFrame;
     if (!_isCurrent(token)) return;
@@ -202,18 +269,33 @@ class GuidedTourHostState extends State<GuidedTourHost>
     );
   }
 
-  Future<void> _revealTarget(GuidedTourStep step) async {
+  bool _targetIsLaidOut(GuidedTourStep step) {
+    final targetContext = step.targetKey?.currentContext;
+    if (targetContext == null ||
+        !targetContext.mounted ||
+        targetContext.findAncestorStateOfType<GuidedTourHostState>() != this) {
+      return false;
+    }
+    final target = targetContext.findRenderObject();
+    return target is RenderBox &&
+        target.attached &&
+        target.hasSize &&
+        !target.size.isEmpty;
+  }
+
+  Future<void> _revealTarget(GuidedTourStep step, int token) async {
     final key = step.targetKey;
     if (key == null) return;
 
     for (var attempt = 0; attempt < 8; attempt++) {
-      if (!mounted) return;
+      if (!_isCurrent(token)) return;
       final targetContext = key.currentContext;
       final renderObject = targetContext?.findRenderObject();
       if (targetContext != null &&
           targetContext.mounted &&
           renderObject is RenderBox &&
-          renderObject.attached) {
+          renderObject.attached &&
+          renderObject.hasSize) {
         await Scrollable.ensureVisible(
           targetContext,
           duration: const Duration(milliseconds: 260),

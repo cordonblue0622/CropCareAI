@@ -35,7 +35,9 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   void _routeIfAuthenticated() {
-    if (_navigating) return;
+    // Splash stays mounted below login/onboarding. Only the visible route
+    // owns authentication navigation; otherwise both routes create Home.
+    if (_navigating || ModalRoute.of(context)?.isCurrent != true) return;
 
     final auth = context.read<AuthProvider>();
     if (!auth.isAuthenticated) {
@@ -45,6 +47,11 @@ class _SplashScreenState extends State<SplashScreen> {
     _navigating = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      if (ModalRoute.of(context)?.isCurrent != true ||
+          !context.read<AuthProvider>().isAuthenticated) {
+        _navigating = false;
+        return;
+      }
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const HomeScreen()),
       );

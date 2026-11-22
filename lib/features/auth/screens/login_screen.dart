@@ -82,6 +82,7 @@ class _LoginScreenState extends State<LoginScreen> {
     if (_navigatingHome ||
         _signInInProgress ||
         _signInAttemptFailed ||
+        ModalRoute.of(context)?.isCurrent != true ||
         !auth.isAuthenticated) {
       return;
     }
@@ -89,6 +90,10 @@ class _LoginScreenState extends State<LoginScreen> {
     _navigatingHome = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      if (ModalRoute.of(context)?.isCurrent != true || !auth.isAuthenticated) {
+        _navigatingHome = false;
+        return;
+      }
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(
           builder: widget.homeScreenBuilder ?? (_) => const HomeScreen(),
