@@ -292,7 +292,7 @@ class AiBackendService {
         if (currentHealthScore != null)
           'current_health_score': currentHealthScore,
       },
-      timeout: const Duration(seconds: 120),
+      timeout: const Duration(seconds: 75),
     );
 
     _throwIfError(response);
@@ -343,7 +343,8 @@ class AiBackendService {
     required Object payload,
     required Duration timeout,
   }) async {
-    if (path != '/v1/chat') await warmUpIfNeeded();
+    final allowWarmupRetry = path != '/v1/chat' && path != '/v1/progress';
+    if (allowWarmupRetry) await warmUpIfNeeded();
     final encodedPayload = jsonEncode(payload);
     var response = await _client
         .post(
@@ -353,7 +354,7 @@ class AiBackendService {
         )
         .timeout(timeout);
 
-    if (path != '/v1/chat' && _isRetryableStatusCode(response.statusCode)) {
+    if (allowWarmupRetry && _isRetryableStatusCode(response.statusCode)) {
       await warmUpIfNeeded(force: true);
       response = await _client
           .post(

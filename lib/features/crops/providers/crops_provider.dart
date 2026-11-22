@@ -1797,6 +1797,7 @@ class CropsProvider extends ChangeNotifier {
     required DateTime assessedAt,
     required ProgressStatus progressStatus,
     required String checkInId,
+    bool syncNow = true,
   }) async {
     if (checkInId.trim().isEmpty ||
         _revisedPlanCheckInIds.contains(checkInId) ||
@@ -1959,7 +1960,7 @@ class CropsProvider extends ChangeNotifier {
         });
 
       notifyListeners();
-      await _attemptSync();
+      if (syncNow) await _attemptSync();
       _revisedPlanCheckInIds.add(checkInId);
       return TreatmentPlanRevisionResult(
         treatment: revisedTreatment,

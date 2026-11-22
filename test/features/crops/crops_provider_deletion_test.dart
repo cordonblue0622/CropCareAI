@@ -23,6 +23,10 @@ class _StaleCropSupabaseService extends SupabaseService {
   _StaleCropSupabaseService(this.remoteCrop);
 
   final Map<String, dynamic> remoteCrop;
+  bool signedInForTest = false;
+
+  @override
+  bool get isSignedIn => signedInForTest;
 
   @override
   Future<List<Map<String, dynamic>>> getCrops(String userId) async =>
@@ -73,13 +77,14 @@ class _StaleCropSupabaseService extends SupabaseService {
 }
 
 class _NoopSyncService extends SyncService {
+  int calls = 0;
   _NoopSyncService({
     required super.supabaseService,
     required super.dbHelper,
   });
 
   @override
-  Future<void> syncAll() async {}
+  Future<void> syncAll() async { calls++; }
 }
 
 void main() {
@@ -583,16 +588,18 @@ void main() {
         AppConstants.treatmentTasksTable, stalePendingTask.toMap());
 
     final supabase = _StaleCropSupabaseService(const {});
+    supabase.signedInForTest = true;
+    final sync = _NoopSyncService(supabaseService: supabase, dbHelper: database);
     final provider = CropsProvider(
       supabase: supabase,
       db: database,
-      sync: _NoopSyncService(
-        supabaseService: supabase,
-        dbHelper: database,
-      ),
+      sync: sync,
     );
     addTearDown(provider.dispose);
 
+    // Let the sync service's constructor-scheduled work finish first.
+    await Future<void>.delayed(Duration.zero);
+    final syncCallsBeforeRevision = sync.calls;
     final revision = await provider.reviseRemainingTreatmentPlan(
       treatment: treatment,
       tasks: [completedTask, checkInDayTask, pendingTask],
@@ -606,8 +613,13 @@ void main() {
       assessedAt: now,
       progressStatus: ProgressStatus.worsening,
       checkInId: 'progress-update-1',
+      syncNow: false,
     );
 
+    expect(sync.calls, syncCallsBeforeRevision);
+    expect(await database.getPendingSyncItems(), isNotEmpty);
+    await provider.flushPendingSync();
+    expect(sync.calls, syncCallsBeforeRevision + 1);
     expect(revision, isNotNull);
     expect(revision!.treatment.source, 'ai-progress-reassessment');
     expect(revision.treatment.notes, contains('worsening check-in'));

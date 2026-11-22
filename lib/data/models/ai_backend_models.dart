@@ -16,12 +16,24 @@ class AiBackendProgressResponse {
   });
 
   factory AiBackendProgressResponse.fromMap(Map<String, dynamic> map) {
+    final score = map['health_score'];
+    if (map['accepted'] is! bool ||
+        score is! num ||
+        !score.isFinite ||
+        score < 0 ||
+        score > 100 ||
+        !const {'improving', 'stable', 'declining', 'critical'}
+            .contains(map['progress_status']) ||
+        map['assessment'] is! String ||
+        (map['assessment'] as String).trim().isEmpty) {
+      throw const FormatException('Incomplete photo validation response');
+    }
     final rejectionReason = (map['rejection_reason'] as String?)?.trim();
     return AiBackendProgressResponse(
-      accepted: (map['accepted'] as Object?) != false &&
-          (map['accepted'] as Object?) != 0,
-      rejectionReason:
-          rejectionReason == null || rejectionReason.isEmpty ? null : rejectionReason,
+      accepted: map['accepted'] as bool,
+      rejectionReason: rejectionReason == null || rejectionReason.isEmpty
+          ? null
+          : rejectionReason,
       healthScore: (map['health_score'] as num?)?.toDouble() ?? 50.0,
       progressStatus: map['progress_status'] as String? ?? 'stable',
       assessment: map['assessment'] as String? ?? '',

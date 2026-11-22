@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import math
+import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.config import get_settings
 from app.core.dependencies import get_current_user
@@ -10,6 +14,8 @@ from app.schemas.progress import ProgressCheckInRequest, ProgressCheckInResponse
 from app.schemas.user import AuthenticatedUser
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+PROGRESS_TIMEOUT_SECONDS = 65
 
 
 def _normalize_crop(value: object) -> str:
@@ -37,23 +43,14 @@ async def _assess(
     api_key: str | None,
     model: str,
 ) -> ProgressCheckInResponse:
-    prev_score = payload.current_health_score or 50.0
+    prev_score = payload.current_health_score if payload.current_health_score is not None else 50.0
+    if not payload.image_data_url or not payload.image_data_url.strip():
+        raise HTTPException(status_code=422, detail="Please attach a clear current crop photo.")
 
     if not api_key:
-        return ProgressCheckInResponse(
-            accepted=True,
-            rejection_reason=None,
-            health_score=prev_score,
-            progress_status="insufficient_data",
-            assessment=(
-                "AI analysis is unavailable. Your photo is saved and will be reassessed when the service is back online."
-            ),
-            next_steps=["Keep following your treatment plan"],
-        )
+        raise HTTPException(status_code=503, detail="Photo validation is temporarily unavailable. Please try again.")
 
-    from openai import OpenAI
-
-    client = OpenAI(api_key=api_key)
+    from openai import AsyncOpenAI
 
     task_text = (
         "\n".join(f"- {t}" for t in payload.completed_tasks)
@@ -65,9 +62,11 @@ async def _assess(
         "You are CropCare AI, an expert crop progress assessor for daily check-ins. "
         "Compare the CURRENT check-in photo against the PREVIOUS progress context when it is provided. "
         "Rate the crop's current health on a 0–100 scale (0 = dying, 100 = fully healthy) and decide whether the daily check-in should be accepted. "
-        "ONLY reject the check-in if the current photo is clearly NOT showing the tracked crop at all (e.g., a random selfie, a completely unrelated object, or obviously a different type of plant entirely), "
+        "Reject the check-in if the current photo is clearly NOT showing the tracked crop at all (e.g., a random selfie, a completely unrelated object, or obviously a different type of plant entirely), "
         "or if it is obviously a screenshot or screen photo of another image. "
-        "Accept genuine crop photos even if the crop looks healthy, partially recovered, blurry, at an unusual angle, or the disease is no longer visible — these are all valid progress check-ins. "
+        "Accept identifiable crop photos even if the crop looks healthy, partially recovered, at an unusual angle, or the disease is no longer visible — these are all valid progress check-ins. "
+        "If the crop cannot be identified confidently because the photo is unclear, return accepted=false and ask for a clearer photo. "
+        "Validate crop type, not whether it is the exact same individual plant. "
         "DISEASE SCORING RULE: If 'Known condition' names a specific disease (not just the crop name or 'None'), "
         "and the current check-in photo shows visible disease symptoms (discoloration, lesions, wilting, mold, spots, etc.), "
         "the health score MUST reflect the active disease burden — score between 20 and 65 for active visible disease. "
@@ -118,22 +117,39 @@ async def _assess(
             {"type": "input_image", "image_url": payload.image_data_url}
         )
 
+    started = time.monotonic()
     try:
-        response = client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-        )
+        async with AsyncOpenAI(api_key=api_key, timeout=60.0, max_retries=0) as client:
+            response = await asyncio.wait_for(
+                client.responses.create(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                ),
+                timeout=PROGRESS_TIMEOUT_SECONDS,
+            )
         raw = response.output_text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         data = json.loads(raw)
-        accepted = bool(data.get("accepted", True))
+        if not isinstance(data, dict) or type(data.get("accepted")) is not bool:
+            raise ValueError("Missing or invalid acceptance decision")
+        score = data.get("health_score")
+        if type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 100:
+            raise ValueError("Invalid health score")
+        if data.get("progress_status") not in {"improving", "stable", "declining", "critical"}:
+            raise ValueError("Invalid progress status")
+        if not isinstance(data.get("assessment"), str) or not data["assessment"].strip():
+            raise ValueError("Missing assessment")
+        if not isinstance(data.get("next_steps"), list) or not all(isinstance(s, str) for s in data["next_steps"]):
+            raise ValueError("Invalid next steps")
+        accepted = data["accepted"]
         tracked_crop = _normalize_crop(payload.crop_type)
         observed_crop = _normalize_crop(data.get("observed_crop"))
-        rejection_reason = str(data.get("rejection_reason", "")).strip() or None
+        raw_reason = data.get("rejection_reason")
+        rejection_reason = raw_reason.strip() or None if isinstance(raw_reason, str) else None
         health_score = float(max(0, min(100, data.get("health_score", prev_score))))
         progress_status = str(data.get("progress_status", "stable"))
         assessment = str(data.get("assessment", "Assessment not available."))
@@ -153,9 +169,10 @@ async def _assess(
             next_steps = []
         if not accepted:
             health_score = prev_score
-            if not next_steps:
-                next_steps = []
-            progress_status = progress_status or "stable"
+            next_steps = []
+            progress_status = "stable"
+            rejection_reason = rejection_reason or "Please upload a clear photo of the crop you are monitoring and try again."
+        logger.info("Progress validation decision: accepted=%s", accepted)
         return ProgressCheckInResponse(
             accepted=accepted,
             rejection_reason=rejection_reason,
@@ -164,15 +181,10 @@ async def _assess(
             assessment=assessment,
             next_steps=next_steps,
         )
+    except (TimeoutError, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=504, detail="Photo validation timed out. Please try again.") from exc
     except Exception as exc:
-        return ProgressCheckInResponse(
-            accepted=True,
-            rejection_reason=None,
-            health_score=prev_score,
-            progress_status="insufficient_data",
-            assessment=(
-                f"AI analysis is temporarily unavailable: {str(exc)[:80]}. "
-                "Your photo is saved and will be reassessed automatically."
-            ),
-            next_steps=["Continue treatment"],
-        )
+        logger.warning("Progress validation failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Photo validation could not finish. Please try again.") from exc
+    finally:
+        logger.info("Progress validation finished in %.3fs", time.monotonic() - started)

@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:confetti/confetti.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
@@ -825,7 +826,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
           padding: EdgeInsets.only(
             bottom: MediaQuery.of(modalContext).viewInsets.bottom,
           ),
-          child: _CheckInSheet(
+          child: DailyCheckInSheet(
             crop: _crop,
             allTasks: _tasks,
             checkedTasks: checkedTasks,
@@ -878,6 +879,7 @@ class _CropDetailScreenState extends State<CropDetailScreen>
                     assessedAt: update.updateDate,
                     progressStatus: newStatus,
                     checkInId: update.id,
+                    syncNow: false,
                   );
                 } catch (error, stackTrace) {
                   planRevisionFailed = true;
@@ -3144,7 +3146,7 @@ class _CropChatBarState extends State<_CropChatBar> {
 
 // ─── Check-in Bottom Sheet ─────────────────────────────────────────────────
 
-class _CheckInSheet extends StatefulWidget {
+class DailyCheckInSheet extends StatefulWidget {
   final CropModel crop;
   final List<TreatmentTaskModel> allTasks;
   final List<TreatmentTaskModel> checkedTasks;
@@ -3158,7 +3160,8 @@ class _CheckInSheet extends StatefulWidget {
     List<String> aiNextSteps,
   ) onSubmitted;
 
-  const _CheckInSheet({
+  const DailyCheckInSheet({
+    super.key,
     required this.crop,
     required this.allTasks,
     required this.checkedTasks,
@@ -3169,10 +3172,10 @@ class _CheckInSheet extends StatefulWidget {
   });
 
   @override
-  State<_CheckInSheet> createState() => _CheckInSheetState();
+  State<DailyCheckInSheet> createState() => _CheckInSheetState();
 }
 
-class _CheckInSheetState extends State<_CheckInSheet> {
+class _CheckInSheetState extends State<DailyCheckInSheet> {
   Uint8List? _photoBytes;
   String? _videoPath;
   final _noteCtrl = TextEditingController();
@@ -3241,10 +3244,12 @@ class _CheckInSheetState extends State<_CheckInSheet> {
   }
 
   Future<void> _pickPhoto(ImageSource source) async {
+    if (_submitting) return;
     final picker = ImagePicker();
     final file = await picker.pickImage(source: source, imageQuality: 75);
     if (file == null) return;
     final bytes = await file.readAsBytes();
+    if (!mounted || _submitting) return;
     setState(() {
       _photoBytes = bytes;
       _videoPath = null;
@@ -3252,6 +3257,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
   }
 
   Future<void> _pickVideo(ImageSource source) async {
+    if (_submitting) return;
     final picker = ImagePicker();
     final file = await picker.pickVideo(source: source);
     if (file == null) return;
@@ -3296,6 +3302,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
   }
 
   Future<void> _showEvidenceSourceSheet() async {
+    if (_submitting) return;
     final choice = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
@@ -3327,6 +3334,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       ),
     );
 
+    if (!mounted) return;
     switch (choice) {
       case 'camera_photo':
         await _pickPhoto(ImageSource.camera);
@@ -3380,15 +3388,23 @@ class _CheckInSheetState extends State<_CheckInSheet> {
   }
 
   Future<void> _submit() async {
+    if (_submitting) return;
     if (_photoBytes == null) {
       _showFeedback('Please take a photo before submitting.');
       return;
     }
     setState(() => _submitting = true);
+    final timer = Stopwatch()..start();
     try {
       final aiBackend = context.read<AiBackendService>();
+      final connectivity = context.read<ConnectivityService>();
       final submittedAt = DateTime.now();
-      final imageUrl = buildInlineImageDataUrl(_photoBytes!);
+      final note = _noteCtrl.text.trim();
+      final videoPath = _videoPath;
+      final imageUrl = await compute(buildInlineImageDataUrl, _photoBytes!);
+      if (!mounted) return;
+      debugPrint(
+          '[DailyProof] Photo encoded in ${timer.elapsedMilliseconds}ms');
 
       final days = widget.activeTreatment?.startedAt != null
           ? DateTime.now().difference(widget.activeTreatment!.startedAt!).inDays
@@ -3399,8 +3415,9 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       late final String assessment;
       late final AiAnalysisStatus aiAnalysisStatus;
       var aiNextSteps = const <String>[];
-      final connectivity = context.read<ConnectivityService>();
-      final isOnline = await connectivity.isConnected;
+      final isOnline =
+          await connectivity.isConnected.timeout(const Duration(seconds: 10));
+      if (!mounted) return;
       if (!isOnline) {
         // Offline – store the photo without GPT analysis; score unchanged
         // until the user is back online and re-analysis runs.
@@ -3423,16 +3440,14 @@ class _CheckInSheetState extends State<_CheckInSheet> {
             diseaseName:
                 widget.activeTreatment?.diseaseName ?? widget.crop.cropName,
             daysSinceTreatment: days,
-            imageBytes: _photoBytes!.toList(),
-            imageMimeType: 'image/jpeg',
+            imageDataUrl: imageUrl,
             previousImageReference: safePrevImgRef,
             previousAssessment: widget.previousUpdate?.note,
             previousProgressStatus: widget.previousUpdate?.progressStatus.value,
             previousUpdateDate:
                 widget.previousUpdate?.updateDate.toIso8601String(),
             completedTasks: widget.checkedTasks.map((t) => t.title).toList(),
-            note:
-                _noteCtrl.text.trim().isNotEmpty ? _noteCtrl.text.trim() : null,
+            note: note.isNotEmpty ? note : null,
             currentHealthScore: widget.crop.latestHealthScore,
           );
           if (!aiResponse.accepted) {
@@ -3450,9 +3465,20 @@ class _CheckInSheetState extends State<_CheckInSheet> {
           aiAnalysisStatus = AiAnalysisStatus.completed;
           assessment = aiResponse.assessment;
           aiNextSteps = aiResponse.nextSteps;
-        } catch (_) {
-          // Online but AI call failed (timeout, server error, etc.).
-          // Save the check-in and let _analyzePendingCheckIns re-analyse later.
+        } catch (error) {
+          if (!mounted) return;
+          debugPrint('[DailyProof] Validation failed: $error');
+          final stillOnline = await connectivity.isConnected
+              .timeout(const Duration(seconds: 10));
+          if (!mounted) return;
+          if (stillOnline) {
+            _showFeedback(
+              'Photo validation could not finish. Please try again. Your check-in has not been accepted.',
+            );
+            return;
+          }
+          // Connectivity was lost during validation. Preserve the existing
+          // offline pending workflow without claiming successful validation.
           newScore = widget.crop.latestHealthScore ?? 50.0;
           newStatus = ProgressStatus.insufficientData;
           aiAnalysisStatus = AiAnalysisStatus.pending;
@@ -3461,6 +3487,7 @@ class _CheckInSheetState extends State<_CheckInSheet> {
         }
       }
 
+      if (!mounted) return;
       final progressUpdate = ProgressUpdateModel(
         id: const Uuid().v4(),
         cropId: widget.crop.id,
@@ -3474,10 +3501,9 @@ class _CheckInSheetState extends State<_CheckInSheet> {
             widget.activeTreatment?.diseaseName,
         detectedSeverity: widget.latestDiagnosis?.severity,
         note: assessment,
-        observedSymptoms:
-            _noteCtrl.text.trim().isNotEmpty ? [_noteCtrl.text.trim()] : null,
+        observedSymptoms: note.isNotEmpty ? [note] : null,
         imageUrl: imageUrl,
-        videoUrl: _videoPath,
+        videoUrl: videoPath,
         completedTaskCount: widget.checkedTasks.length,
         missedTaskCount: 0,
         updateDate: submittedAt,
@@ -3497,9 +3523,12 @@ class _CheckInSheetState extends State<_CheckInSheet> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _submitting = false);
         _showFeedback('Could not save this check-in. Please try again.');
       }
+    } finally {
+      debugPrint(
+          '[DailyProof] Submission finished in ${timer.elapsedMilliseconds}ms');
+      if (mounted) setState(() => _submitting = false);
     }
   }
 

@@ -136,7 +136,9 @@ class _HomeScreenState extends State<HomeScreen> {
               scrollController: _dashboardScrollController,
             ),
             const MyCropsScreen(),
-            const ScanScreen(),
+            // Scanner navigation uses setTab(2). Do not open a second camera
+            // or request camera/microphone permission behind the dashboard.
+            const SizedBox.shrink(),
             VoiceScreen(key: ValueKey(_voiceScreenVersion)),
             AccountScreen(
               onReplayTour: () => _tourHostKey.currentState?.startTour(),
